@@ -1,13 +1,16 @@
 "use client";
 
-// Full match-report drill-in for a Live Scores game, modelled on the official
-// app: a header scoreboard, then General / Efficiencies / Players tabs. Data is
-// the aggregated S3 fixture report (see lib/api/matchReport). Opens over the
-// Live Scores list and closes back to it.
+// Full-screen match stats page (mobile-first), opened from a Live Scores card's
+// Statistics / Team Lists buttons. It re-fetches the game by grade + id from
+// the URL (?grade=<key>&id=<gameId>&tab=<general|teamlists|…>), shows the
+// fixture scoreboard at the top, then the General / Efficiencies / Players /
+// Team Lists tabs — like the official app's match screen. A back arrow returns
+// to the Live Scores list.
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
-  X,
+  ChevronLeft,
   Loader2,
   AlertTriangle,
   Settings,
@@ -25,16 +28,18 @@ import {
 } from "@/lib/api/matchReport";
 import type { PlayerStatLine } from "@/types/fixtureReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
-import { sides, goalsBehinds, type PlayHqGame } from "@/lib/api/playhq";
+import {
+  getGradeGames,
+  sides,
+  goalsBehinds,
+  LIVE_SCORE_GRADES,
+  type PlayHqGame,
+} from "@/lib/api/playhq";
 
-export type MatchReportTab =
-  | "general"
-  | "efficiencies"
-  | "players"
-  | "teamlists";
-type TabKey = MatchReportTab;
+type TabKey = "general" | "efficiencies" | "players" | "teamlists";
 
-// Small crest (shared look with the list page).
+// ── Shared bits (crest, bars, tables) ───────────────────────────────────────
+
 function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
   const logo = clubLogo(name);
   const dim = { width: size, height: size };
@@ -54,8 +59,6 @@ function Crest({ name, size = 44 }: { name: string | undefined; size?: number })
   );
 }
 
-// A single comparison bar: red (home) vs green (away), widths proportional to
-// each team's share. Ties render a yellow bar (matches the app).
 function CompareBar({ row }: { row: TeamStatRow }) {
   const total = row.home + row.away;
   const homePct = total > 0 ? (row.home / total) * 100 : 50;
@@ -90,7 +93,6 @@ function CompareBar({ row }: { row: TeamStatRow }) {
   );
 }
 
-// Section heading (SCORING / POSSESSIONS style).
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
     <h3 className="mb-3 mt-5 border-b border-white/10 pb-1 text-sm font-bold uppercase tracking-wide text-sky-300 first:mt-0">
@@ -99,7 +101,6 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-// The Players table (All / per-team filter), sortable-looking header, RP first.
 const PLAYER_COLS: { key: string; label: string }[] = [
   { key: "rp", label: "RP" },
   { key: "g", label: "G" },
@@ -210,14 +211,10 @@ function PlayersTable({ report }: { report: MatchReport }) {
   );
 }
 
-// Team Lists tab: the players who appear in the report for each team, listed in
-// jersey-number order, with a tab to switch between the two teams. "Selected
-// players" = everyone the report carries stats for.
 function TeamLists({ report }: { report: MatchReport }) {
   const [side, setSide] = useState<"home" | "away">("home");
   const team: MatchReportTeam = side === "home" ? report.home : report.away;
 
-  // Numerical order; players with no number sink to the bottom (by name).
   const roster = useMemo(() => {
     return [...team.players].sort((a, b) => {
       const na = a.playerNumber || Number.POSITIVE_INFINITY;
@@ -278,36 +275,47 @@ function TeamLists({ report }: { report: MatchReport }) {
   );
 }
 
-export default function MatchReportModal({
-  game,
-  onClose,
-  initialTab = "general",
-}: {
-  game: PlayHqGame;
-  onClose: () => void;
-  /** Which tab to open on (the card has separate Statistics / Team Lists buttons). */
-  initialTab?: MatchReportTab;
-}) {
+// ── The page ────────────────────────────────────────────────────────────────
+
+function MatchStatsInner() {
+  const router = useRouter();
+  const params = useSearchParams();
+
+  const gradeKey = params.get("grade") ?? "";
+  const gameId = params.get("id") ?? "";
+  const initialTab = (params.get("tab") as TabKey) ?? "general";
+
+  const [game, setGame] = useState<PlayHqGame | null>(null);
   const [report, setReport] = useState<MatchReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>(initialTab);
 
-  const { home, away } = sides(game);
+  const back = () => router.push("/live-scores");
 
-  // Close on Escape.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
+  // Load the game (from its grade) then its report.
   useEffect(() => {
     let cancelled = false;
+    const grade = LIVE_SCORE_GRADES.find((g) => g.key === gradeKey);
+    if (!grade || !gameId) {
+      setError("This match link is missing or invalid.");
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
-    getMatchReportForGame(game)
-      .then((r) => {
+    (async () => {
+      try {
+        const games = await getGradeGames(grade.gradeId);
+        const g = games.find((x) => x.id === gameId) ?? null;
+        if (cancelled) return;
+        if (!g) {
+          setError("Match not found.");
+          setLoading(false);
+          return;
+        }
+        setGame(g);
+        const r = await getMatchReportForGame(g);
         if (cancelled) return;
         if (!r) {
           setError(
@@ -316,17 +324,19 @@ export default function MatchReportModal({
         } else {
           setReport(r);
         }
-      })
-      .catch((e) => {
+      } catch (e) {
         if (!cancelled)
           setError(e instanceof Error ? e.message : "Failed to load report.");
-      })
-      .finally(() => !cancelled && setLoading(false));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
     return () => {
       cancelled = true;
     };
-  }, [game]);
+  }, [gradeKey, gameId]);
 
+  const { home, away } = game ? sides(game) : { home: null, away: null };
   const homeScore = home?.scoreTotal ?? null;
   const awayScore = away?.scoreTotal ?? null;
   const margin =
@@ -348,75 +358,74 @@ export default function MatchReportModal({
   ];
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-0 backdrop-blur-sm sm:p-4"
-      onClick={onClose}
-    >
-      <div
-        className="relative flex min-h-full w-full max-w-2xl flex-col bg-[#0d1526] text-slate-100 shadow-2xl sm:min-h-0 sm:rounded-2xl sm:border sm:border-white/10"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Close */}
+    <div className="flex min-h-full flex-col bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
+      {/* Top bar with back arrow */}
+      <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-white/10 bg-[#0B1220]/90 px-3 py-3 backdrop-blur">
         <button
           type="button"
-          onClick={onClose}
-          aria-label="Close"
-          className="absolute right-3 top-3 z-10 rounded-lg p-2 text-slate-400 transition hover:bg-white/10 hover:text-white"
+          onClick={back}
+          aria-label="Back to Live Scores"
+          className="rounded-lg p-1.5 text-slate-300 transition hover:bg-white/10 hover:text-white"
         >
-          <X size={20} />
+          <ChevronLeft size={22} />
         </button>
+        <span className="text-sm font-semibold">Match Stats</span>
+      </div>
 
-        {/* Scoreboard header */}
-        <div className="border-b border-white/10 px-4 pb-4 pt-5">
-          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-            <div className="flex flex-col items-center gap-1.5 text-center">
-              <Crest name={home?.name} />
-              <span className="text-xs font-medium leading-tight text-slate-300">
-                {home?.name ?? "Home"}
-              </span>
-            </div>
-            <div className="flex items-center gap-3">
-              <div className="flex flex-col items-center">
-                <span className="text-3xl font-extrabold tabular-nums">
-                  {homeScore ?? "-"}
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  {goalsBehinds(home)}
+      <div className="mx-auto w-full max-w-2xl flex-1">
+        {/* Scoreboard header — always visible */}
+        {game && (
+          <div className="border-b border-white/10 px-4 pb-4 pt-4">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+              <div className="flex flex-col items-center gap-1.5 text-center">
+                <Crest name={home?.name} size={52} />
+                <span className="text-xs font-medium leading-tight text-slate-300">
+                  {home?.name ?? "Home"}
                 </span>
               </div>
-              <div className="flex flex-col items-center">
-                <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
-                  FT
-                </span>
-                <span className="mt-1 text-[11px] text-slate-400">
-                  {game.venue?.name ?? ""}
-                </span>
+              <div className="flex items-center gap-3">
+                <div className="flex flex-col items-center">
+                  <span className="text-3xl font-extrabold tabular-nums">
+                    {homeScore ?? "-"}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {goalsBehinds(home)}
+                  </span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
+                    FT
+                  </span>
+                  <span className="mt-1 text-[11px] text-slate-400">
+                    {game.venue?.name ?? ""}
+                  </span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="text-3xl font-extrabold tabular-nums">
+                    {awayScore ?? "-"}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {goalsBehinds(away)}
+                  </span>
+                </div>
               </div>
-              <div className="flex flex-col items-center">
-                <span className="text-3xl font-extrabold tabular-nums">
-                  {awayScore ?? "-"}
-                </span>
-                <span className="text-[11px] text-slate-400">
-                  {goalsBehinds(away)}
+              <div className="flex flex-col items-center gap-1.5 text-center">
+                <Crest name={away?.name} size={52} />
+                <span className="text-xs font-medium leading-tight text-slate-300">
+                  {away?.name ?? "Away"}
                 </span>
               </div>
             </div>
-            <div className="flex flex-col items-center gap-1.5 text-center">
-              <Crest name={away?.name} />
-              <span className="text-xs font-medium leading-tight text-slate-300">
-                {away?.name ?? "Away"}
-              </span>
-            </div>
+            {winner && margin != null && (
+              <p className="mt-3 text-center text-sm font-semibold text-sky-300">
+                {winner} won by {margin} point{margin === 1 ? "" : "s"}
+              </p>
+            )}
           </div>
-          {winner && margin != null && (
-            <p className="mt-3 text-center text-sm font-semibold text-sky-300">
-              {winner} won by {margin} point{margin === 1 ? "" : "s"}
-            </p>
-          )}
-        </div>
+        )}
 
         {/* Tabs */}
-        <div className="flex border-b border-white/10 bg-white/[0.02]">
+        <div className="sticky top-[52px] z-10 flex border-b border-white/10 bg-[#0d1526]/95 backdrop-blur">
           {tabs.map((t) => {
             const Icon = t.icon;
             const active = tab === t.key;
@@ -431,14 +440,15 @@ export default function MatchReportModal({
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                <Icon size={16} /> <span className="whitespace-nowrap">{t.label}</span>
+                <Icon size={16} />{" "}
+                <span className="whitespace-nowrap">{t.label}</span>
               </button>
             );
           })}
         </div>
 
         {/* Body */}
-        <div className="flex-1 px-4 py-5">
+        <div className="px-4 py-5">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-20 text-sm text-slate-400">
               <Loader2 size={18} className="animate-spin" /> Loading report…
@@ -453,17 +463,13 @@ export default function MatchReportModal({
                 <div>
                   <SectionTitle>Scoring</SectionTitle>
                   {report.general
-                    .filter((r) =>
-                      ["rp", "g", "rb", "b"].includes(r.key)
-                    )
+                    .filter((r) => ["rp", "g", "rb", "b"].includes(r.key))
                     .map((r) => (
                       <CompareBar key={r.key} row={r} />
                     ))}
                   <SectionTitle>Possessions</SectionTitle>
                   {report.general
-                    .filter((r) =>
-                      ["d", "k", "hb", "m", "cp"].includes(r.key)
-                    )
+                    .filter((r) => ["d", "k", "hb", "m", "cp"].includes(r.key))
                     .map((r) => (
                       <CompareBar key={r.key} row={r} />
                     ))}
@@ -488,7 +494,6 @@ export default function MatchReportModal({
               {tab === "players" && <PlayersTable report={report} />}
               {tab === "teamlists" && <TeamLists report={report} />}
 
-              {/* Team-colour legend (comparison tabs only) */}
               {tab !== "players" && tab !== "teamlists" && (
                 <div className="mt-6 flex items-center justify-center gap-5 text-xs text-slate-400">
                   <span className="flex items-center gap-1.5">
@@ -506,5 +511,19 @@ export default function MatchReportModal({
         </div>
       </div>
     </div>
+  );
+}
+
+export default function MatchStatsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-full items-center justify-center bg-[#0B1220] py-20 text-sm text-slate-400">
+          <Loader2 size={18} className="mr-2 animate-spin" /> Loading…
+        </div>
+      }
+    >
+      <MatchStatsInner />
+    </Suspense>
   );
 }

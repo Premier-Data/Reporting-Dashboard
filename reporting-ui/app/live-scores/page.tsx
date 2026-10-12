@@ -18,7 +18,7 @@ import {
   Users,
 } from "lucide-react";
 
-import MatchReportModal, { type MatchReportTab } from "./MatchReportModal";
+import { useRouter } from "next/navigation";
 
 import {
   getGradeGames,
@@ -241,19 +241,25 @@ function ClubCrest({
 
 function GameRow({
   game,
+  gradeKey,
   live: liveData,
 }: {
   game: PlayHqGame;
+  /** The grade key the game belongs to — used to build the match-stats link. */
+  gradeKey: string;
   live?: NormalisedLive;
 }) {
+  const router = useRouter();
   const [scorersOpen, setScorersOpen] = useState(false);
   // Which team's goal kickers to show — home by default; toggled via the tabs.
   const [scorerTeam, setScorerTeam] = useState<"home" | "away">("home");
-  // Full match-report drill-in (opens the stats breakdown modal) + which tab
-  // it should open on (Statistics vs Team Lists, chosen by the card buttons).
-  const [reportOpen, setReportOpen] = useState(false);
-  const [reportTab, setReportTab] = useState<MatchReportTab>("general");
   const { home, away } = sides(game);
+
+  // Navigate to the full-screen match stats page, opening on the given tab.
+  const openStats = (tab: "general" | "teamlists") => {
+    const q = new URLSearchParams({ grade: gradeKey, id: game.id, tab });
+    router.push(`/live-scores/match?${q.toString()}`);
+  };
 
   // Effective status/score: the REST feed is null for in-play games, so when a
   // spectator live payload is present it takes precedence (status + score +
@@ -449,20 +455,14 @@ function GameRow({
         <div className="mt-3 grid grid-cols-2 gap-2">
           <button
             type="button"
-            onClick={() => {
-              setReportTab("general");
-              setReportOpen(true);
-            }}
+            onClick={() => openStats("general")}
             className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
           >
             <BarChart3 size={13} /> Statistics
           </button>
           <button
             type="button"
-            onClick={() => {
-              setReportTab("teamlists");
-              setReportOpen(true);
-            }}
+            onClick={() => openStats("teamlists")}
             className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-sky-300"
           >
             <Users size={13} /> Team Lists
@@ -471,14 +471,6 @@ function GameRow({
       )}
 
       </div>
-
-      {reportOpen && (
-        <MatchReportModal
-          game={game}
-          initialTab={reportTab}
-          onClose={() => setReportOpen(false)}
-        />
-      )}
     </div>
   );
 }
@@ -817,6 +809,7 @@ export default function LiveScoresPage() {
             <GameRow
               key={g.id}
               game={g}
+              gradeKey={comp}
               live={liveById[g.id] ?? scorersById[g.id]}
             />
           ))}
