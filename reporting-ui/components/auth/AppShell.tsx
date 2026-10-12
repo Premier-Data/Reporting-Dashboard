@@ -59,7 +59,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     // Restoring session / redirecting an unauthenticated user.
     if (!ready || !user) {
         return (
-            <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
+            <div className="flex h-screen items-center justify-center bg-white text-slate-500 dark:bg-slate-950 dark:text-slate-400">
                 Loading...
             </div>
         );
@@ -69,9 +69,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
     // clear message instead of bouncing between redirects.
     if (!allowed && !fallback) {
         return (
-            <div className="flex h-screen flex-col items-center justify-center gap-3 bg-slate-950 px-6 text-center text-slate-300">
+            <div className="flex h-screen flex-col items-center justify-center gap-3 bg-white px-6 text-center text-slate-700 dark:bg-slate-950 dark:text-slate-300">
                 <p className="text-lg font-semibold">No pages available</p>
-                <p className="max-w-sm text-sm text-slate-400">
+                <p className="max-w-sm text-sm text-slate-500 dark:text-slate-400">
                     Your account doesn&apos;t have access to any pages yet. Ask
                     a super admin to grant permissions for your role.
                 </p>
@@ -82,7 +82,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     // Not allowed here but a redirect to an accessible page is in flight.
     if (!allowed) {
         return (
-            <div className="flex h-screen items-center justify-center bg-slate-950 text-slate-400">
+            <div className="flex h-screen items-center justify-center bg-white text-slate-500 dark:bg-slate-950 dark:text-slate-400">
                 Loading...
             </div>
         );

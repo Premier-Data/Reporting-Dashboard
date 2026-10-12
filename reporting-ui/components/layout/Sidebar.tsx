@@ -280,7 +280,8 @@ export default function Sidebar({
 
       <aside
         className={`
-          z-50 flex w-72 shrink-0 flex-col border-r border-slate-800 bg-[#0B1220]
+          z-50 flex w-72 shrink-0 flex-col border-r border-slate-200 bg-slate-50
+          dark:border-slate-800 dark:bg-[#0B1220]
           max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:transition-transform
           ${open ? "max-md:translate-x-0" : "max-md:-translate-x-full"}
         `}
@@ -291,12 +292,12 @@ export default function Sidebar({
         type="button"
         onClick={onClose}
         aria-label="Close menu"
-        className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white md:hidden"
+        className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white md:hidden"
       >
         <X size={20} />
       </button>
 
-      <div className="border-b border-slate-800 px-6 py-6">
+      <div className="border-b border-slate-200 px-6 py-6 dark:border-slate-800">
 
         <Image
           src="/Premier Data_Logo.png"
@@ -307,7 +308,7 @@ export default function Sidebar({
           className="mx-auto h-auto w-full max-w-[240px] object-contain"
         />
 
-        <p className="mt-3 text-center text-sm font-medium tracking-wide text-slate-400">
+        <p className="mt-3 text-center text-sm font-medium tracking-wide text-slate-500 dark:text-slate-400">
           Operations Platform
         </p>
 
@@ -323,7 +324,7 @@ export default function Sidebar({
           >
 
             {section.heading && (
-              <div className="mb-3 px-3 text-xs font-semibold tracking-widest text-slate-500">
+              <div className="mb-3 px-3 text-xs font-semibold tracking-widest text-slate-400 dark:text-slate-500">
                 {section.heading}
               </div>
             )}
@@ -340,7 +341,7 @@ export default function Sidebar({
                   flex items-center gap-3 rounded-lg px-3 py-3 transition
                   ${active
                     ? "bg-sky-600 text-white"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    : "text-slate-600 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
                   }
                 `;
 
@@ -358,7 +359,7 @@ export default function Sidebar({
                       <span className="flex-1 text-sm font-medium">
                         {item.title}
                       </span>
-                      <ExternalLink size={14} className="text-slate-500" />
+                      <ExternalLink size={14} className="text-slate-400 dark:text-slate-500" />
                     </a>
                   );
                 }
@@ -397,14 +398,14 @@ export default function Sidebar({
 
       </nav>
 
-      <div className="border-t border-slate-800 p-4">
+      <div className="border-t border-slate-200 p-4 dark:border-slate-800">
 
         {user && (
           <div className="mb-3">
-            <div className="truncate text-sm font-medium text-white">
+            <div className="truncate text-sm font-medium text-slate-900 dark:text-white">
               {user.analyst_name || user.username}
             </div>
-            <div className="text-xs text-slate-500">
+            <div className="text-xs text-slate-400 dark:text-slate-500">
               {ROLE_LABELS[user.role]}
             </div>
           </div>
@@ -412,7 +413,7 @@ export default function Sidebar({
 
         <button
           onClick={handleLogout}
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white"
+          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
         >
           <LogOut size={16} /> Sign out
         </button>

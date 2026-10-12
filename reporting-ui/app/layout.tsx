@@ -5,6 +5,14 @@ import "./globals.css";
 
 import { AuthProvider } from "@/components/auth/AuthContext";
 import AppShell from "@/components/auth/AppShell";
+import { ThemeProvider } from "@/components/theme/ThemeContext";
+
+// Runs before React hydrates to set the saved theme class on <html>, avoiding
+// a flash of the wrong theme on first paint. Defaults to dark when nothing is
+// stored, matching the ThemeProvider default.
+const themeInitScript = `
+(function(){try{var t=localStorage.getItem('pd-theme');if(t!=='light'){document.documentElement.classList.add('dark');}}catch(e){document.documentElement.classList.add('dark');}})();
+`;
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -46,12 +54,18 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
-      <body className="h-screen overflow-hidden bg-slate-950 text-white">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body className="h-screen overflow-hidden bg-white text-slate-900 dark:bg-slate-950 dark:text-white">
 
-        <AuthProvider>
-          <AppShell>{children}</AppShell>
-        </AuthProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <AppShell>{children}</AppShell>
+          </AuthProvider>
+        </ThemeProvider>
 
       </body>
     </html>

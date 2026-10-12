@@ -1,8 +1,19 @@
 @import "tailwindcss";
 
+/* Drive dark mode from a `.dark` class on <html> (toggled by the theme
+   switch) instead of the OS `prefers-color-scheme`, so the user's choice
+   always wins. This registers the `dark:` variant for Tailwind v4. */
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
   --background: #ffffff;
   --foreground: #171717;
+}
+
+/* Light (day) is the default; the .dark class flips the shell tokens. */
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
 }
 
 @theme inline {
@@ -10,13 +21,6 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
