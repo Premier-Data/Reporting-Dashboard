@@ -30,6 +30,7 @@ import {
   ListVideo,
   FileText,
   Radio,
+  X,
 } from "lucide-react";
 
 import { useEffect, useState } from "react";
@@ -213,7 +214,14 @@ const sections = [
   },
 ];
 
-export default function Sidebar() {
+export default function Sidebar({
+  open = false,
+  onClose,
+}: {
+  /** Mobile drawer open state. Desktop ignores this (always visible). */
+  open?: boolean;
+  onClose?: () => void;
+} = {}) {
   const pathname = usePathname();
   const router = useRouter();
   const { user, hasAccess, logout } = useAuth();
@@ -260,7 +268,33 @@ export default function Sidebar() {
     .filter((section) => section.items.length > 0);
 
   return (
-    <aside className="flex w-72 flex-col border-r border-slate-800 bg-[#0B1220]">
+    <>
+      {/* Mobile backdrop — only when the drawer is open. Tapping it closes. */}
+      {open && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={onClose}
+          aria-hidden="true"
+        />
+      )}
+
+      <aside
+        className={`
+          z-50 flex w-72 shrink-0 flex-col border-r border-slate-800 bg-[#0B1220]
+          max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:transition-transform
+          ${open ? "max-md:translate-x-0" : "max-md:-translate-x-full"}
+        `}
+      >
+
+      {/* Mobile close button (top-right of the drawer). */}
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close menu"
+        className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white md:hidden"
+      >
+        <X size={20} />
+      </button>
 
       <div className="border-b border-slate-800 px-6 py-6">
 
@@ -385,6 +419,7 @@ export default function Sidebar() {
 
       </div>
 
-    </aside>
+      </aside>
+    </>
   );
 }

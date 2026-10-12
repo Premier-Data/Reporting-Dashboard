@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 
 import "./globals.css";
@@ -19,6 +19,21 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Premier Data Platform",
   description: "Premier Data Operations Platform",
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Premier Data",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0B1220",
+  width: "device-width",
+  initialScale: 1,
+  // Allow the installed app to use the full screen (no accidental zoom), but
+  // still let users pinch-zoom content.
+  maximumScale: 5,
 };
 
 export default function RootLayout({

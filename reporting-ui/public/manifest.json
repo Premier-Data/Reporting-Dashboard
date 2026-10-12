@@ -1,0 +1,19 @@
+{
+  "name": "Premier Data Platform",
+  "short_name": "Premier Data",
+  "description": "Premier Data Operations Platform — live scores, fixtures and reporting.",
+  "start_url": "/live-scores",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#0B1220",
+  "icons": [
+    {
+      "src": "/Premier Data_Logo.png",
+      "sizes": "543x242",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

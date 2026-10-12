@@ -533,13 +533,13 @@ export default function LiveScoresPage() {
     "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-500";
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="flex items-center gap-2 text-3xl font-bold tracking-tight text-slate-900">
-            <Radio size={26} /> Live Scores
+    <div className="mx-auto max-w-5xl px-4 py-5 md:px-6 md:py-8">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 md:mb-6">
+        <div className="min-w-0">
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
+            <Radio size={24} /> Live Scores
           </h1>
-          <p className="mt-2 max-w-2xl text-sm text-slate-600">
+          <p className="mt-1.5 max-w-2xl text-sm text-slate-600 md:mt-2">
             NTFL {grade.label} fixtures and scores, straight from PlayHQ.
             {anyLive
               ? " A match is live — scores refresh automatically every 2 minutes."
@@ -563,22 +563,25 @@ export default function LiveScoresPage() {
         </div>
       </div>
 
-      {/* Competition toggle (Men's / Women's) */}
-      <div className="mb-4 inline-flex rounded-lg border border-slate-300 p-0.5">
-        {LIVE_SCORE_GRADES.map((g) => (
-          <button
-            key={g.key}
-            type="button"
-            onClick={() => setComp(g.key)}
-            className={`rounded-md px-4 py-1.5 text-sm font-medium ${
-              comp === g.key
-                ? "bg-blue-600 text-white"
-                : "text-slate-600 hover:bg-slate-100"
-            }`}
-          >
-            {g.label}
-          </button>
-        ))}
+      {/* Competition toggle — horizontally scrollable so the full set of
+          competitions never overflows on a narrow phone. */}
+      <div className="-mx-4 mb-4 overflow-x-auto px-4 md:mx-0 md:px-0">
+        <div className="inline-flex rounded-lg border border-slate-300 p-0.5">
+          {LIVE_SCORE_GRADES.map((g) => (
+            <button
+              key={g.key}
+              type="button"
+              onClick={() => setComp(g.key)}
+              className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium md:px-4 ${
+                comp === g.key
+                  ? "bg-blue-600 text-white"
+                  : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              {g.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Round filter */}

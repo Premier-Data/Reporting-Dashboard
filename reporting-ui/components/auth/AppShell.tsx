@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthContext";
 import { pageKeyForPath } from "@/lib/api/auth";
@@ -15,6 +15,13 @@ export default function AppShell({ children }: { children: ReactNode }) {
     const pathname = usePathname();
     const router = useRouter();
     const { user, ready, hasAccess, firstAccessiblePath } = useAuth();
+
+    // Mobile sidebar drawer open/close. Desktop keeps the sidebar static.
+    const [sidebarOpen, setSidebarOpen] = useState(false);
+    // Close the drawer whenever the route changes (navigating from the menu).
+    useEffect(() => {
+        setSidebarOpen(false);
+    }, [pathname]);
 
     const isPublic = PUBLIC_PATHS.includes(pathname);
     const pageKey = pageKeyForPath(pathname);
@@ -83,9 +90,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
     return (
         <div className="flex h-full">
-            <Sidebar />
-            <div className="flex flex-1 flex-col overflow-hidden">
-                <TopBar />
+            <Sidebar
+                open={sidebarOpen}
+                onClose={() => setSidebarOpen(false)}
+            />
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                <TopBar onMenuClick={() => setSidebarOpen(true)} />
                 <main className="flex-1 overflow-auto">{children}</main>
             </div>
             {/* App-wide floating chat (shows on every authenticated page,
