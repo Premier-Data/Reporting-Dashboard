@@ -136,35 +136,41 @@ function QuarterTable({
   );
 }
 
-// One team's goal scorers, full width. Name on the left, goals.behinds on the
-// right (goals bold). Larger, easy-to-read font since only one team shows at a
-// time via the Home/Away toggle.
+// One team's goal scorers as a table with headers: # (when any player has a
+// number), Name, and G.B (goals.behinds). Full width + larger font since only
+// one team shows at a time via the Home/Away toggle.
 function ScorerList({ scorers }: { scorers: Scorer[] }) {
   if (!scorers.length) {
     return <div className="py-1 text-sm text-slate-400">No scorers yet.</div>;
   }
+  // Only show the # column if at least one scorer has a jersey number.
+  const hasNumbers = scorers.some((s) => s.number != null && s.number !== "");
   return (
-    <ul className="divide-y divide-slate-100">
-      {scorers.map((s, i) => (
-        <li
-          key={`${s.name}-${i}`}
-          className="flex items-center justify-between gap-3 py-1.5"
-        >
-          <span className="truncate text-sm text-slate-700">{s.name}</span>
-          <span className="shrink-0 tabular-nums text-sm">
-            {s.goals > 0 && (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="text-xs uppercase tracking-wide text-slate-400">
+          {hasNumbers && <th className="w-8 pb-1 text-left font-semibold">#</th>}
+          <th className="pb-1 text-left font-semibold">Name</th>
+          <th className="w-14 pb-1 text-right font-semibold">G.B</th>
+        </tr>
+      </thead>
+      <tbody>
+        {scorers.map((s, i) => (
+          <tr key={`${s.name}-${i}`} className="border-t border-slate-100">
+            {hasNumbers && (
+              <td className="py-1.5 pr-2 tabular-nums text-slate-500">
+                {s.number ?? ""}
+              </td>
+            )}
+            <td className="truncate py-1.5 text-slate-700">{s.name}</td>
+            <td className="py-1.5 text-right tabular-nums">
               <span className="font-bold text-slate-900">{s.goals}</span>
-            )}
-            {s.goals > 0 && s.behinds > 0 && (
               <span className="text-slate-400">.{s.behinds}</span>
-            )}
-            {s.goals === 0 && s.behinds > 0 && (
-              <span className="text-slate-400">0.{s.behinds}</span>
-            )}
-          </span>
-        </li>
-      ))}
-    </ul>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 
