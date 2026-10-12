@@ -250,6 +250,7 @@ function GameRow({
   live?: NormalisedLive;
 }) {
   const router = useRouter();
+  const [scoresOpen, setScoresOpen] = useState(false);
   const [scorersOpen, setScorersOpen] = useState(false);
   // Which team's goal kickers to show — home by default; toggled via the tabs.
   const [scorerTeam, setScorerTeam] = useState<"home" | "away">("home");
@@ -382,15 +383,34 @@ function GameRow({
 
       <div className="px-3 pb-3 md:px-4">
 
-      {/* Quarter-by-quarter scores — ALWAYS shown (live/final feed only). */}
+      {/* Quarter-by-quarter scores — collapsed behind an "Extended Scores"
+          toggle (same pattern as Goal kickers). */}
       {liveData && liveData.home.periods.length > 0 && (
         <div className="mt-3 border-t border-white/10 pt-2.5">
-          <QuarterTable
-            homeName={home?.name ?? "Home"}
-            awayName={away?.name ?? "Away"}
-            home={liveData.home.periods}
-            away={liveData.away.periods}
-          />
+          <button
+            type="button"
+            onClick={() => setScoresOpen((o) => !o)}
+            aria-expanded={scoresOpen}
+            className="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-400 hover:text-slate-200"
+          >
+            <span>Extended Scores</span>
+            <ChevronDown
+              size={15}
+              className={`transition-transform ${
+                scoresOpen ? "rotate-180" : ""
+              }`}
+            />
+          </button>
+          {scoresOpen && (
+            <div className="mt-2">
+              <QuarterTable
+                homeName={home?.name ?? "Home"}
+                awayName={away?.name ?? "Away"}
+                home={liveData.home.periods}
+                away={liveData.away.periods}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -718,7 +738,7 @@ export default function LiveScoresPage() {
       </div>
 
       {/* Season + Competition dropdowns (match the official app layout). */}
-      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,180px)_1fr]">
+      <div className="mb-4 grid grid-cols-[minmax(0,140px)_1fr] gap-3">
         <label className="block">
           <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
             Season
