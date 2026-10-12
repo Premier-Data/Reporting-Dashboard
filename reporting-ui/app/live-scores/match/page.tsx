@@ -154,6 +154,17 @@ const PLAYER_COLS: { key: string; label: string }[] = [
   { key: "t", label: "T" },
 ];
 
+// "Joel Hillis" -> "J. Hillis". Uses the first word as the initial and the
+// last word as the surname (handles multi-word surnames by keeping everything
+// after the first name). Falls back to the raw name when it can't be split.
+function abbrevName(full: string): string {
+  const parts = full.trim().split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return full.trim();
+  const first = parts[0];
+  const surname = parts.slice(1).join(" ");
+  return `${first.charAt(0).toUpperCase()}. ${surname}`;
+}
+
 // Sortable keys: the "name" column, each stat column, and "de" (DE%).
 type SortKey = "name" | "de" | string;
 type SortDir = "asc" | "desc";
@@ -311,7 +322,7 @@ function PlayersTable({ report }: { report: MatchReport }) {
                       {p.playerNumber || "-"}
                     </span>
                     <span className="truncate font-medium text-slate-100">
-                      {p.playerName}
+                      {abbrevName(p.playerName)}
                     </span>
                   </span>
                 </td>
