@@ -61,34 +61,75 @@ function Crest({ name, size = 44 }: { name: string | undefined; size?: number })
   );
 }
 
+// A head-to-head bar that grows OUTWARD from the centre: home extends left,
+// away extends right. The BETTER team's bar fills its whole half; the other's
+// length is the ratio of the two values (so a close contest shows two near-full
+// bars, a blowout shows one tiny). "Better" is the higher value, except for
+// `lowerIsBetter` stats (Frees Against, turnovers) where it's the lower value.
 function CompareBar({ row }: { row: TeamStatRow }) {
-  const total = row.home + row.away;
-  const homePct = total > 0 ? (row.home / total) * 100 : 50;
-  const awayPct = total > 0 ? (row.away / total) * 100 : 50;
-  const tie = row.home === row.away;
+  const { home, away } = row;
+  const tie = home === away;
   const fmt = (n: number) => (row.percent ? `${n}%` : `${n}`);
+
+  // Which side is better, and each side's fill as a fraction (0–1) of its half.
+  let homeFrac = 1;
+  let awayFrac = 1;
+  let homeBetter = false;
+  let awayBetter = false;
+
+  if (!tie) {
+    if (row.lowerIsBetter) {
+      // Lower value wins and fills fully; the higher (worse) side shrinks.
+      if (home < away) {
+        homeBetter = true;
+        awayFrac = away > 0 ? home / away : 0;
+      } else {
+        awayBetter = true;
+        homeFrac = home > 0 ? away / home : 0;
+      }
+    } else {
+      // Higher value wins and fills fully; the lower side shrinks.
+      if (home > away) {
+        homeBetter = true;
+        awayFrac = home > 0 ? away / home : 0;
+      } else {
+        awayBetter = true;
+        homeFrac = away > 0 ? home / away : 0;
+      }
+    }
+  }
+
+  // Winner green, loser red, tie amber. A small floor keeps the number legible.
+  const homeColor = tie ? "bg-amber-400" : homeBetter ? "bg-emerald-500" : "bg-red-500";
+  const awayColor = tie ? "bg-amber-400" : awayBetter ? "bg-emerald-500" : "bg-red-500";
+  const homeW = Math.max(homeFrac * 100, 14);
+  const awayW = Math.max(awayFrac * 100, 14);
 
   return (
     <div className="mb-4">
       <div className="mb-1.5 text-center text-sm font-bold text-slate-100">
         {row.label}
       </div>
-      <div className="flex h-8 overflow-hidden rounded-full">
-        <div
-          className={`flex items-center justify-start pl-3 text-sm font-bold text-white transition-all ${
-            tie ? "bg-amber-400" : "bg-red-500"
-          }`}
-          style={{ width: `${Math.max(homePct, 12)}%` }}
-        >
-          {fmt(row.home)}
+      {/* Two halves meeting at the centre; each bar is anchored to the centre
+          and grows toward its outer edge. */}
+      <div className="flex h-8 items-stretch">
+        {/* Home half — bar hugs the centre line (right edge of this half). */}
+        <div className="flex w-1/2 justify-end">
+          <div
+            className={`flex h-full items-center justify-start rounded-l-full pl-3 text-sm font-bold text-white transition-all ${homeColor}`}
+            style={{ width: `${homeW}%` }}
+          >
+            {fmt(home)}
+          </div>
         </div>
-        <div
-          className={`flex items-center justify-end pr-3 text-sm font-bold text-white transition-all ${
-            tie ? "bg-amber-400" : "bg-emerald-500"
-          }`}
-          style={{ width: `${Math.max(awayPct, 12)}%` }}
-        >
-          {fmt(row.away)}
+        {/* Away half — bar hugs the centre line (left edge of this half). */}
+        <div className="flex w-1/2 justify-start">
+          <div
+            className={`flex h-full items-center justify-end rounded-r-full pr-3 text-sm font-bold text-white transition-all ${awayColor}`}
+            style={{ width: `${awayW}%` }}
+          >
+            {fmt(away)}
+          </div>
         </div>
       </div>
     </div>

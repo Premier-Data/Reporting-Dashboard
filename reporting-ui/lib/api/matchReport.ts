@@ -147,6 +147,12 @@ export type TeamStatRow = {
   away: number;
   /** When true, render as a percentage (0–100) rather than a raw count. */
   percent?: boolean;
+  /**
+   * When true, a LOWER value is the better result (e.g. Frees Against,
+   * turnovers). The comparison bar fills the lower side fully and shortens the
+   * higher side proportionally. Defaults to higher-is-better.
+   */
+  lowerIsBetter?: boolean;
 };
 
 export type MatchReportTeam = {
@@ -241,7 +247,7 @@ export async function getMatchReport(
     { key: "cp", label: "Contested Possessions", ...cp },
     { key: "ho", label: "Hit Outs", ...ho },
     { key: "ff", label: "Frees For", ...ff },
-    { key: "fa", label: "Frees Against", ...fa },
+    { key: "fa", label: "Frees Against", ...fa, lowerIsBetter: true },
   ];
 
   const efficiencies: TeamStatRow[] = [
