@@ -11,6 +11,8 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
   ChevronLeft,
+  ChevronUp,
+  ChevronDown,
   Loader2,
   AlertTriangle,
   Settings,
@@ -111,8 +113,32 @@ const PLAYER_COLS: { key: string; label: string }[] = [
   { key: "t", label: "T" },
 ];
 
+// Sortable keys: the "name" column, each stat column, and "de" (DE%).
+type SortKey = "name" | "de" | string;
+type SortDir = "asc" | "desc";
+
+// The numeric value for a player in a given sort column.
+function sortValue(p: PlayerStatLine, key: SortKey): number {
+  if (key === "de") return playerDePercent(p);
+  return p.columns[key]?.[5] ?? 0;
+}
+
 function PlayersTable({ report }: { report: MatchReport }) {
   const [team, setTeam] = useState<"all" | "home" | "away">("all");
+  // Default sort: Ranking Points, highest first (matches the app).
+  const [sortKey, setSortKey] = useState<SortKey>("rp");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
+  // Click a header: a new column starts descending for stats / ascending for
+  // the name column; clicking the active column flips the direction.
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "desc" ? "asc" : "desc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "name" ? "asc" : "desc");
+    }
+  };
 
   const rows = useMemo(() => {
     const list =
@@ -121,10 +147,20 @@ function PlayersTable({ report }: { report: MatchReport }) {
         : team === "away"
           ? report.away.players
           : [...report.home.players, ...report.away.players];
-    return [...list].sort(
-      (a, b) => (b.columns.rp?.[5] ?? 0) - (a.columns.rp?.[5] ?? 0)
-    );
-  }, [team, report]);
+
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...list].sort((a, b) => {
+      let cmp: number;
+      if (sortKey === "name") {
+        cmp = a.playerName.localeCompare(b.playerName);
+      } else {
+        cmp = sortValue(a, sortKey) - sortValue(b, sortKey);
+        // Stable, readable tie-break: by name ascending.
+        if (cmp === 0) return a.playerName.localeCompare(b.playerName);
+      }
+      return cmp * dir;
+    });
+  }, [team, report, sortKey, sortDir]);
 
   const chip = (val: typeof team, label: string) => (
     <button
@@ -143,6 +179,22 @@ function PlayersTable({ report }: { report: MatchReport }) {
   const teamColor = (p: PlayerStatLine) =>
     p.teamUid === report.home.uid ? "bg-red-500" : "bg-emerald-500";
 
+  // The active-column sort arrow.
+  const arrow = (key: SortKey) => {
+    if (key !== sortKey) return null;
+    return sortDir === "asc" ? (
+      <ChevronUp size={12} className="shrink-0" />
+    ) : (
+      <ChevronDown size={12} className="shrink-0" />
+    );
+  };
+
+  // Shared classes for a sortable header cell. `active` tints it sky.
+  const thCls = (active: boolean, align: "left" | "right") =>
+    `cursor-pointer select-none px-1.5 py-2 font-semibold transition hover:text-slate-100 ${
+      align === "left" ? "text-left" : "text-right"
+    } ${active ? "text-sky-300" : "text-slate-400"}`;
+
   return (
     <div>
       <div className="mb-3 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -154,14 +206,42 @@ function PlayersTable({ report }: { report: MatchReport }) {
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-white/10 text-xs font-semibold uppercase text-slate-400">
-              <th className="py-2 pr-2 text-left">Player</th>
-              {PLAYER_COLS.map((c) => (
-                <th key={c.key} className="px-1.5 py-2 text-right tabular-nums">
-                  {c.label}
+            <tr className="border-b border-white/10 text-xs uppercase">
+              <th
+                scope="col"
+                aria-sort={
+                  sortKey === "name"
+                    ? sortDir === "asc"
+                      ? "ascending"
+                      : "descending"
+                    : "none"
+                }
+                onClick={() => toggleSort("name")}
+                className={`${thCls(sortKey === "name", "left")} pr-2`}
+              >
+                <span className="flex items-center gap-1">
+                  Player {arrow("name")}
+                </span>
+              </th>
+              {[...PLAYER_COLS, { key: "de", label: "DE%" }].map((c) => (
+                <th
+                  key={c.key}
+                  scope="col"
+                  aria-sort={
+                    sortKey === c.key
+                      ? sortDir === "asc"
+                        ? "ascending"
+                        : "descending"
+                      : "none"
+                  }
+                  onClick={() => toggleSort(c.key)}
+                  className={`${thCls(sortKey === c.key, "right")} tabular-nums`}
+                >
+                  <span className="flex items-center justify-end gap-0.5">
+                    {c.label} {arrow(c.key)}
+                  </span>
                 </th>
               ))}
-              <th className="px-1.5 py-2 text-right">DE%</th>
             </tr>
           </thead>
           <tbody>
@@ -187,12 +267,18 @@ function PlayersTable({ report }: { report: MatchReport }) {
                 {PLAYER_COLS.map((c) => (
                   <td
                     key={c.key}
-                    className="px-1.5 py-2 text-right tabular-nums text-slate-200"
+                    className={`px-1.5 py-2 text-right tabular-nums ${
+                      sortKey === c.key ? "font-semibold text-white" : "text-slate-200"
+                    }`}
                   >
                     {p.columns[c.key]?.[5] ?? 0}
                   </td>
                 ))}
-                <td className="px-1.5 py-2 text-right tabular-nums text-slate-200">
+                <td
+                  className={`px-1.5 py-2 text-right tabular-nums ${
+                    sortKey === "de" ? "font-semibold text-white" : "text-slate-200"
+                  }`}
+                >
                   {playerDePercent(p)}
                 </td>
               </tr>
