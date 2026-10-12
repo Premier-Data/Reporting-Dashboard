@@ -34,6 +34,11 @@ import {
   type Scorer,
   type PeriodScore,
 } from "@/lib/api/playhq";
+import {
+  clubLogo,
+  clubInitials,
+  clubBadgeColor,
+} from "@/lib/api/clubLogos";
 
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
 // Worker's edge cache means concurrent viewers share one upstream call.
@@ -159,6 +164,31 @@ function ScorerList({ scorers }: { scorers: Scorer[] }) {
   );
 }
 
+// A club crest: the local logo when mapped, else an initials badge in a
+// deterministic colour. Keeps every team visually anchored even without a logo.
+function ClubCrest({ name }: { name: string | undefined }) {
+  const logo = clubLogo(name);
+  if (logo) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={logo}
+        alt={`${name ?? ""} logo`}
+        className="h-6 w-6 shrink-0 rounded-full object-contain"
+      />
+    );
+  }
+  return (
+    <span
+      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
+      style={{ background: clubBadgeColor(name) }}
+      aria-hidden="true"
+    >
+      {clubInitials(name)}
+    </span>
+  );
+}
+
 function GameRow({
   game,
   live: liveData,
@@ -198,12 +228,15 @@ function GameRow({
     side: "home" | "away"
   ) => (
     <div className="flex items-center justify-between gap-3">
-      <span
-        className={`truncate text-sm ${
-          won === side ? "font-bold text-slate-900" : "font-medium text-slate-700"
-        }`}
-      >
-        {name ?? "TBC"}
+      <span className="flex min-w-0 items-center gap-2">
+        <ClubCrest name={name} />
+        <span
+          className={`truncate text-sm ${
+            won === side ? "font-bold text-slate-900" : "font-medium text-slate-700"
+          }`}
+        >
+          {name ?? "TBC"}
+        </span>
       </span>
       {showScore && (
         <span className="flex items-baseline gap-1.5 tabular-nums">
