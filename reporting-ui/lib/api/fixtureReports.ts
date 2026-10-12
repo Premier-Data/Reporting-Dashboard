@@ -52,6 +52,15 @@ const AFL_COLUMNS: StatColumn[] = [
   { key: "t", label: "T", title: "Tackles", statTypes: ["Tackle"], group: "afl" },
   { key: "ci", label: "CI", title: "Clearances", statTypes: ["Clearance"], group: "afl" },
   { key: "g", label: "G", title: "Goals", statTypes: ["Goal"], group: "afl" },
+  { key: "b", label: "B", title: "Behinds", statTypes: ["Behind"], group: "afl" },
+  { key: "rb", label: "RB", title: "Rushed Behinds", statTypes: ["RushedBehind"], group: "afl" },
+  { key: "de", label: "D✓", title: "Effective Disposals", statTypes: ["DisposalEffective"], group: "afl" },
+  { key: "ke", label: "K✓", title: "Effective Kicks", statTypes: ["KickEffective"], group: "afl" },
+  { key: "hbe", label: "HB✓", title: "Effective Handballs", statTypes: ["HandballEffective"], group: "afl" },
+  { key: "cie", label: "CI✓", title: "Effective Clearances", statTypes: ["ClearanceEffective"], group: "afl" },
+  { key: "ho", label: "HO", title: "Hit Outs", statTypes: ["HitOut"], group: "afl" },
+  { key: "ff", label: "FF", title: "Frees For", statTypes: ["FreeKickFor"], group: "afl" },
+  { key: "fa", label: "FA", title: "Frees Against", statTypes: ["FreeKickAgainst"], group: "afl" },
   { key: "rp", label: "RP", title: "Ranking Points", statTypes: ["RankingPoints"], group: "afl" },
 ];
 
