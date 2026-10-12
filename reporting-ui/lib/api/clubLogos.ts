@@ -38,10 +38,11 @@ const CLUB_LOGO_FILES: Record<string, string> = {
   pint: "pint.png",
   "st marys": "st-marys.png",
   "southern districts": "southern-districts.png",
-  // Not yet added (fall back to an initials badge). Add the file to
-  // public/clubs and a line here once you have the correct crest URL:
+  banks: "banks.png",
+  "banks bulldogs": "banks.png",
+  // Darwin Buffaloes — not yet added (falls back to an initials badge). Add
+  // public/clubs/darwin-buffaloes.png and a line here once you have the crest:
   //   "darwin buffaloes": "darwin-buffaloes.png",
-  //   banks: "banks-bulldogs.png",
 };
 
 /** Local logo path for a team name, or null when the club isn't mapped yet. */
