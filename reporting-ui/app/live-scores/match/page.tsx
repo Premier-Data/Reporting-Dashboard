@@ -28,6 +28,7 @@ import {
 } from "@/lib/api/matchReport";
 import type { PlayerStatLine } from "@/types/fixtureReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
+import { clubConfigFor } from "@/lib/api/clubConfig";
 import {
   getGradeGames,
   sides,
@@ -40,8 +41,17 @@ type TabKey = "general" | "efficiencies" | "players";
 
 // ── Shared bits (crest, bars, tables) ───────────────────────────────────────
 
-function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
-  const logo = clubLogo(name);
+function Crest({
+  name,
+  size = 44,
+  logoUrl,
+}: {
+  name: string | undefined;
+  size?: number;
+  /** Admin-configured logo URL override; falls back to the bundled logo. */
+  logoUrl?: string | null;
+}) {
+  const logo = logoUrl || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
     // eslint-disable-next-line @next/next/no-img-element
@@ -173,7 +183,14 @@ function sortValue(p: PlayerStatLine, key: SortKey): number {
   return p.columns[key]?.[5] ?? 0;
 }
 
-function PlayersTable({ report }: { report: MatchReport }) {
+function PlayersTable({
+  report,
+  teamColors,
+}: {
+  report: MatchReport;
+  /** Configured hex colour per side (admin override); null → default. */
+  teamColors: { home: string | null; away: string | null };
+}) {
   const [team, setTeam] = useState<"all" | "home" | "away">("all");
   // Default sort: Ranking Points, highest first (matches the app).
   const [sortKey, setSortKey] = useState<SortKey>("rp");
@@ -226,8 +243,13 @@ function PlayersTable({ report }: { report: MatchReport }) {
     </button>
   );
 
-  const teamColor = (p: PlayerStatLine) =>
-    p.teamUid === report.home.uid ? "bg-red-500" : "bg-emerald-500";
+  // The player-badge colour: the team's configured colour when set, else the
+  // default red (home) / emerald (away). Returns an inline style value.
+  const badgeColor = (p: PlayerStatLine): string => {
+    const isHome = p.teamUid === report.home.uid;
+    const override = isHome ? teamColors.home : teamColors.away;
+    return override ?? (isHome ? "#ef4444" : "#10b981");
+  };
 
   // The active-column sort arrow.
   const arrow = (key: SortKey) => {
@@ -313,9 +335,8 @@ function PlayersTable({ report }: { report: MatchReport }) {
                 <td className="py-2 pr-1">
                   <span className="flex items-center gap-1.5">
                     <span
-                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold text-white ${teamColor(
-                        p
-                      )}`}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold text-white"
+                      style={{ backgroundColor: badgeColor(p) }}
                     >
                       {p.playerNumber || "-"}
                     </span>
@@ -372,6 +393,16 @@ function MatchStatsInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>(initialTab);
+  // Admin-configured team colour + logo overrides for the two sides, resolved
+  // from club_config once the report's team names are known.
+  const [teamColors, setTeamColors] = useState<{
+    home: string | null;
+    away: string | null;
+  }>({ home: null, away: null });
+  const [teamLogos, setTeamLogos] = useState<{
+    home: string | null;
+    away: string | null;
+  }>({ home: null, away: null });
 
   const back = () => router.push("/live-scores");
 
@@ -405,6 +436,21 @@ function MatchStatsInner() {
           );
         } else {
           setReport(r);
+          // Resolve configured team colours (best-effort; falls back to default).
+          const [hc, ac] = await Promise.all([
+            clubConfigFor(r.home.name),
+            clubConfigFor(r.away.name),
+          ]);
+          if (!cancelled) {
+            setTeamColors({
+              home: hc?.team_color ?? null,
+              away: ac?.team_color ?? null,
+            });
+            setTeamLogos({
+              home: hc?.logo_url ?? null,
+              away: ac?.logo_url ?? null,
+            });
+          }
         }
       } catch (e) {
         if (!cancelled)
@@ -459,7 +505,7 @@ function MatchStatsInner() {
           <div className="border-b border-white/10 px-4 pb-4 pt-4">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={home?.name} size={52} />
+                <Crest name={home?.name} size={52} logoUrl={teamLogos.home} />
                 <span className="text-xs font-medium leading-tight text-slate-300">
                   {home?.name ?? "Home"}
                 </span>
@@ -491,7 +537,7 @@ function MatchStatsInner() {
                 </div>
               </div>
               <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={away?.name} size={52} />
+                <Crest name={away?.name} size={52} logoUrl={teamLogos.away} />
                 <span className="text-xs font-medium leading-tight text-slate-300">
                   {away?.name ?? "Away"}
                 </span>
@@ -572,7 +618,9 @@ function MatchStatsInner() {
                   ))}
                 </div>
               )}
-              {tab === "players" && <PlayersTable report={report} />}
+              {tab === "players" && (
+                <PlayersTable report={report} teamColors={teamColors} />
+              )}
 
               {tab !== "players" && (
                 <div className="mt-6 flex items-center justify-center gap-5 text-xs text-slate-400">

@@ -26,8 +26,9 @@ export function normaliseClub(name: string | null | undefined): string {
 }
 
 // Normalised club key → logo file under public/clubs/. Seeded with the two
-// clubs confirmed from PlayHQ; extend as you add more logos.
-const CLUB_LOGO_FILES: Record<string, string> = {
+// clubs confirmed from PlayHQ; extend as you add more logos. Exported so the
+// Admin Configuration page can list the known clubs as a seed/starting set.
+export const CLUB_LOGO_FILES: Record<string, string> = {
   // NTFL Men's / Women's Premier clubs.
   "palmerston magpies": "palmerston-magpies.png",
   waratah: "waratah.png",

@@ -30,6 +30,7 @@ import {
   ListVideo,
   FileText,
   Radio,
+  SlidersHorizontal,
   X,
 } from "lucide-react";
 
@@ -204,6 +205,11 @@ const sections = [
         title: "Permissions",
         href: "/permissions",
         icon: KeyRound,
+      },
+      {
+        title: "Admin Configuration",
+        href: "/admin-config",
+        icon: SlidersHorizontal,
       },
       {
         title: "Settings",

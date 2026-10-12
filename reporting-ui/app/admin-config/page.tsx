@@ -1,0 +1,459 @@
+"use client";
+
+// Admin Configuration — Live Scores club & competition setup.
+//
+// Shows every PlayHQ competition wired into Live Scores (reference), and an
+// editable table of clubs: the PlayHQ club id ↔ S3/JADE club uid mapping, a
+// logo URL, and the team colour used on the Players stats + comparison bars.
+// Everything persists to Supabase (club_config) and overrides the hardcoded
+// defaults; a club with no row falls back to those defaults.
+
+import { useEffect, useMemo, useState } from "react";
+import { Loader2, Save, Trash2, Plus, Check, AlertTriangle } from "lucide-react";
+
+import { LIVE_SCORE_GRADES } from "@/lib/api/playhq";
+import {
+  CLUB_LOGO_FILES,
+  clubLogo,
+  clubBadgeColor,
+  clubInitials,
+  normaliseClub,
+} from "@/lib/api/clubLogos";
+import {
+  listClubConfigs,
+  upsertClubConfig,
+  deleteClubConfig,
+  type ClubConfig,
+} from "@/lib/api/clubConfig";
+
+// A row in the editable table — merges a stored override (if any) with the
+// bundled default for display. `id` is null for a default-only (unsaved) club.
+type Row = {
+  id: number | null;
+  club_key: string;
+  display_name: string;
+  playhq_club_id: string;
+  s3_club_uid: string; // kept as string for the input; parsed on save
+  logo_url: string;
+  team_color: string;
+  competitions: string;
+  dirty: boolean;
+  saving: boolean;
+  saved: boolean;
+};
+
+// Title-case a normalised key for a default display name ("st marys" → "St Marys").
+function titleCase(key: string): string {
+  return key
+    .split(" ")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
+}
+
+function rowFromConfig(cfg: ClubConfig): Row {
+  return {
+    id: cfg.id,
+    club_key: cfg.club_key,
+    display_name: cfg.display_name || titleCase(cfg.club_key),
+    playhq_club_id: cfg.playhq_club_id ?? "",
+    s3_club_uid: cfg.s3_club_uid != null ? String(cfg.s3_club_uid) : "",
+    logo_url: cfg.logo_url ?? "",
+    team_color: cfg.team_color ?? "",
+    competitions: cfg.competitions ?? "",
+    dirty: false,
+    saving: false,
+    saved: false,
+  };
+}
+
+function defaultRow(key: string): Row {
+  return {
+    id: null,
+    club_key: key,
+    display_name: titleCase(key),
+    playhq_club_id: "",
+    s3_club_uid: "",
+    logo_url: "",
+    team_color: "",
+    competitions: "",
+    dirty: false,
+    saving: false,
+    saved: false,
+  };
+}
+
+// Preview swatch: the configured colour, else the deterministic badge colour.
+function colorFor(row: Row): string {
+  return row.team_color || clubBadgeColor(row.club_key);
+}
+
+// Logo preview: the override URL, else the bundled file, else initials badge.
+function LogoPreview({ row }: { row: Row }) {
+  const src = row.logo_url || clubLogo(row.club_key);
+  if (src) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return (
+      <img
+        src={src}
+        alt=""
+        className="h-9 w-9 shrink-0 rounded-full object-contain"
+      />
+    );
+  }
+  return (
+    <span
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+      style={{ background: colorFor(row) }}
+    >
+      {clubInitials(row.club_key)}
+    </span>
+  );
+}
+
+export default function AdminConfigPage() {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [newKey, setNewKey] = useState("");
+
+  // Load stored overrides and merge with the bundled default club list so every
+  // known club shows (even before it has a saved row).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError(null);
+      // Always seed the bundled default clubs so the table is usable even if
+      // the overrides table isn't reachable yet (e.g. migration not applied).
+      const byKey = new Map<string, Row>();
+      for (const key of Object.keys(CLUB_LOGO_FILES)) {
+        byKey.set(key, defaultRow(key));
+      }
+      try {
+        const configs = await listClubConfigs();
+        if (cancelled) return;
+        // Overlay stored overrides (and add any club that only exists in DB).
+        for (const cfg of configs) byKey.set(cfg.club_key, rowFromConfig(cfg));
+      } catch (e) {
+        if (!cancelled)
+          setError(
+            (e instanceof Error ? e.message : "Failed to load saved config.") +
+              " Showing defaults — run the club_config migration to enable saving."
+          );
+      } finally {
+        if (!cancelled) {
+          const list = Array.from(byKey.values()).sort((a, b) =>
+            a.display_name.localeCompare(b.display_name)
+          );
+          setRows(list);
+          setLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const update = (key: string, patch: Partial<Row>) =>
+    setRows((prev) =>
+      prev.map((r) =>
+        r.club_key === key ? { ...r, ...patch, dirty: true, saved: false } : r
+      )
+    );
+
+  async function save(key: string) {
+    const row = rows.find((r) => r.club_key === key);
+    if (!row) return;
+    setRows((prev) =>
+      prev.map((r) => (r.club_key === key ? { ...r, saving: true } : r))
+    );
+    try {
+      await upsertClubConfig({
+        club_key: row.club_key,
+        display_name: row.display_name,
+        playhq_club_id: row.playhq_club_id,
+        s3_club_uid: row.s3_club_uid ? Number(row.s3_club_uid) : null,
+        logo_url: row.logo_url,
+        team_color: row.team_color,
+        competitions: row.competitions,
+      });
+      setRows((prev) =>
+        prev.map((r) =>
+          r.club_key === key
+            ? { ...r, saving: false, dirty: false, saved: true }
+            : r
+        )
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save.");
+      setRows((prev) =>
+        prev.map((r) => (r.club_key === key ? { ...r, saving: false } : r))
+      );
+    }
+  }
+
+  async function removeOverride(key: string) {
+    const row = rows.find((r) => r.club_key === key);
+    if (!row || row.id == null) return;
+    if (!confirm(`Clear saved config for "${row.display_name}"? It reverts to defaults.`))
+      return;
+    try {
+      await deleteClubConfig(row.id);
+      // Reset to the bundled default (keep it in the list).
+      setRows((prev) =>
+        prev.map((r) => (r.club_key === key ? defaultRow(key) : r))
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete.");
+    }
+  }
+
+  function addClub() {
+    const key = normaliseClub(newKey);
+    if (!key) return;
+    if (rows.some((r) => r.club_key === key)) {
+      setError(`"${key}" is already in the list.`);
+      return;
+    }
+    setRows((prev) =>
+      [...prev, { ...defaultRow(key), display_name: newKey.trim(), dirty: true }].sort(
+        (a, b) => a.display_name.localeCompare(b.display_name)
+      )
+    );
+    setNewKey("");
+    setError(null);
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-500";
+
+  const grades = useMemo(() => LIVE_SCORE_GRADES, []);
+
+  return (
+    <div className="min-h-full bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
+      <div className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
+        <h1 className="text-2xl font-bold tracking-tight md:text-3xl">
+          Admin Configuration
+        </h1>
+        <p className="mt-1.5 max-w-3xl text-sm text-slate-400">
+          Live Scores competition &amp; club setup. Map each club to its PlayHQ
+          club id and S3/JADE club uid, set a logo, and choose the team colour
+          used on the Players stats tab. Blank fields fall back to the built-in
+          defaults.
+        </p>
+
+        {/* Competitions reference */}
+        <section className="mt-6">
+          <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-sky-300">
+            Competitions (PlayHQ grades)
+          </h2>
+          <div className="overflow-x-auto rounded-xl border border-white/10">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
+                  <th className="px-3 py-2 font-semibold">Key</th>
+                  <th className="px-3 py-2 font-semibold">Competition</th>
+                  <th className="px-3 py-2 font-semibold">PlayHQ grade id</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grades.map((g) => (
+                  <tr key={g.key} className="border-b border-white/5">
+                    <td className="px-3 py-2 font-mono text-xs text-slate-400">
+                      {g.key}
+                    </td>
+                    <td className="px-3 py-2 font-medium">{g.label}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-slate-300">
+                      {g.gradeId}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-xs text-slate-500">
+            Grades are configured in code (lib/api/playhq.ts). This table is for
+            reference when mapping clubs below.
+          </p>
+        </section>
+
+        {/* Clubs editor */}
+        <section className="mt-8">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-sm font-bold uppercase tracking-wide text-sky-300">
+              Clubs
+            </h2>
+            <div className="flex items-center gap-2">
+              <input
+                value={newKey}
+                onChange={(e) => setNewKey(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addClub()}
+                placeholder="Add a club by name…"
+                className={`${inputCls} w-56`}
+              />
+              <button
+                type="button"
+                onClick={addClub}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20"
+              >
+                <Plus size={15} /> Add
+              </button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+              <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div className="flex items-center gap-2 py-16 text-sm text-slate-400">
+              <Loader2 size={16} className="animate-spin" /> Loading clubs…
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[920px] text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
+                    <th className="px-3 py-2 font-semibold">Club</th>
+                    <th className="px-3 py-2 font-semibold">PlayHQ club id</th>
+                    <th className="px-3 py-2 font-semibold">S3 / JADE uid</th>
+                    <th className="px-3 py-2 font-semibold">Logo URL</th>
+                    <th className="px-3 py-2 font-semibold">Colour</th>
+                    <th className="px-3 py-2 font-semibold">Competitions</th>
+                    <th className="px-3 py-2 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => (
+                    <tr key={row.club_key} className="border-b border-white/5 align-top">
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <LogoPreview row={row} />
+                          <div className="min-w-0">
+                            <input
+                              value={row.display_name}
+                              onChange={(e) =>
+                                update(row.club_key, { display_name: e.target.value })
+                              }
+                              className={`${inputCls} w-40`}
+                            />
+                            <div className="mt-0.5 truncate font-mono text-[10px] text-slate-500">
+                              {row.club_key}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={row.playhq_club_id}
+                          onChange={(e) =>
+                            update(row.club_key, { playhq_club_id: e.target.value })
+                          }
+                          placeholder="UUID / slug"
+                          className={`${inputCls} w-44`}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={row.s3_club_uid}
+                          onChange={(e) =>
+                            update(row.club_key, {
+                              s3_club_uid: e.target.value.replace(/[^0-9]/g, ""),
+                            })
+                          }
+                          placeholder="e.g. 1834"
+                          inputMode="numeric"
+                          className={`${inputCls} w-24`}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={row.logo_url}
+                          onChange={(e) =>
+                            update(row.club_key, { logo_url: e.target.value })
+                          }
+                          placeholder="https://…"
+                          className={`${inputCls} w-48`}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={row.team_color || clubBadgeColor(row.club_key)}
+                            onChange={(e) =>
+                              update(row.club_key, { team_color: e.target.value })
+                            }
+                            className="h-8 w-10 cursor-pointer rounded border border-white/15 bg-transparent"
+                          />
+                          {row.team_color ? (
+                            <button
+                              type="button"
+                              onClick={() => update(row.club_key, { team_color: "" })}
+                              className="text-[11px] text-slate-400 hover:text-slate-200"
+                            >
+                              reset
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-slate-500">auto</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2">
+                        <input
+                          value={row.competitions}
+                          onChange={(e) =>
+                            update(row.club_key, { competitions: e.target.value })
+                          }
+                          placeholder="NTFL Men's, Women's…"
+                          className={`${inputCls} w-44`}
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-center justify-end gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => save(row.club_key)}
+                            disabled={row.saving || (!row.dirty && !row.saved)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20 disabled:opacity-40"
+                          >
+                            {row.saving ? (
+                              <Loader2 size={13} className="animate-spin" />
+                            ) : row.saved ? (
+                              <Check size={13} />
+                            ) : (
+                              <Save size={13} />
+                            )}
+                            {row.saved ? "Saved" : "Save"}
+                          </button>
+                          {row.id != null && (
+                            <button
+                              type="button"
+                              onClick={() => removeOverride(row.club_key)}
+                              aria-label="Clear override"
+                              className="rounded-lg border border-white/10 p-1.5 text-slate-400 transition hover:bg-red-500/15 hover:text-red-300"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <p className="mt-2 text-xs text-slate-500">
+            Changes take effect on the Live Scores tab (logos + team colours).
+            The colour is used for each team on the Players stats tab and the
+            comparison bars; &quot;auto&quot; uses a generated colour.
+          </p>
+        </section>
+      </div>
+    </div>
+  );
+}

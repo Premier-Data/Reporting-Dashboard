@@ -76,6 +76,7 @@ export const PAGES: PageDef[] = [
     { key: "messages", label: "Messages", href: "/messages" },
     { key: "users", label: "User Accounts", href: "/users" },
     { key: "permissions", label: "Permissions", href: "/permissions" },
+    { key: "admin-config", label: "Admin Configuration", href: "/admin-config" },
 ];
 
 /** Map a route pathname to its page key, or null if unknown. */
