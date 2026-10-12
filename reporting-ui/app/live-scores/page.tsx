@@ -55,14 +55,14 @@ function shortPeriod(period: string | null): string {
 function statusBadge(status: GameStatus): { label: string; cls: string } {
   const s = String(status).toUpperCase();
   if (s === "IN_PROGRESS" || s === "LIVE")
-    return { label: "LIVE", cls: "bg-red-100 text-red-700 ring-1 ring-red-300" };
+    return { label: "LIVE", cls: "bg-red-500/20 text-red-300 ring-1 ring-red-500/40" };
   if (s === "FINAL")
-    return { label: "Final", cls: "bg-slate-100 text-slate-600" };
+    return { label: "Final", cls: "bg-white/10 text-slate-300" };
   if (s === "UPCOMING" || s === "" || s === "NULL")
-    return { label: "Upcoming", cls: "bg-blue-50 text-blue-700" };
+    return { label: "Upcoming", cls: "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30" };
   if (s === "ABANDONED" || s === "CANCELLED" || s === "POSTPONED")
-    return { label: s.charAt(0) + s.slice(1).toLowerCase(), cls: "bg-amber-50 text-amber-700" };
-  return { label: s.charAt(0) + s.slice(1).toLowerCase(), cls: "bg-slate-100 text-slate-600" };
+    return { label: s.charAt(0) + s.slice(1).toLowerCase(), cls: "bg-amber-500/15 text-amber-300" };
+  return { label: s.charAt(0) + s.slice(1).toLowerCase(), cls: "bg-white/10 text-slate-300" };
 }
 
 // Winner side for emphasising the score of the team that won.
@@ -92,20 +92,20 @@ function QuarterTable({
   );
   const cell = (list: PeriodScore[], q: string) => {
     const p = list.find((x) => x.period === q);
-    if (!p) return <span className="text-slate-300">—</span>;
+    if (!p) return <span className="text-slate-500">—</span>;
     return (
       <span className="tabular-nums">
-        <span className="text-slate-700">
+        <span className="text-slate-200">
           {p.goals}.{p.behinds}
         </span>{" "}
-        <span className="text-[10px] text-slate-400">({p.total})</span>
+        <span className="text-[10px] text-slate-500">({p.total})</span>
       </span>
     );
   };
   return (
     <table className="w-full text-[11px]">
       <thead>
-        <tr className="text-slate-400">
+        <tr className="text-slate-500">
           <th className="pb-1 text-left font-medium"></th>
           {labels.map((q) => (
             <th key={q} className="pb-1 text-right font-semibold">
@@ -115,16 +115,16 @@ function QuarterTable({
         </tr>
       </thead>
       <tbody>
-        <tr className="border-t border-slate-100">
-          <td className="truncate py-1 pr-2 text-slate-600">{homeName}</td>
+        <tr className="border-t border-white/10">
+          <td className="truncate py-1 pr-2 text-slate-300">{homeName}</td>
           {labels.map((q) => (
             <td key={q} className="py-1 text-right">
               {cell(home, q)}
             </td>
           ))}
         </tr>
-        <tr className="border-t border-slate-100">
-          <td className="truncate py-1 pr-2 text-slate-600">{awayName}</td>
+        <tr className="border-t border-white/10">
+          <td className="truncate py-1 pr-2 text-slate-300">{awayName}</td>
           {labels.map((q) => (
             <td key={q} className="py-1 text-right">
               {cell(away, q)}
@@ -156,15 +156,15 @@ function ScorerList({ scorers }: { scorers: Scorer[] }) {
       </thead>
       <tbody>
         {scorers.map((s, i) => (
-          <tr key={`${s.name}-${i}`} className="border-t border-slate-100">
+          <tr key={`${s.name}-${i}`} className="border-t border-white/10">
             {hasNumbers && (
               <td className="py-1.5 pr-2 tabular-nums text-slate-500">
                 {s.number ?? ""}
               </td>
             )}
-            <td className="truncate py-1.5 text-slate-700">{s.name}</td>
+            <td className="truncate py-1.5 text-slate-200">{s.name}</td>
             <td className="py-1.5 text-right tabular-nums">
-              <span className="font-bold text-slate-900">{s.goals}</span>
+              <span className="font-bold text-white">{s.goals}</span>
               <span className="text-slate-400">.{s.behinds}</span>
             </td>
           </tr>
@@ -240,11 +240,11 @@ function GameRow({
     side: "home" | "away"
   ) => (
     <div className="flex items-center justify-between gap-3">
-      <span className="flex min-w-0 items-center gap-2">
+      <span className="flex min-w-0 items-center gap-2.5">
         <ClubCrest name={name} />
         <span
           className={`truncate text-sm ${
-            won === side ? "font-bold text-slate-900" : "font-medium text-slate-700"
+            won === side ? "font-bold text-white" : "font-medium text-slate-200"
           }`}
         >
           {name ?? "TBC"}
@@ -252,10 +252,10 @@ function GameRow({
       </span>
       {showScore && (
         <span className="flex items-baseline gap-1.5 tabular-nums">
-          <span className="text-xs text-slate-400">{gb}</span>
+          <span className="text-xs text-slate-500">{gb}</span>
           <span
-            className={`text-base ${
-              won === side ? "font-bold text-slate-900" : "font-semibold text-slate-600"
+            className={`text-lg ${
+              won === side ? "font-bold text-white" : "font-semibold text-slate-300"
             }`}
           >
             {score ?? "-"}
@@ -275,17 +275,19 @@ function GameRow({
 
   return (
     <div
-      className={`rounded-xl border p-3.5 ${
-        live ? "border-red-300 bg-red-50/40" : "border-slate-200 bg-white"
+      className={`rounded-2xl border p-4 backdrop-blur transition ${
+        live
+          ? "border-red-500/40 bg-red-500/10 shadow-lg shadow-red-500/5"
+          : "border-white/10 bg-white/[0.04] hover:bg-white/[0.06]"
       }`}
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-xs text-slate-500">{scheduleLabel(game)}</span>
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <span className="text-xs text-slate-400">{scheduleLabel(game)}</span>
         <span
           className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${badge.cls}`}
         >
           {live && (
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-600" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
           )}
           {live && clockLabel ? clockLabel : badge.label}
         </span>
@@ -301,12 +303,12 @@ function GameRow({
         (liveData.home.periods.length > 0 ||
           liveData.home.scorers.length > 0 ||
           liveData.away.scorers.length > 0) && (
-          <div className="mt-2.5 border-t border-slate-100 pt-2">
+          <div className="mt-3 border-t border-white/10 pt-2.5">
             <button
               type="button"
               onClick={() => setScorersOpen((o) => !o)}
               aria-expanded={scorersOpen}
-              className="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-500 hover:text-slate-700"
+              className="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-400 hover:text-slate-200"
             >
               <span>Quarter scores &amp; goal kickers</span>
               <ChevronDown
@@ -333,14 +335,14 @@ function GameRow({
                 {(liveData.home.scorers.length > 0 ||
                   liveData.away.scorers.length > 0) && (
                   <div>
-                    <div className="mb-2 inline-flex rounded-lg border border-slate-200 p-0.5">
+                    <div className="mb-2 inline-flex rounded-lg border border-white/10 bg-white/5 p-0.5">
                       <button
                         type="button"
                         onClick={() => setScorerTeam("home")}
-                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold ${
+                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
                           scorerTeam === "home"
-                            ? "bg-slate-800 text-white"
-                            : "text-slate-600 hover:bg-slate-100"
+                            ? "bg-sky-500 text-white"
+                            : "text-slate-300 hover:bg-white/10"
                         }`}
                       >
                         {home?.name ?? "Home"}
@@ -348,10 +350,10 @@ function GameRow({
                       <button
                         type="button"
                         onClick={() => setScorerTeam("away")}
-                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold ${
+                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
                           scorerTeam === "away"
-                            ? "bg-slate-800 text-white"
-                            : "text-slate-600 hover:bg-slate-100"
+                            ? "bg-sky-500 text-white"
+                            : "text-slate-300 hover:bg-white/10"
                         }`}
                       >
                         {away?.name ?? "Away"}
@@ -371,7 +373,7 @@ function GameRow({
           </div>
         )}
 
-      <div className="mt-2.5 flex items-center justify-between gap-2 border-t border-slate-100 pt-2 text-xs text-slate-400">
+      <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/10 pt-2.5 text-xs text-slate-500">
         <span className="flex min-w-0 items-center gap-1">
           <MapPin size={12} className="shrink-0" />
           <span className="truncate">{game.venue?.name ?? "Venue TBC"}</span>
@@ -380,7 +382,7 @@ function GameRow({
           href={game.url}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex shrink-0 items-center gap-1 text-slate-400 hover:text-slate-600"
+          className="flex shrink-0 items-center gap-1 text-slate-400 hover:text-sky-400"
         >
           Game centre <ExternalLink size={11} />
         </a>
@@ -596,16 +598,20 @@ export default function LiveScoresPage() {
   }, [visible]);
 
   const selectClass =
-    "rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-500";
+    "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 [&>option]:bg-slate-800 [&>option]:text-slate-100";
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-5 md:px-6 md:py-8">
+    <div className="min-h-full bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
+      <div className="mx-auto max-w-5xl px-4 py-5 md:px-6 md:py-8">
       <div className="mb-4 flex flex-wrap items-start justify-between gap-3 md:mb-6">
         <div className="min-w-0">
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-slate-900 md:text-3xl">
-            <Radio size={24} /> Live Scores
+          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-white md:text-3xl">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/30">
+              <Radio size={20} />
+            </span>
+            Live Scores
           </h1>
-          <p className="mt-1.5 max-w-2xl text-sm text-slate-600 md:mt-2">
+          <p className="mt-1.5 max-w-2xl text-sm text-slate-400 md:mt-2">
             NTFL {grade.label} fixtures and scores, straight from PlayHQ.
             {anyLive
               ? " A match is live — scores refresh automatically every 2 minutes."
@@ -621,7 +627,7 @@ export default function LiveScoresPage() {
           <button
             onClick={() => load(true)}
             disabled={refreshing || loading}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
           >
             <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
             Refresh
@@ -632,16 +638,16 @@ export default function LiveScoresPage() {
       {/* Competition toggle — horizontally scrollable so the full set of
           competitions never overflows on a narrow phone. */}
       <div className="-mx-4 mb-4 overflow-x-auto px-4 md:mx-0 md:px-0">
-        <div className="inline-flex rounded-lg border border-slate-300 p-0.5">
+        <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
           {LIVE_SCORE_GRADES.map((g) => (
             <button
               key={g.key}
               type="button"
               onClick={() => setComp(g.key)}
-              className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium md:px-4 ${
+              className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition md:px-4 ${
                 comp === g.key
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-600 hover:bg-slate-100"
+                  ? "bg-sky-500 text-white shadow-lg shadow-sky-500/20"
+                  : "text-slate-300 hover:bg-white/10"
               }`}
             >
               {g.label}
@@ -653,7 +659,7 @@ export default function LiveScoresPage() {
       {/* Round filter */}
       {rounds.length > 0 && (
         <div className="mb-5 flex items-center gap-3">
-          <label className="text-xs font-medium uppercase tracking-wide text-slate-400">
+          <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
             Round
           </label>
           <select
@@ -668,22 +674,22 @@ export default function LiveScoresPage() {
               </option>
             ))}
           </select>
-          <span className="text-sm text-slate-400">
+          <span className="text-sm text-slate-500">
             {visible.length} {visible.length === 1 ? "game" : "games"}
           </span>
         </div>
       )}
 
       {loading ? (
-        <div className="flex items-center gap-2 py-16 text-sm text-slate-500">
+        <div className="flex items-center gap-2 py-16 text-sm text-slate-400">
           <Loader2 size={16} className="animate-spin" /> Loading fixtures…
         </div>
       ) : error ? (
-        <div className="flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <div className="flex items-center gap-2 rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
           <AlertTriangle size={16} /> {error}
         </div>
       ) : visible.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 py-16 text-center text-sm text-slate-500">
+        <div className="rounded-xl border border-dashed border-white/15 bg-white/5 py-16 text-center text-sm text-slate-400">
           No fixtures to show.
         </div>
       ) : (
@@ -697,6 +703,7 @@ export default function LiveScoresPage() {
           ))}
         </div>
       )}
+      </div>
     </div>
   );
 }
