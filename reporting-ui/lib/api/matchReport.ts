@@ -28,6 +28,47 @@ function roundNumber(name: string | null | undefined): number | null {
   return m ? Number(m[1]) : null;
 }
 
+type Gender = "men" | "women";
+
+// Grade/gender filler words dropped when picking a search token (so we key on
+// the distinctive club word, not "Men"/"Premier").
+const TOKEN_FILLER = new Set([
+  "men", "women", "mens", "womens", "premier", "league", "seniors", "senior",
+  "reserves", "reserve", "grade", "division", "div", "the", "fc", "afc",
+]);
+
+/**
+ * A distinctive, punctuation-safe search token from a team name, used to narrow
+ * the comp_fixtures query. Taken from the RAW name split on non-letters (so
+ * "St Mary's" → "mary", matching both "St Mary's" and "St Marys"), dropping
+ * grade/gender filler, then the longest remaining ≥3-letter word. A pure-letter
+ * token sidesteps apostrophes in ilike.
+ */
+function searchToken(name: string): string {
+  const words = name
+    .toLowerCase()
+    .split(/[^a-z]+/)
+    .filter((w) => w.length >= 3 && !TOKEN_FILLER.has(w));
+  if (words.length === 0) {
+    return name.replace(/[^A-Za-z]/g, "").slice(0, 4) || name;
+  }
+  return words.sort((a, b) => b.length - a.length)[0];
+}
+
+/**
+ * Infer a fixture's gender from any descriptive strings (team names and/or
+ * competition name). "Women"/"Womens"/"Ladies"/"Girls" → women; otherwise men
+ * (the unmarked default in these feeds). `normaliseClub` strips the gender
+ * suffix, so a men's and a women's game between the same clubs collapse to the
+ * same key — this guard keeps them from cross-matching.
+ */
+function genderOf(...parts: Array<string | null | undefined>): Gender {
+  const hay = parts.join(" ").toLowerCase();
+  return /\b(women|womens|woman|ladies|girls|female)\b/.test(hay)
+    ? "women"
+    : "men";
+}
+
 /** Two team-name sets match if their normalised club names are equal. */
 function teamsMatch(
   aHome: string,
@@ -60,26 +101,36 @@ export async function resolveJadeUidForGame(
     ? Number(game.schedule.date.slice(0, 4))
     : null;
   const rnd = roundNumber(game.round?.name);
+  // The PlayHQ team names carry the gender suffix ("… Men Premier" / "… Women
+  // Premier"); use it to avoid matching a men's game to the women's fixture
+  // between the same clubs (and vice-versa), which otherwise collide because
+  // normaliseClub strips the suffix.
+  const gameGender = genderOf(homeName, awayName, game.round?.name);
 
-  // Query comp_fixtures with a team-name search to keep the result set small,
-  // then match precisely on normalised names (+ round when known).
-  const searchTerm = homeName.split(" ")[0] || homeName;
+  // Query comp_fixtures with a distinctive team-name token to keep the result
+  // set small, then match precisely on normalised names + gender.
   const rows = await queryCompFixtures({
     season: year,
-    search: searchTerm,
+    search: searchToken(homeName),
   });
 
-  const candidates = rows.filter((r) =>
-    teamsMatch(homeName, awayName, r.home_team, r.away_team)
+  const candidates = rows.filter(
+    (r) =>
+      teamsMatch(homeName, awayName, r.home_team, r.away_team) &&
+      genderOf(r.competition, r.home_team, r.away_team) === gameGender
   );
   if (candidates.length === 0) return null;
 
-  // Prefer a candidate whose round number matches; else take the first.
-  const byRound =
+  // The two clubs usually meet twice a season (home + away legs), so round is
+  // the decider. Require an EXACT round match; only when a single candidate
+  // exists do we accept it without a round match. Never guess between legs —
+  // returning the wrong leg would show the wrong match's stats.
+  const exact =
     rnd != null
-      ? candidates.find((r) => roundNumber(r.round) === rnd)
-      : undefined;
-  const chosen = byRound ?? candidates[0];
+      ? candidates.filter((r) => roundNumber(r.round) === rnd)
+      : [];
+  const chosen = exact[0] ?? (candidates.length === 1 ? candidates[0] : null);
+  if (!chosen) return null;
 
   const uidPart = chosen.id.includes(":") ? chosen.id.split(":")[1] : "";
   const uid = Number(uidPart);
