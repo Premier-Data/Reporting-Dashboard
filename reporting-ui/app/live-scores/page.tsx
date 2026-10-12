@@ -15,9 +15,10 @@ import {
   MapPin,
   ChevronDown,
   BarChart3,
+  Users,
 } from "lucide-react";
 
-import MatchReportModal from "./MatchReportModal";
+import MatchReportModal, { type MatchReportTab } from "./MatchReportModal";
 
 import {
   getGradeGames,
@@ -248,8 +249,10 @@ function GameRow({
   const [scorersOpen, setScorersOpen] = useState(false);
   // Which team's goal kickers to show — home by default; toggled via the tabs.
   const [scorerTeam, setScorerTeam] = useState<"home" | "away">("home");
-  // Full match-report drill-in (opens the stats breakdown modal).
+  // Full match-report drill-in (opens the stats breakdown modal) + which tab
+  // it should open on (Statistics vs Team Lists, chosen by the card buttons).
   const [reportOpen, setReportOpen] = useState(false);
+  const [reportTab, setReportTab] = useState<MatchReportTab>("general");
   const { home, away } = sides(game);
 
   // Effective status/score: the REST feed is null for in-play games, so when a
@@ -443,19 +446,38 @@ function GameRow({
         )}
 
       {isFinalGame && (
-        <button
-          type="button"
-          onClick={() => setReportOpen(true)}
-          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
-        >
-          <BarChart3 size={13} /> Statistics
-        </button>
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setReportTab("general");
+              setReportOpen(true);
+            }}
+            className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
+          >
+            <BarChart3 size={13} /> Statistics
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setReportTab("teamlists");
+              setReportOpen(true);
+            }}
+            className="flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-sky-300"
+          >
+            <Users size={13} /> Team Lists
+          </button>
+        </div>
       )}
 
       </div>
 
       {reportOpen && (
-        <MatchReportModal game={game} onClose={() => setReportOpen(false)} />
+        <MatchReportModal
+          game={game}
+          initialTab={reportTab}
+          onClose={() => setReportOpen(false)}
+        />
       )}
     </div>
   );

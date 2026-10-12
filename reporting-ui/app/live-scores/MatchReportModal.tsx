@@ -27,7 +27,12 @@ import type { PlayerStatLine } from "@/types/fixtureReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
 import { sides, goalsBehinds, type PlayHqGame } from "@/lib/api/playhq";
 
-type TabKey = "general" | "efficiencies" | "players" | "teamlists";
+export type MatchReportTab =
+  | "general"
+  | "efficiencies"
+  | "players"
+  | "teamlists";
+type TabKey = MatchReportTab;
 
 // Small crest (shared look with the list page).
 function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
@@ -276,14 +281,17 @@ function TeamLists({ report }: { report: MatchReport }) {
 export default function MatchReportModal({
   game,
   onClose,
+  initialTab = "general",
 }: {
   game: PlayHqGame;
   onClose: () => void;
+  /** Which tab to open on (the card has separate Statistics / Team Lists buttons). */
+  initialTab?: MatchReportTab;
 }) {
   const [report, setReport] = useState<MatchReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [tab, setTab] = useState<TabKey>("general");
+  const [tab, setTab] = useState<TabKey>(initialTab);
 
   const { home, away } = sides(game);
 
