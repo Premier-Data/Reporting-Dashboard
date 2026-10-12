@@ -234,3 +234,25 @@ export function scheduleLabel(game: PlayHqGame): string {
     minute: "2-digit",
   });
 }
+
+/** Just the date part, e.g. "Sat 10 Oct". */
+export function scheduleDateLabel(game: PlayHqGame): string {
+  const d = scheduleDate(game);
+  if (!d) return "TBC";
+  return d.toLocaleDateString("en-AU", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+  });
+}
+
+/** Just the time part, e.g. "8:00 PM" (empty when no time is set). */
+export function scheduleTimeLabel(game: PlayHqGame): string {
+  const { time } = game.schedule ?? {};
+  const d = scheduleDate(game);
+  if (!d || !time) return "";
+  return d.toLocaleTimeString("en-AU", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}

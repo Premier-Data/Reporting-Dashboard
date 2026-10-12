@@ -25,7 +25,8 @@ import {
   goalsBehinds,
   isLive,
   scheduleDate,
-  scheduleLabel,
+  scheduleDateLabel,
+  scheduleTimeLabel,
   LIVE_SCORE_GRADES,
   type PlayHqGame,
   type GameStatus,
@@ -43,6 +44,29 @@ import {
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
 // Worker's edge cache means concurrent viewers share one upstream call.
 const LIVE_POLL_MS = 120_000;
+
+// Seasons available in the picker. The grade ids wired up are the current
+// season's grades, so this currently lists just that season; add past/future
+// years here once their grade ids are mapped.
+const SEASONS = ["2026"] as const;
+
+// A short, app-style round label: "Round 2" -> "02", "Round 12" -> "12",
+// finals keep a compact text label (e.g. "Finals Week 1" -> "F1", "Grand
+// Final" -> "GF"). Falls back to the raw name when nothing matches.
+function roundShort(name: string): string {
+  const n = name.trim();
+  if (/grand\s*final/i.test(n)) return "GF";
+  if (/semi/i.test(n)) return "SF";
+  if (/prelim/i.test(n)) return "PF";
+  if (/qualif/i.test(n)) return "QF";
+  if (/elim/i.test(n)) return "EF";
+  const finals = n.match(/final.*?(\d+)/i) || (/final/i.test(n) ? null : null);
+  if (finals) return `F${finals[1]}`;
+  const m = n.match(/(\d+)/);
+  if (m && /round/i.test(n)) return m[1].padStart(2, "0");
+  if (m) return m[1].padStart(2, "0");
+  return n;
+}
 
 // "3rd Quarter" -> "Q3"; passes through anything else.
 function shortPeriod(period: string | null): string {
@@ -176,22 +200,35 @@ function ScorerList({ scorers }: { scorers: Scorer[] }) {
 
 // A club crest: the local logo when mapped, else an initials badge in a
 // deterministic colour. Keeps every team visually anchored even without a logo.
-function ClubCrest({ name }: { name: string | undefined }) {
+// `size` controls the pixel dimensions (default matches the old inline badge).
+function ClubCrest({
+  name,
+  size = 24,
+}: {
+  name: string | undefined;
+  size?: number;
+}) {
   const logo = clubLogo(name);
+  const dim = { width: size, height: size };
   if (logo) {
     // eslint-disable-next-line @next/next/no-img-element
     return (
       <img
         src={logo}
         alt={`${name ?? ""} logo`}
-        className="h-6 w-6 shrink-0 rounded-full object-contain"
+        style={dim}
+        className="shrink-0 rounded-full object-contain"
       />
     );
   }
   return (
     <span
-      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white"
-      style={{ background: clubBadgeColor(name) }}
+      className="flex shrink-0 items-center justify-center rounded-full font-bold text-white"
+      style={{
+        ...dim,
+        background: clubBadgeColor(name),
+        fontSize: Math.round(size * 0.4),
+      }}
       aria-hidden="true"
     >
       {clubInitials(name)}
@@ -233,38 +270,6 @@ function GameRow({
     (homeScore != null || awayScore != null) &&
     String(effectiveStatus).toUpperCase() !== "UPCOMING";
 
-  const row = (
-    name: string | undefined,
-    score: number | null,
-    gb: string,
-    side: "home" | "away"
-  ) => (
-    <div className="flex items-center justify-between gap-3">
-      <span className="flex min-w-0 items-center gap-2.5">
-        <ClubCrest name={name} />
-        <span
-          className={`truncate text-sm ${
-            won === side ? "font-bold text-white" : "font-medium text-slate-200"
-          }`}
-        >
-          {name ?? "TBC"}
-        </span>
-      </span>
-      {showScore && (
-        <span className="flex items-baseline gap-1.5 tabular-nums">
-          <span className="text-xs text-slate-500">{gb}</span>
-          <span
-            className={`text-lg ${
-              won === side ? "font-bold text-white" : "font-semibold text-slate-300"
-            }`}
-          >
-            {score ?? "-"}
-          </span>
-        </span>
-      )}
-    </div>
-  );
-
   // Live clock label, e.g. "Q3 02:11".
   const clockLabel =
     live && liveData?.clock
@@ -273,29 +278,93 @@ function GameRow({
           .join(" ")
       : "";
 
+  // One team column: crest on top, name below (centred). Winner is emphasised.
+  const teamCol = (name: string | undefined, side: "home" | "away") => (
+    <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
+      <ClubCrest name={name} size={56} />
+      <span
+        className={`line-clamp-2 text-xs leading-tight md:text-sm ${
+          won === side ? "font-bold text-white" : "font-medium text-slate-300"
+        }`}
+      >
+        {name ?? "TBC"}
+      </span>
+    </div>
+  );
+
+  // One team's score block (big number + G.B underneath). Winner emphasised.
+  const scoreCol = (
+    score: number | null,
+    gb: string,
+    side: "home" | "away"
+  ) => (
+    <div className="flex flex-col items-center">
+      <span
+        className={`text-3xl leading-none tabular-nums md:text-4xl ${
+          won === side ? "font-extrabold text-white" : "font-bold text-slate-200"
+        }`}
+      >
+        {score ?? "-"}
+      </span>
+      <span className="mt-1 text-xs tabular-nums text-slate-400">{gb}</span>
+    </div>
+  );
+
+  const dateLabel = scheduleDateLabel(game);
+  const timeLabel = scheduleTimeLabel(game);
+  const venue = game.venue?.name ?? "Venue TBC";
+
   return (
     <div
-      className={`rounded-2xl border p-4 backdrop-blur transition ${
+      className={`overflow-hidden rounded-2xl border backdrop-blur transition ${
         live
           ? "border-red-500/40 bg-red-500/10 shadow-lg shadow-red-500/5"
           : "border-white/10 bg-white/[0.04] hover:bg-white/[0.06]"
       }`}
     >
-      <div className="mb-2.5 flex items-center justify-between gap-2">
-        <span className="text-xs text-slate-400">{scheduleLabel(game)}</span>
+      {/* Status strip (live clock / final / upcoming). */}
+      <div className="flex items-center justify-center gap-1.5 border-b border-white/10 bg-white/[0.03] py-1.5">
+        {live && (
+          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
+        )}
         <span
-          className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${badge.cls}`}
+          className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${badge.cls}`}
         >
-          {live && (
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
-          )}
           {live && clockLabel ? clockLabel : badge.label}
         </span>
       </div>
-      <div className="space-y-1.5">
-        {row(home?.name, homeScore, homeGB, "home")}
-        {row(away?.name, awayScore, awayGB, "away")}
+
+      {/* Scoreboard: home | centre (scores + schedule) | away. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-4 md:gap-3 md:px-4">
+        {teamCol(home?.name, "home")}
+
+        <div className="flex items-center gap-3 md:gap-4">
+          {showScore ? (
+            scoreCol(homeScore, homeGB, "home")
+          ) : (
+            <span className="text-lg font-bold text-slate-500">vs</span>
+          )}
+
+          <div className="flex min-w-[88px] flex-col items-center text-center">
+            <span className="text-xs font-semibold text-slate-200">
+              {dateLabel}
+            </span>
+            {timeLabel && (
+              <span className="text-xs text-slate-400">{timeLabel}</span>
+            )}
+            <span className="mt-0.5 flex items-center justify-center gap-0.5 text-[11px] text-slate-500">
+              <MapPin size={11} className="shrink-0" />
+              <span className="line-clamp-1">{venue}</span>
+            </span>
+          </div>
+
+          {showScore && scoreCol(awayScore, awayGB, "away")}
+        </div>
+
+        {teamCol(away?.name, "away")}
       </div>
+
+      <div className="px-3 pb-3 md:px-4">
 
       {/* Expandable detail (live/final feed only): quarter-by-quarter scores
           and goal kickers. Collapsed by default behind the toggle. */}
@@ -373,19 +442,15 @@ function GameRow({
           </div>
         )}
 
-      <div className="mt-3 flex items-center justify-between gap-2 border-t border-white/10 pt-2.5 text-xs text-slate-500">
-        <span className="flex min-w-0 items-center gap-1">
-          <MapPin size={12} className="shrink-0" />
-          <span className="truncate">{game.venue?.name ?? "Venue TBC"}</span>
-        </span>
-        <a
-          href={game.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="flex shrink-0 items-center gap-1 text-slate-400 hover:text-sky-400"
-        >
-          Game centre <ExternalLink size={11} />
-        </a>
+      <a
+        href={game.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-3 flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-sky-300"
+      >
+        Match Centre <ExternalLink size={13} />
+      </a>
+
       </div>
     </div>
   );
@@ -394,6 +459,9 @@ function GameRow({
 export default function LiveScoresPage() {
   // Which competition (grade) is shown.
   const [comp, setComp] = useState<LiveScoreGradeKey>("ntfl-mens");
+  // Season picker. Only the current season's grades are wired up, so this is a
+  // single option today; it drives the UI the same way the official app does.
+  const [season, setSeason] = useState<string>(SEASONS[0]);
   const grade = useMemo(
     () => LIVE_SCORE_GRADES.find((g) => g.key === comp) ?? LIVE_SCORE_GRADES[0],
     [comp]
@@ -598,85 +666,109 @@ export default function LiveScoresPage() {
   }, [visible]);
 
   const selectClass =
-    "rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm text-slate-100 outline-none focus:border-sky-500 [&>option]:bg-slate-800 [&>option]:text-slate-100";
+    "w-full appearance-none rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 pr-10 text-sm font-medium text-slate-100 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30 [&>option]:bg-slate-800 [&>option]:text-slate-100";
 
   return (
     <div className="min-h-full bg-gradient-to-b from-slate-50 via-white to-slate-100 text-slate-900 dark:from-[#0B1220] dark:via-[#0d1526] dark:to-[#0f172a] dark:text-slate-100">
       <div className="mx-auto max-w-5xl px-4 py-5 md:px-6 md:py-8">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3 md:mb-6">
-        <div className="min-w-0">
-          <h1 className="flex items-center gap-2 text-2xl font-bold tracking-tight text-white md:text-3xl">
-            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/30">
-              <Radio size={20} />
-            </span>
-            Live Scores
-          </h1>
-          <p className="mt-1.5 max-w-2xl text-sm text-slate-400 md:mt-2">
-            NTFL {grade.label} fixtures and scores, straight from PlayHQ.
-            {anyLive
-              ? " A match is live — scores refresh automatically every 2 minutes."
-              : " Scores update when matches are in progress."}
-          </p>
-        </div>
+      {/* Header: title + refresh */}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h1 className="flex items-center gap-2 text-xl font-bold tracking-tight text-white md:text-2xl">
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-sky-500/15 text-sky-400 ring-1 ring-sky-500/30">
+            <Radio size={18} />
+          </span>
+          Live Scores
+        </h1>
         <div className="flex items-center gap-3">
           {lastUpdated && (
-            <span className="text-xs text-slate-400">
+            <span className="hidden text-xs text-slate-400 sm:inline">
               Updated {lastUpdated.toLocaleTimeString("en-AU")}
             </span>
           )}
           <button
             onClick={() => load(true)}
             disabled={refreshing || loading}
+            aria-label="Refresh"
             className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-medium text-slate-200 transition hover:bg-white/10 disabled:opacity-50"
           >
             <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-            Refresh
+            <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
       </div>
 
-      {/* Competition toggle — horizontally scrollable so the full set of
-          competitions never overflows on a narrow phone. */}
-      <div className="-mx-4 mb-4 overflow-x-auto px-4 md:mx-0 md:px-0">
-        <div className="inline-flex rounded-xl border border-white/10 bg-white/5 p-1">
-          {LIVE_SCORE_GRADES.map((g) => (
-            <button
-              key={g.key}
-              type="button"
-              onClick={() => setComp(g.key)}
-              className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition md:px-4 ${
-                comp === g.key
-                  ? "bg-sky-500 text-white shadow-lg shadow-sky-500/20"
-                  : "text-slate-300 hover:bg-white/10"
-              }`}
+      {/* Season + Competition dropdowns (match the official app layout). */}
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,180px)_1fr]">
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Season
+          </span>
+          <div className="relative">
+            <select
+              value={season}
+              onChange={(e) => setSeason(e.target.value)}
+              className={selectClass}
             >
-              {g.label}
-            </button>
-          ))}
-        </div>
+              {SEASONS.map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              size={16}
+              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+          </div>
+        </label>
+
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Competition
+          </span>
+          <div className="relative">
+            <select
+              value={comp}
+              onChange={(e) => setComp(e.target.value as LiveScoreGradeKey)}
+              className={selectClass}
+            >
+              {LIVE_SCORE_GRADES.map((g) => (
+                <option key={g.key} value={g.key}>
+                  {g.label}
+                </option>
+              ))}
+            </select>
+            <ChevronDown
+              size={16}
+              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+          </div>
+        </label>
       </div>
 
-      {/* Round filter */}
+      {/* Rounds — horizontal scroll of round pills, like the app. */}
       {rounds.length > 0 && (
-        <div className="mb-5 flex items-center gap-3">
-          <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
-            Round
-          </label>
-          <select
-            value={roundFilter}
-            onChange={(e) => setRoundFilter(e.target.value)}
-            className={selectClass}
-          >
-            <option value="all">All rounds</option>
-            {rounds.map((r) => (
-              <option key={r} value={r}>
-                {r}
-              </option>
-            ))}
-          </select>
-          <span className="text-sm text-slate-500">
-            {visible.length} {visible.length === 1 ? "game" : "games"}
-          </span>
+        <div className="-mx-4 mb-5 overflow-x-auto px-4 pb-1 md:mx-0 md:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="flex items-center gap-2">
+            {rounds.map((r) => {
+              const active = roundFilter === r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setRoundFilter(r)}
+                  title={r}
+                  className={`min-w-[52px] shrink-0 rounded-xl px-4 py-2.5 text-center text-base font-bold tabular-nums transition ${
+                    active
+                      ? "bg-sky-500 text-white shadow-lg shadow-sky-500/25"
+                      : "bg-white/5 text-slate-300 hover:bg-white/10"
+                  }`}
+                >
+                  {roundShort(r)}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -693,7 +785,7 @@ export default function LiveScoresPage() {
           No fixtures to show.
         </div>
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="mx-auto grid max-w-2xl grid-cols-1 gap-3">
           {visible.map((g) => (
             <GameRow
               key={g.id}
