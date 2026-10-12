@@ -32,6 +32,7 @@ import {
   type NormalisedLive,
   type LiveScoreGradeKey,
   type Scorer,
+  type PeriodScore,
 } from "@/lib/api/playhq";
 
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
@@ -65,6 +66,69 @@ function wonSide(game: PlayHqGame): "home" | "away" | null {
   if (home?.outcome === "WON") return "home";
   if (away?.outcome === "WON") return "away";
   return null;
+}
+
+// Quarter-by-quarter score table. Each cell shows the goals.behinds that team
+// kicked IN that quarter (as PlayHQ reports it), with the quarter points below.
+function QuarterTable({
+  homeName,
+  awayName,
+  home,
+  away,
+}: {
+  homeName: string;
+  awayName: string;
+  home: PeriodScore[];
+  away: PeriodScore[];
+}) {
+  // Union of quarter labels present on either side, in order.
+  const labels = (home.length >= away.length ? home : away).map(
+    (p) => p.period
+  );
+  const cell = (list: PeriodScore[], q: string) => {
+    const p = list.find((x) => x.period === q);
+    if (!p) return <span className="text-slate-300">—</span>;
+    return (
+      <span className="tabular-nums">
+        <span className="text-slate-700">
+          {p.goals}.{p.behinds}
+        </span>{" "}
+        <span className="text-[10px] text-slate-400">({p.total})</span>
+      </span>
+    );
+  };
+  return (
+    <table className="w-full text-[11px]">
+      <thead>
+        <tr className="text-slate-400">
+          <th className="pb-1 text-left font-medium"></th>
+          {labels.map((q) => (
+            <th key={q} className="pb-1 text-right font-semibold">
+              {q}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        <tr className="border-t border-slate-100">
+          <td className="truncate py-1 pr-2 text-slate-600">{homeName}</td>
+          {labels.map((q) => (
+            <td key={q} className="py-1 text-right">
+              {cell(home, q)}
+            </td>
+          ))}
+        </tr>
+        <tr className="border-t border-slate-100">
+          <td className="truncate py-1 pr-2 text-slate-600">{awayName}</td>
+          {labels.map((q) => (
+            <td key={q} className="py-1 text-right">
+              {cell(away, q)}
+            </td>
+          ))}
+        </tr>
+      </tbody>
+    </table>
+  );
 }
 
 // One side's goal scorers, compact. Goal count is bold; a behinds-only player
@@ -186,10 +250,11 @@ function GameRow({
         {row(away?.name, awayScore, awayGB, "away")}
       </div>
 
-      {/* Goal scorers (live feed only) — collapsed by default, expanded via the
-          toggle. One column per team, labelled, so it's clear who scored. */}
+      {/* Expandable detail (live/final feed only): quarter-by-quarter scores
+          and goal kickers. Collapsed by default behind the toggle. */}
       {liveData &&
-        (liveData.home.scorers.length > 0 ||
+        (liveData.home.periods.length > 0 ||
+          liveData.home.scorers.length > 0 ||
           liveData.away.scorers.length > 0) && (
           <div className="mt-2.5 border-t border-slate-100 pt-2">
             <button
@@ -198,7 +263,7 @@ function GameRow({
               aria-expanded={scorersOpen}
               className="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-500 hover:text-slate-700"
             >
-              <span>Goal scorers</span>
+              <span>Quarter scores &amp; goal kickers</span>
               <ChevronDown
                 size={15}
                 className={`transition-transform ${
@@ -207,19 +272,34 @@ function GameRow({
               />
             </button>
             {scorersOpen && (
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
-                <div>
-                  <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    {home?.name ?? "Home"}
+              <div className="mt-2 space-y-3">
+                {/* Quarter-by-quarter scores */}
+                {liveData.home.periods.length > 0 && (
+                  <QuarterTable
+                    homeName={home?.name ?? "Home"}
+                    awayName={away?.name ?? "Away"}
+                    home={liveData.home.periods}
+                    away={liveData.away.periods}
+                  />
+                )}
+                {/* Goal kickers per team */}
+                {(liveData.home.scorers.length > 0 ||
+                  liveData.away.scorers.length > 0) && (
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                    <div>
+                      <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        {home?.name ?? "Home"}
+                      </div>
+                      <ScorerList scorers={liveData.home.scorers} />
+                    </div>
+                    <div>
+                      <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        {away?.name ?? "Away"}
+                      </div>
+                      <ScorerList scorers={liveData.away.scorers} />
+                    </div>
                   </div>
-                  <ScorerList scorers={liveData.home.scorers} />
-                </div>
-                <div>
-                  <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                    {away?.name ?? "Away"}
-                  </div>
-                  <ScorerList scorers={liveData.away.scorers} />
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -432,7 +512,9 @@ export default function LiveScoresPage() {
       results.forEach((r, i) => {
         if (
           r.status === "fulfilled" &&
-          (r.value.home.scorers.length > 0 || r.value.away.scorers.length > 0)
+          (r.value.home.scorers.length > 0 ||
+            r.value.away.scorers.length > 0 ||
+            r.value.home.periods.length > 0)
         ) {
           add[needed[i].id] = r.value;
         }

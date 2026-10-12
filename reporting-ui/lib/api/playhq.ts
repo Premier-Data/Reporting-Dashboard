@@ -138,6 +138,14 @@ export type Scorer = {
   behinds: number;
 };
 
+export type PeriodScore = {
+  period: string; // "Q1"
+  label: string; // "First Quarter"
+  goals: number;
+  behinds: number;
+  total: number;
+};
+
 export type NormalisedLiveSide = {
   id: string | null;
   name: string | null;
@@ -145,6 +153,7 @@ export type NormalisedLiveSide = {
   goals: number | null;
   behinds: number | null;
   scorers: Scorer[];
+  periods: PeriodScore[];
 };
 
 export type NormalisedLive = {

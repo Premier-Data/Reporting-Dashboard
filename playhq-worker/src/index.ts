@@ -107,6 +107,7 @@ type NormalisedLive = {
     goals: number | null;
     behinds: number | null;
     scorers: Scorer[];
+    periods: PeriodScore[];
   };
   away: {
     id: string | null;
@@ -115,6 +116,7 @@ type NormalisedLive = {
     goals: number | null;
     behinds: number | null;
     scorers: Scorer[];
+    periods: PeriodScore[];
   };
 };
 
@@ -125,6 +127,42 @@ type Scorer = {
   goals: number;
   behinds: number;
 };
+
+// One quarter's score for a side (the score kicked IN that period, as PlayHQ
+// reports it — not cumulative).
+type PeriodScore = {
+  period: string; // "Q1"
+  label: string; // "First Quarter"
+  goals: number;
+  behinds: number;
+  total: number;
+};
+
+// Extract a side's quarter-by-quarter scores from result.{home,away}.periods[].
+function periodsFrom(
+  result: Record<string, unknown>,
+  side: "home" | "away"
+): PeriodScore[] {
+  const sideObj = (result[side] ?? {}) as Record<string, unknown>;
+  const periods = Array.isArray(sideObj.periods)
+    ? (sideObj.periods as Array<Record<string, unknown>>)
+    : [];
+  const out: PeriodScore[] = [];
+  for (const p of periods) {
+    const period = (p.period ?? {}) as Record<string, unknown>;
+    const stats = Array.isArray(p.statistics)
+      ? (p.statistics as Array<{ type?: { value?: string }; count?: number }>)
+      : [];
+    out.push({
+      period: (period.shortName as string) ?? "",
+      label: (period.label as string) ?? "",
+      goals: statVal(stats, "TOTAL_GOALS") ?? 0,
+      behinds: statVal(stats, "TOTAL_BEHINDS") ?? 0,
+      total: statVal(stats, "TOTAL_SCORE") ?? 0,
+    });
+  }
+  return out;
+}
 
 // Team identity (id + name) for a game's two sides, resolved from the REST
 // grade feeds. Keyed by side.
@@ -251,6 +289,7 @@ function normaliseLive(
       goals: statVal(home, "TOTAL_GOALS"),
       behinds: statVal(home, "TOTAL_BEHINDS"),
       scorers: scorersFrom(game, "home"),
+      periods: periodsFrom(result, "home"),
     },
     away: {
       id: teams?.away.id ?? null,
@@ -259,6 +298,7 @@ function normaliseLive(
       goals: statVal(away, "TOTAL_GOALS"),
       behinds: statVal(away, "TOTAL_BEHINDS"),
       scorers: scorersFrom(game, "away"),
+      periods: periodsFrom(result, "away"),
     },
   };
 }
