@@ -9,7 +9,15 @@
 // defaults; a club with no row falls back to those defaults.
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, Save, Trash2, Plus, Check, AlertTriangle } from "lucide-react";
+import {
+  Loader2,
+  Save,
+  Trash2,
+  Plus,
+  Check,
+  AlertTriangle,
+  Download,
+} from "lucide-react";
 
 import { LIVE_SCORE_GRADES } from "@/lib/api/playhq";
 import {
@@ -23,6 +31,7 @@ import {
   listClubConfigs,
   upsertClubConfig,
   deleteClubConfig,
+  discoverClubsFromFeeds,
   type ClubConfig,
 } from "@/lib/api/clubConfig";
 
@@ -115,6 +124,9 @@ export default function AdminConfigPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState("");
+  // Auto-populate from the PlayHQ/S3 feeds.
+  const [populating, setPopulating] = useState(false);
+  const [populateMsg, setPopulateMsg] = useState<string | null>(null);
 
   // Load stored overrides and merge with the bundled default club list so every
   // known club shows (even before it has a saved row).
@@ -209,6 +221,78 @@ export default function AdminConfigPage() {
     }
   }
 
+  // Pull PlayHQ club ids, S3/JADE uids and logo URLs from the live feeds and
+  // fill ONLY blank fields on each club (never overwrite an admin edit). New
+  // clubs are added. Rows become "dirty" so the admin reviews, then saves.
+  async function populate() {
+    setPopulating(true);
+    setPopulateMsg(null);
+    setError(null);
+    try {
+      const found = await discoverClubsFromFeeds((done, total) =>
+        setPopulateMsg(`Scanning fixtures… ${done}/${total}`)
+      );
+      const foundByKey = new Map(found.map((f) => [f.club_key, f]));
+      let filled = 0;
+      let added = 0;
+
+      setRows((prev) => {
+        const byKey = new Map(prev.map((r) => [r.club_key, r]));
+        for (const f of found) {
+          const existing = byKey.get(f.club_key);
+          if (existing) {
+            const patch: Partial<Row> = {};
+            if (!existing.playhq_club_id && f.playhq_club_id)
+              patch.playhq_club_id = f.playhq_club_id;
+            if (!existing.s3_club_uid && f.s3_club_uid != null)
+              patch.s3_club_uid = String(f.s3_club_uid);
+            if (!existing.logo_url && f.logo_url) patch.logo_url = f.logo_url;
+            if (Object.keys(patch).length > 0) {
+              byKey.set(f.club_key, {
+                ...existing,
+                ...patch,
+                dirty: true,
+                saved: false,
+              });
+              filled += 1;
+            }
+          } else {
+            byKey.set(f.club_key, {
+              ...defaultRow(f.club_key),
+              display_name: f.display_name,
+              playhq_club_id: f.playhq_club_id ?? "",
+              s3_club_uid: f.s3_club_uid != null ? String(f.s3_club_uid) : "",
+              logo_url: f.logo_url ?? "",
+              dirty: true,
+            });
+            added += 1;
+          }
+        }
+        return Array.from(byKey.values()).sort((a, b) =>
+          a.display_name.localeCompare(b.display_name)
+        );
+      });
+
+      setPopulateMsg(
+        `Found ${foundByKey.size} club(s): filled ${filled}, added ${added}. Review and Save all.`
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to populate from feeds.");
+      setPopulateMsg(null);
+    } finally {
+      setPopulating(false);
+    }
+  }
+
+  // Save every dirty row (used after a populate so the admin doesn't click each).
+  async function saveAll() {
+    const dirty = rows.filter((r) => r.dirty);
+    for (const r of dirty) {
+      // eslint-disable-next-line no-await-in-loop
+      await save(r.club_key);
+    }
+  }
+
   function addClub() {
     const key = normaliseClub(newKey);
     if (!key) return;
@@ -284,23 +368,50 @@ export default function AdminConfigPage() {
             <h2 className="text-sm font-bold uppercase tracking-wide text-sky-300">
               Clubs
             </h2>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={populate}
+                disabled={populating}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-50"
+              >
+                {populating ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Download size={15} />
+                )}
+                Populate from feeds
+              </button>
+              <button
+                type="button"
+                onClick={saveAll}
+                disabled={populating || !rows.some((r) => r.dirty)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20 disabled:opacity-40"
+              >
+                <Save size={15} /> Save all
+              </button>
               <input
                 value={newKey}
                 onChange={(e) => setNewKey(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addClub()}
                 placeholder="Add a club by name…"
-                className={`${inputCls} w-56`}
+                className={`${inputCls} w-48`}
               />
               <button
                 type="button"
                 onClick={addClub}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-1.5 text-sm font-semibold text-sky-300 transition hover:bg-sky-500/20"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm font-semibold text-slate-200 transition hover:bg-white/10"
               >
                 <Plus size={15} /> Add
               </button>
             </div>
           </div>
+
+          {populateMsg && (
+            <div className="mb-3 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-sm text-emerald-200">
+              {populateMsg}
+            </div>
+          )}
 
           {error && (
             <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
