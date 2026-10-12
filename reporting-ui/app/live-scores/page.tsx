@@ -136,20 +136,24 @@ function QuarterTable({
   );
 }
 
-// One side's goal scorers, compact. Goal count is bold; a behinds-only player
-// shows a muted "0.1". Empty list renders a muted dash so columns align.
+// One team's goal scorers, full width. Name on the left, goals.behinds on the
+// right (goals bold). Larger, easy-to-read font since only one team shows at a
+// time via the Home/Away toggle.
 function ScorerList({ scorers }: { scorers: Scorer[] }) {
   if (!scorers.length) {
-    return <div className="text-[11px] text-slate-300">—</div>;
+    return <div className="py-1 text-sm text-slate-400">No scorers yet.</div>;
   }
   return (
-    <ul className="space-y-0.5 text-[11px] leading-tight text-slate-500">
+    <ul className="divide-y divide-slate-100">
       {scorers.map((s, i) => (
-        <li key={`${s.name}-${i}`} className="truncate">
-          <span className="text-slate-600">{s.name}</span>{" "}
-          <span className="tabular-nums">
+        <li
+          key={`${s.name}-${i}`}
+          className="flex items-center justify-between gap-3 py-1.5"
+        >
+          <span className="truncate text-sm text-slate-700">{s.name}</span>
+          <span className="shrink-0 tabular-nums text-sm">
             {s.goals > 0 && (
-              <span className="font-semibold text-slate-800">{s.goals}</span>
+              <span className="font-bold text-slate-900">{s.goals}</span>
             )}
             {s.goals > 0 && s.behinds > 0 && (
               <span className="text-slate-400">.{s.behinds}</span>
@@ -197,6 +201,8 @@ function GameRow({
   live?: NormalisedLive;
 }) {
   const [scorersOpen, setScorersOpen] = useState(false);
+  // Which team's goal kickers to show — home by default; toggled via the tabs.
+  const [scorerTeam, setScorerTeam] = useState<"home" | "away">("home");
   const { home, away } = sides(game);
 
   // Effective status/score: the REST feed is null for in-play games, so when a
@@ -315,22 +321,43 @@ function GameRow({
                     away={liveData.away.periods}
                   />
                 )}
-                {/* Goal kickers per team */}
+                {/* Goal kickers — one team at a time (home default) with a
+                    Home/Away toggle, so each list gets the full width and a
+                    larger, easier-to-read font. */}
                 {(liveData.home.scorers.length > 0 ||
                   liveData.away.scorers.length > 0) && (
-                  <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-                    <div>
-                      <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                  <div>
+                    <div className="mb-2 inline-flex rounded-lg border border-slate-200 p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => setScorerTeam("home")}
+                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold ${
+                          scorerTeam === "home"
+                            ? "bg-slate-800 text-white"
+                            : "text-slate-600 hover:bg-slate-100"
+                        }`}
+                      >
                         {home?.name ?? "Home"}
-                      </div>
-                      <ScorerList scorers={liveData.home.scorers} />
-                    </div>
-                    <div>
-                      <div className="mb-0.5 truncate text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setScorerTeam("away")}
+                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold ${
+                          scorerTeam === "away"
+                            ? "bg-slate-800 text-white"
+                            : "text-slate-600 hover:bg-slate-100"
+                        }`}
+                      >
                         {away?.name ?? "Away"}
-                      </div>
-                      <ScorerList scorers={liveData.away.scorers} />
+                      </button>
                     </div>
+                    <ScorerList
+                      scorers={
+                        scorerTeam === "home"
+                          ? liveData.home.scorers
+                          : liveData.away.scorers
+                      }
+                    />
                   </div>
                 )}
               </div>
