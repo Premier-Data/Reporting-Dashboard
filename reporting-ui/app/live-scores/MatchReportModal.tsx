@@ -6,19 +6,28 @@
 // Live Scores list and closes back to it.
 
 import { useEffect, useMemo, useState } from "react";
-import { X, Loader2, AlertTriangle, Settings, Target, User } from "lucide-react";
+import {
+  X,
+  Loader2,
+  AlertTriangle,
+  Settings,
+  Target,
+  User,
+  Users,
+} from "lucide-react";
 
 import {
   getMatchReportForGame,
   playerDePercent,
   type MatchReport,
+  type MatchReportTeam,
   type TeamStatRow,
 } from "@/lib/api/matchReport";
 import type { PlayerStatLine } from "@/types/fixtureReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
 import { sides, goalsBehinds, type PlayHqGame } from "@/lib/api/playhq";
 
-type TabKey = "general" | "efficiencies" | "players";
+type TabKey = "general" | "efficiencies" | "players" | "teamlists";
 
 // Small crest (shared look with the list page).
 function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
@@ -196,6 +205,74 @@ function PlayersTable({ report }: { report: MatchReport }) {
   );
 }
 
+// Team Lists tab: the players who appear in the report for each team, listed in
+// jersey-number order, with a tab to switch between the two teams. "Selected
+// players" = everyone the report carries stats for.
+function TeamLists({ report }: { report: MatchReport }) {
+  const [side, setSide] = useState<"home" | "away">("home");
+  const team: MatchReportTeam = side === "home" ? report.home : report.away;
+
+  // Numerical order; players with no number sink to the bottom (by name).
+  const roster = useMemo(() => {
+    return [...team.players].sort((a, b) => {
+      const na = a.playerNumber || Number.POSITIVE_INFINITY;
+      const nb = b.playerNumber || Number.POSITIVE_INFINITY;
+      if (na !== nb) return na - nb;
+      return a.playerName.localeCompare(b.playerName);
+    });
+  }, [team]);
+
+  const dotColor = side === "home" ? "bg-red-500" : "bg-emerald-500";
+
+  const tab = (val: "home" | "away", name: string) => (
+    <button
+      type="button"
+      onClick={() => setSide(val)}
+      className={`flex-1 truncate rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+        side === val
+          ? "border-sky-500 bg-sky-500 text-white"
+          : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10"
+      }`}
+    >
+      {name}
+    </button>
+  );
+
+  return (
+    <div>
+      <div className="mb-4 flex gap-2">
+        {tab("home", report.home.name)}
+        {tab("away", report.away.name)}
+      </div>
+
+      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
+        <span>Player</span>
+        <span>{roster.length} players</span>
+      </div>
+
+      <ul className="divide-y divide-white/5">
+        {roster.map((p) => (
+          <li key={p.playerUid} className="flex items-center gap-3 py-2.5">
+            <span
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${dotColor}`}
+            >
+              {p.playerNumber || "-"}
+            </span>
+            <span className="truncate text-sm font-medium text-slate-100">
+              {p.playerName}
+            </span>
+          </li>
+        ))}
+        {roster.length === 0 && (
+          <li className="py-8 text-center text-sm text-slate-400">
+            No team list available.
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 export default function MatchReportModal({
   game,
   onClose,
@@ -259,6 +336,7 @@ export default function MatchReportModal({
     { key: "general", label: "General", icon: Settings },
     { key: "efficiencies", label: "Efficiencies", icon: Target },
     { key: "players", label: "Players", icon: User },
+    { key: "teamlists", label: "Team Lists", icon: Users },
   ];
 
   return (
@@ -339,13 +417,13 @@ export default function MatchReportModal({
                 key={t.key}
                 type="button"
                 onClick={() => setTab(t.key)}
-                className={`flex flex-1 items-center justify-center gap-1.5 py-3 text-sm font-semibold transition ${
+                className={`flex flex-1 flex-col items-center justify-center gap-1 py-2.5 text-xs font-semibold transition sm:flex-row sm:gap-1.5 sm:text-sm ${
                   active
                     ? "border-b-2 border-sky-500 text-sky-300"
                     : "text-slate-400 hover:text-slate-200"
                 }`}
               >
-                <Icon size={16} /> {t.label}
+                <Icon size={16} /> <span className="whitespace-nowrap">{t.label}</span>
               </button>
             );
           })}
@@ -400,9 +478,10 @@ export default function MatchReportModal({
                 </div>
               )}
               {tab === "players" && <PlayersTable report={report} />}
+              {tab === "teamlists" && <TeamLists report={report} />}
 
-              {/* Team-colour legend */}
-              {tab !== "players" && (
+              {/* Team-colour legend (comparison tabs only) */}
+              {tab !== "players" && tab !== "teamlists" && (
                 <div className="mt-6 flex items-center justify-center gap-5 text-xs text-slate-400">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2.5 w-2.5 rounded-full bg-red-500" />

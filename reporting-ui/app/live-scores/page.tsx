@@ -13,7 +13,6 @@ import {
   AlertTriangle,
   RefreshCw,
   MapPin,
-  ExternalLink,
   ChevronDown,
   BarChart3,
 } from "lucide-react";
@@ -373,11 +372,22 @@ function GameRow({
 
       <div className="px-3 pb-3 md:px-4">
 
-      {/* Expandable detail (live/final feed only): quarter-by-quarter scores
-          and goal kickers. Collapsed by default behind the toggle. */}
+      {/* Quarter-by-quarter scores — ALWAYS shown (live/final feed only). */}
+      {liveData && liveData.home.periods.length > 0 && (
+        <div className="mt-3 border-t border-white/10 pt-2.5">
+          <QuarterTable
+            homeName={home?.name ?? "Home"}
+            awayName={away?.name ?? "Away"}
+            home={liveData.home.periods}
+            away={liveData.away.periods}
+          />
+        </div>
+      )}
+
+      {/* Goal kickers — still collapsed behind an expand toggle. One team at a
+          time (home default) with a Home/Away switch. */}
       {liveData &&
-        (liveData.home.periods.length > 0 ||
-          liveData.home.scorers.length > 0 ||
+        (liveData.home.scorers.length > 0 ||
           liveData.away.scorers.length > 0) && (
           <div className="mt-3 border-t border-white/10 pt-2.5">
             <button
@@ -386,7 +396,7 @@ function GameRow({
               aria-expanded={scorersOpen}
               className="flex w-full items-center justify-between gap-2 text-xs font-medium text-slate-400 hover:text-slate-200"
             >
-              <span>Quarter scores &amp; goal kickers</span>
+              <span>Goal kickers</span>
               <ChevronDown
                 size={15}
                 className={`transition-transform ${
@@ -395,81 +405,52 @@ function GameRow({
               />
             </button>
             {scorersOpen && (
-              <div className="mt-2 space-y-3">
-                {/* Quarter-by-quarter scores */}
-                {liveData.home.periods.length > 0 && (
-                  <QuarterTable
-                    homeName={home?.name ?? "Home"}
-                    awayName={away?.name ?? "Away"}
-                    home={liveData.home.periods}
-                    away={liveData.away.periods}
-                  />
-                )}
-                {/* Goal kickers — one team at a time (home default) with a
-                    Home/Away toggle, so each list gets the full width and a
-                    larger, easier-to-read font. */}
-                {(liveData.home.scorers.length > 0 ||
-                  liveData.away.scorers.length > 0) && (
-                  <div>
-                    <div className="mb-2 inline-flex rounded-lg border border-white/10 bg-white/5 p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => setScorerTeam("home")}
-                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
-                          scorerTeam === "home"
-                            ? "bg-sky-500 text-white"
-                            : "text-slate-300 hover:bg-white/10"
-                        }`}
-                      >
-                        {home?.name ?? "Home"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setScorerTeam("away")}
-                        className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
-                          scorerTeam === "away"
-                            ? "bg-sky-500 text-white"
-                            : "text-slate-300 hover:bg-white/10"
-                        }`}
-                      >
-                        {away?.name ?? "Away"}
-                      </button>
-                    </div>
-                    <ScorerList
-                      scorers={
-                        scorerTeam === "home"
-                          ? liveData.home.scorers
-                          : liveData.away.scorers
-                      }
-                    />
-                  </div>
-                )}
+              <div className="mt-2">
+                <div className="mb-2 inline-flex rounded-lg border border-white/10 bg-white/5 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setScorerTeam("home")}
+                    className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
+                      scorerTeam === "home"
+                        ? "bg-sky-500 text-white"
+                        : "text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {home?.name ?? "Home"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScorerTeam("away")}
+                    className={`max-w-[45vw] truncate rounded-md px-3 py-1 text-xs font-semibold transition ${
+                      scorerTeam === "away"
+                        ? "bg-sky-500 text-white"
+                        : "text-slate-300 hover:bg-white/10"
+                    }`}
+                  >
+                    {away?.name ?? "Away"}
+                  </button>
+                </div>
+                <ScorerList
+                  scorers={
+                    scorerTeam === "home"
+                      ? liveData.home.scorers
+                      : liveData.away.scorers
+                  }
+                />
               </div>
             )}
           </div>
         )}
 
-      <div className="mt-3 grid grid-cols-2 gap-2">
-        {isFinalGame && (
-          <button
-            type="button"
-            onClick={() => setReportOpen(true)}
-            className="flex items-center justify-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
-          >
-            <BarChart3 size={13} /> Match Report
-          </button>
-        )}
-        <a
-          href={game.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] py-2 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-sky-300 ${
-            isFinalGame ? "" : "col-span-2"
-          }`}
+      {isFinalGame && (
+        <button
+          type="button"
+          onClick={() => setReportOpen(true)}
+          className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-xl border border-sky-500/40 bg-sky-500/10 py-2 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20"
         >
-          Match Centre <ExternalLink size={13} />
-        </a>
-      </div>
+          <BarChart3 size={13} /> Statistics
+        </button>
+      )}
 
       </div>
 
