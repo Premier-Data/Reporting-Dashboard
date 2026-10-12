@@ -231,8 +231,9 @@ function PlayersTable({ report }: { report: MatchReport }) {
   };
 
   // Shared classes for a sortable header cell. `active` tints it sky.
+  // Horizontal padding is set per-cell by the caller so stat columns stay tight.
   const thCls = (active: boolean, align: "left" | "right") =>
-    `cursor-pointer select-none px-1.5 py-2 font-semibold transition hover:text-slate-100 ${
+    `cursor-pointer select-none py-2 font-semibold transition hover:text-slate-100 ${
       align === "left" ? "text-left" : "text-right"
     } ${active ? "text-sky-300" : "text-slate-400"}`;
 
@@ -244,8 +245,17 @@ function PlayersTable({ report }: { report: MatchReport }) {
         {chip("away", report.away.name)}
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      {/* table-fixed so every stat column fits the screen (no horizontal
+          scroll); the Player column takes the remaining space and truncates
+          long names. */}
+      <div>
+        <table className="w-full table-fixed text-sm">
+          <colgroup>
+            <col />
+            {[...PLAYER_COLS, { key: "de" }].map((c) => (
+              <col key={c.key} className="w-[9%]" />
+            ))}
+          </colgroup>
           <thead>
             <tr className="border-b border-white/10 text-xs uppercase">
               <th
@@ -258,7 +268,7 @@ function PlayersTable({ report }: { report: MatchReport }) {
                     : "none"
                 }
                 onClick={() => toggleSort("name")}
-                className={`${thCls(sortKey === "name", "left")} pr-2`}
+                className={`${thCls(sortKey === "name", "left")} pr-1`}
               >
                 <span className="flex items-center gap-1">
                   Player {arrow("name")}
@@ -276,7 +286,7 @@ function PlayersTable({ report }: { report: MatchReport }) {
                       : "none"
                   }
                   onClick={() => toggleSort(c.key)}
-                  className={`${thCls(sortKey === c.key, "right")} tabular-nums`}
+                  className={`${thCls(sortKey === c.key, "right")} px-0.5 tabular-nums`}
                 >
                   <span className="flex items-center justify-end gap-0.5">
                     {c.label} {arrow(c.key)}
@@ -291,8 +301,8 @@ function PlayersTable({ report }: { report: MatchReport }) {
                 key={p.playerUid}
                 className="border-b border-white/5 hover:bg-white/[0.03]"
               >
-                <td className="py-2 pr-2">
-                  <span className="flex items-center gap-2">
+                <td className="py-2 pr-1">
+                  <span className="flex items-center gap-1.5">
                     <span
                       className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold text-white ${teamColor(
                         p
@@ -308,7 +318,7 @@ function PlayersTable({ report }: { report: MatchReport }) {
                 {PLAYER_COLS.map((c) => (
                   <td
                     key={c.key}
-                    className={`px-1.5 py-2 text-right tabular-nums ${
+                    className={`px-0.5 py-2 text-right tabular-nums ${
                       sortKey === c.key ? "font-semibold text-white" : "text-slate-200"
                     }`}
                   >
@@ -316,7 +326,7 @@ function PlayersTable({ report }: { report: MatchReport }) {
                   </td>
                 ))}
                 <td
-                  className={`px-1.5 py-2 text-right tabular-nums ${
+                  className={`px-0.5 py-2 text-right tabular-nums ${
                     sortKey === "de" ? "font-semibold text-white" : "text-slate-200"
                   }`}
                 >
