@@ -341,17 +341,16 @@ export default function AdminConfigPage() {
     if (!compFilter && compOptions.length > 0) setCompFilter(compOptions[0]);
   }, [compOptions, compFilter]);
 
-  // Clubs shown: those whose `competitions` field includes the selected comp
-  // (substring, case-insensitive). "" shows all. A club with no competitions
-  // recorded shows under every filter so it's never hidden/orphaned.
+  // Clubs shown for the selected filter:
+  //   ""           → all clubs
+  //   "__none__"   → only clubs with NO competition recorded (to tidy them up)
+  //   "<label>"    → only clubs whose competitions include that label
   const visibleRows = useMemo(() => {
     if (!compFilter) return rows;
+    if (compFilter === "__none__")
+      return rows.filter((r) => !r.competitions.trim());
     const needle = compFilter.toLowerCase();
-    return rows.filter(
-      (r) =>
-        !r.competitions.trim() ||
-        r.competitions.toLowerCase().includes(needle)
-    );
+    return rows.filter((r) => r.competitions.toLowerCase().includes(needle));
   }, [rows, compFilter]);
 
   return (
@@ -420,6 +419,7 @@ export default function AdminConfigPage() {
                     {label}
                   </option>
                 ))}
+                <option value="__none__">Unassigned</option>
               </select>
             </div>
             <div className="flex flex-wrap items-center gap-2">
