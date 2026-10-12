@@ -28,11 +28,20 @@ export function normaliseClub(name: string | null | undefined): string {
 // Normalised club key → logo file under public/clubs/. Seeded with the two
 // clubs confirmed from PlayHQ; extend as you add more logos.
 const CLUB_LOGO_FILES: Record<string, string> = {
+  // NTFL Men's / Women's Premier clubs.
   "palmerston magpies": "palmerston-magpies.png",
   waratah: "waratah.png",
-  // Add more, e.g.:
-  // "nightcliff tigers": "nightcliff-tigers.png",
-  // "st marys": "st-marys.png",
+  nightcliff: "nightcliff.png",
+  "nightcliff tigers": "nightcliff.png",
+  "tiwi bombers": "tiwi-bombers.png",
+  wanderers: "wanderers.png",
+  pint: "pint.png",
+  "st marys": "st-marys.png",
+  "southern districts": "southern-districts.png",
+  // Not yet added (fall back to an initials badge). Add the file to
+  // public/clubs and a line here once you have the correct crest URL:
+  //   "darwin buffaloes": "darwin-buffaloes.png",
+  //   banks: "banks-bulldogs.png",
 };
 
 /** Local logo path for a team name, or null when the club isn't mapped yet. */
