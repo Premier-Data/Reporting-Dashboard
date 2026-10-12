@@ -44,7 +44,9 @@ const AFL_COLUMNS: StatColumn[] = [
   { key: "k", label: "K", title: "Kicks", statTypes: ["Kick"], group: "afl" },
   { key: "hb", label: "HB", title: "Handballs", statTypes: ["Handball"], group: "afl" },
   { key: "d", label: "D", title: "Disposals", statTypes: ["Disposal"], group: "afl" },
-  { key: "cp", label: "CP", title: "Contested Possessions", statTypes: ["ContestedDisposal"], group: "afl" },
+  // Contested Possessions = Loose Ball Gets + Hard Ball Gets + Contested
+  // Gathers (GatherHitOut) + Contested Marks. (Plain "Gather" is NOT included.)
+  { key: "cp", label: "CP", title: "Contested Possessions", statTypes: ["LooseBallGet", "HardBallGet", "GatherHitOut", "ContestedMark"], group: "afl" },
   { key: "m", label: "M", title: "Marks", statTypes: ["Mark"], group: "afl" },
   { key: "i50", label: "I50", title: "Inside 50s", statTypes: ["Inside50"], group: "afl" },
   { key: "r50", label: "R50", title: "Rebound 50s", statTypes: ["Rebound50"], group: "afl" },

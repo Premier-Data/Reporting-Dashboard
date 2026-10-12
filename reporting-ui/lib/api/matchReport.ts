@@ -9,9 +9,11 @@
 // Efficiencies / Players tabs render.
 
 import {
-  getFixtureTimeline,
+  resolveFixtureReport,
+  toFixtureTimeline,
   statColumnsForSport,
 } from "@/lib/api/fixtureReports";
+import type { FixtureReport } from "@/types/fixtureReport";
 import type { FixtureTimeline, PlayerStatLine } from "@/types/fixtureReport";
 import { queryCompFixtures } from "@/lib/api/compFixtures";
 import { normaliseClub } from "@/lib/api/clubLogos";
@@ -188,6 +190,47 @@ function pct(eff: number, total: number): number {
   return total > 0 ? Math.round((eff / total) * 100) : 0;
 }
 
+// One row of the team-level running-summary array. These stats are recorded for
+// the TEAM, not attributed to a player, so they don't appear in allPlayerStats
+// (e.g. Rushed Behinds). Each row is a per-quarter home/away pair.
+type StatSummaryRow = {
+  statType?: string;
+  quarter?: number;
+  homeScore?: string | number;
+  awayScore?: string | number;
+};
+
+/**
+ * Whole-game home/away total for a team-level stat read from the report's
+ * `allStatSummarys` array. The feed carries per-quarter rows (1–4) plus a
+ * quarter-5 TOTAL row; we use the q5 total when present, else sum 1–4. Scores
+ * are strings in the feed. Returns zeros when the stat is absent.
+ */
+function teamSummaryTotal(
+  report: FixtureReport,
+  statType: string
+): { home: number; away: number } {
+  const rows = (report.allStatSummarys as StatSummaryRow[] | undefined) ?? [];
+  const mine = rows.filter((r) => r?.statType === statType);
+  const total = mine.find((r) => Number(r.quarter) === 5);
+  if (total) {
+    return {
+      home: Number(total.homeScore) || 0,
+      away: Number(total.awayScore) || 0,
+    };
+  }
+  // No total row — sum the per-quarter rows (1–4).
+  let home = 0;
+  let away = 0;
+  for (const r of mine) {
+    const q = Number(r.quarter);
+    if (q < 1 || q > 4) continue;
+    home += Number(r.homeScore) || 0;
+    away += Number(r.awayScore) || 0;
+  }
+  return { home, away };
+}
+
 /**
  * Fetch + aggregate a fixture report into the match-report shape. `sport`
  * defaults to AFL (the Live Scores feature is NTFL/AFL only today).
@@ -196,10 +239,13 @@ export async function getMatchReport(
   jadeUid: number | string,
   sport: string | null = "Australian Rules Football"
 ): Promise<MatchReport> {
-  const timeline = await getFixtureTimeline(jadeUid, {
+  // Fetch the raw report (so we can also read team-level summary stats like
+  // Rushed Behinds, which aren't in allPlayerStats), then build the timeline.
+  const { report } = await resolveFixtureReport(jadeUid, {
     sport,
     cache: "force-cache",
   });
+  const timeline = toFixtureTimeline(report, sport);
   const { meta, players } = timeline;
 
   const homePlayers = players.filter((p) => p.teamUid === meta.homeTeamUid);
@@ -213,7 +259,9 @@ export async function getMatchReport(
   const rp = col("rp");
   const g = col("g");
   const b = col("b");
-  const rb = col("rb");
+  // Rushed Behinds are a TEAM stat (not per-player), so read them from the
+  // report's team-level summary array rather than summing players.
+  const rb = teamSummaryTotal(report, "RushedBehind");
   const d = col("d");
   const k = col("k");
   const hb = col("hb");
