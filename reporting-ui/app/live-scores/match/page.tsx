@@ -28,7 +28,11 @@ import {
 } from "@/lib/api/matchReport";
 import type { PlayerStatLine } from "@/types/fixtureReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
-import { clubConfigFor } from "@/lib/api/clubConfig";
+import {
+  clubConfigFor,
+  primaryColorOf,
+  secondaryColorOf,
+} from "@/lib/api/clubConfig";
 import {
   getGradeGames,
   sides,
@@ -183,13 +187,15 @@ function sortValue(p: PlayerStatLine, key: SortKey): number {
   return p.columns[key]?.[5] ?? 0;
 }
 
+type SideColors = { primary: string | null; secondary: string | null };
+
 function PlayersTable({
   report,
   teamColors,
 }: {
   report: MatchReport;
-  /** Configured hex colour per side (admin override); null → default. */
-  teamColors: { home: string | null; away: string | null };
+  /** Configured primary (bg) + secondary (text) colour per side; null → default. */
+  teamColors: { home: SideColors; away: SideColors };
 }) {
   const [team, setTeam] = useState<"all" | "home" | "away">("all");
   // Default sort: Ranking Points, highest first (matches the app).
@@ -243,12 +249,15 @@ function PlayersTable({
     </button>
   );
 
-  // The player-badge colour: the team's configured colour when set, else the
-  // default red (home) / emerald (away). Returns an inline style value.
-  const badgeColor = (p: PlayerStatLine): string => {
+  // The player-badge style: primary colour = square background, secondary =
+  // number text. Falls back to the default red (home) / emerald (away) bg with
+  // white text when a team has no configured colours.
+  const badgeStyle = (p: PlayerStatLine): React.CSSProperties => {
     const isHome = p.teamUid === report.home.uid;
-    const override = isHome ? teamColors.home : teamColors.away;
-    return override ?? (isHome ? "#ef4444" : "#10b981");
+    const c = isHome ? teamColors.home : teamColors.away;
+    const bg = c.primary ?? (isHome ? "#ef4444" : "#10b981");
+    const fg = c.secondary ?? "#ffffff";
+    return { backgroundColor: bg, color: fg };
   };
 
   // The active-column sort arrow.
@@ -335,8 +344,8 @@ function PlayersTable({
                 <td className="py-2 pr-1">
                   <span className="flex items-center gap-1.5">
                     <span
-                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold text-white"
-                      style={{ backgroundColor: badgeColor(p) }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[11px] font-bold"
+                      style={badgeStyle(p)}
                     >
                       {p.playerNumber || "-"}
                     </span>
@@ -394,11 +403,15 @@ function MatchStatsInner() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>(initialTab);
   // Admin-configured team colour + logo overrides for the two sides, resolved
-  // from club_config once the report's team names are known.
+  // from club_config once the report's team names are known. Each side has a
+  // primary (number-square bg) and secondary (number text) colour.
   const [teamColors, setTeamColors] = useState<{
-    home: string | null;
-    away: string | null;
-  }>({ home: null, away: null });
+    home: { primary: string | null; secondary: string | null };
+    away: { primary: string | null; secondary: string | null };
+  }>({
+    home: { primary: null, secondary: null },
+    away: { primary: null, secondary: null },
+  });
   const [teamLogos, setTeamLogos] = useState<{
     home: string | null;
     away: string | null;
@@ -443,8 +456,14 @@ function MatchStatsInner() {
           ]);
           if (!cancelled) {
             setTeamColors({
-              home: hc?.team_color ?? null,
-              away: ac?.team_color ?? null,
+              home: {
+                primary: primaryColorOf(hc),
+                secondary: secondaryColorOf(hc),
+              },
+              away: {
+                primary: primaryColorOf(ac),
+                secondary: secondaryColorOf(ac),
+              },
             });
             setTeamLogos({
               home: hc?.logo_url ?? null,

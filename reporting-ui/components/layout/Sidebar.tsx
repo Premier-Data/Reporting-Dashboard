@@ -78,14 +78,25 @@ const sections = [
         icon: Monitor,
       },
       {
+        title: "Computers",
+        href: "/computers",
+        icon: Monitor,
+      },
+    ],
+  },
+
+  {
+    heading: "LEAGUE APPS",
+    items: [
+      {
         title: "Live Scores",
         href: "/live-scores",
         icon: Radio,
       },
       {
-        title: "Computers",
-        href: "/computers",
-        icon: Monitor,
+        title: "Admin Configuration",
+        href: "/admin-config",
+        icon: SlidersHorizontal,
       },
     ],
   },
@@ -205,11 +216,6 @@ const sections = [
         title: "Permissions",
         href: "/permissions",
         icon: KeyRound,
-      },
-      {
-        title: "Admin Configuration",
-        href: "/admin-config",
-        icon: SlidersHorizontal,
       },
       {
         title: "Settings",

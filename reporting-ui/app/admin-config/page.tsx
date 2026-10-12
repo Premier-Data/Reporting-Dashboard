@@ -44,7 +44,8 @@ type Row = {
   playhq_club_id: string;
   s3_club_uid: string; // kept as string for the input; parsed on save
   logo_url: string;
-  team_color: string;
+  primary_color: string;
+  secondary_color: string;
   competitions: string;
   dirty: boolean;
   saving: boolean;
@@ -67,7 +68,8 @@ function rowFromConfig(cfg: ClubConfig): Row {
     playhq_club_id: cfg.playhq_club_id ?? "",
     s3_club_uid: cfg.s3_club_uid != null ? String(cfg.s3_club_uid) : "",
     logo_url: cfg.logo_url ?? "",
-    team_color: cfg.team_color ?? "",
+    primary_color: cfg.primary_color ?? cfg.team_color ?? "",
+    secondary_color: cfg.secondary_color ?? "",
     competitions: cfg.competitions ?? "",
     dirty: false,
     saving: false,
@@ -83,7 +85,8 @@ function defaultRow(key: string): Row {
     playhq_club_id: "",
     s3_club_uid: "",
     logo_url: "",
-    team_color: "",
+    primary_color: "",
+    secondary_color: "",
     competitions: "",
     dirty: false,
     saving: false,
@@ -91,9 +94,9 @@ function defaultRow(key: string): Row {
   };
 }
 
-// Preview swatch: the configured colour, else the deterministic badge colour.
+// Preview swatch background: the configured primary colour, else a generated one.
 function colorFor(row: Row): string {
-  return row.team_color || clubBadgeColor(row.club_key);
+  return row.primary_color || clubBadgeColor(row.club_key);
 }
 
 // Logo preview: the override URL, else the bundled file, else initials badge.
@@ -124,6 +127,8 @@ export default function AdminConfigPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [newKey, setNewKey] = useState("");
+  // Which competition's clubs to show (dropdown). "" = all.
+  const [compFilter, setCompFilter] = useState<string>("");
   // Auto-populate from the PlayHQ/S3 feeds.
   const [populating, setPopulating] = useState(false);
   const [populateMsg, setPopulateMsg] = useState<string | null>(null);
@@ -187,7 +192,8 @@ export default function AdminConfigPage() {
         playhq_club_id: row.playhq_club_id,
         s3_club_uid: row.s3_club_uid ? Number(row.s3_club_uid) : null,
         logo_url: row.logo_url,
-        team_color: row.team_color,
+        primary_color: row.primary_color,
+        secondary_color: row.secondary_color,
         competitions: row.competitions,
       });
       setRows((prev) =>
@@ -247,6 +253,10 @@ export default function AdminConfigPage() {
             if (!existing.s3_club_uid && f.s3_club_uid != null)
               patch.s3_club_uid = String(f.s3_club_uid);
             if (!existing.logo_url && f.logo_url) patch.logo_url = f.logo_url;
+            // Competitions are derived from the feeds — always refresh them so
+            // the competition filter stays accurate.
+            if (f.competitions && f.competitions !== existing.competitions)
+              patch.competitions = f.competitions;
             if (Object.keys(patch).length > 0) {
               byKey.set(f.club_key, {
                 ...existing,
@@ -263,6 +273,7 @@ export default function AdminConfigPage() {
               playhq_club_id: f.playhq_club_id ?? "",
               s3_club_uid: f.s3_club_uid != null ? String(f.s3_club_uid) : "",
               logo_url: f.logo_url ?? "",
+              competitions: f.competitions ?? "",
               dirty: true,
             });
             added += 1;
@@ -288,7 +299,6 @@ export default function AdminConfigPage() {
   async function saveAll() {
     const dirty = rows.filter((r) => r.dirty);
     for (const r of dirty) {
-      // eslint-disable-next-line no-await-in-loop
       await save(r.club_key);
     }
   }
@@ -301,9 +311,15 @@ export default function AdminConfigPage() {
       return;
     }
     setRows((prev) =>
-      [...prev, { ...defaultRow(key), display_name: newKey.trim(), dirty: true }].sort(
-        (a, b) => a.display_name.localeCompare(b.display_name)
-      )
+      [
+        ...prev,
+        {
+          ...defaultRow(key),
+          display_name: newKey.trim(),
+          competitions: compFilter, // tag with the current competition filter
+          dirty: true,
+        },
+      ].sort((a, b) => a.display_name.localeCompare(b.display_name))
     );
     setNewKey("");
     setError(null);
@@ -313,6 +329,30 @@ export default function AdminConfigPage() {
     "w-full rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-500";
 
   const grades = useMemo(() => LIVE_SCORE_GRADES, []);
+
+  // Competition options for the Clubs dropdown — the grade labels.
+  const compOptions = useMemo(
+    () => LIVE_SCORE_GRADES.map((g) => g.label),
+    []
+  );
+
+  // Default the Clubs filter to the first competition once rows load.
+  useEffect(() => {
+    if (!compFilter && compOptions.length > 0) setCompFilter(compOptions[0]);
+  }, [compOptions, compFilter]);
+
+  // Clubs shown: those whose `competitions` field includes the selected comp
+  // (substring, case-insensitive). "" shows all. A club with no competitions
+  // recorded shows under every filter so it's never hidden/orphaned.
+  const visibleRows = useMemo(() => {
+    if (!compFilter) return rows;
+    const needle = compFilter.toLowerCase();
+    return rows.filter(
+      (r) =>
+        !r.competitions.trim() ||
+        r.competitions.toLowerCase().includes(needle)
+    );
+  }, [rows, compFilter]);
 
   return (
     <div className="min-h-full bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
@@ -365,9 +405,23 @@ export default function AdminConfigPage() {
         {/* Clubs editor */}
         <section className="mt-8">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-sm font-bold uppercase tracking-wide text-sky-300">
-              Clubs
-            </h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-sm font-bold uppercase tracking-wide text-sky-300">
+                Clubs
+              </h2>
+              <select
+                value={compFilter}
+                onChange={(e) => setCompFilter(e.target.value)}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm font-medium text-slate-100 outline-none focus:border-sky-500 [&>option]:bg-slate-800"
+              >
+                <option value="">All competitions</option>
+                {compOptions.map((label) => (
+                  <option key={label} value={label}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -432,13 +486,20 @@ export default function AdminConfigPage() {
                     <th className="px-3 py-2 font-semibold">PlayHQ club id</th>
                     <th className="px-3 py-2 font-semibold">S3 / JADE uid</th>
                     <th className="px-3 py-2 font-semibold">Logo URL</th>
-                    <th className="px-3 py-2 font-semibold">Colour</th>
-                    <th className="px-3 py-2 font-semibold">Competitions</th>
+                    <th className="px-3 py-2 font-semibold">Colours</th>
                     <th className="px-3 py-2 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((row) => (
+                  {visibleRows.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-8 text-center text-slate-400">
+                        No clubs for this competition yet. Use &quot;Populate
+                        from feeds&quot; or add one.
+                      </td>
+                    </tr>
+                  )}
+                  {visibleRows.map((row) => (
                     <tr key={row.club_key} className="border-b border-white/5 align-top">
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-2">
@@ -491,37 +552,50 @@ export default function AdminConfigPage() {
                         />
                       </td>
                       <td className="px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="color"
-                            value={row.team_color || clubBadgeColor(row.club_key)}
-                            onChange={(e) =>
-                              update(row.club_key, { team_color: e.target.value })
-                            }
-                            className="h-8 w-10 cursor-pointer rounded border border-white/15 bg-transparent"
-                          />
-                          {row.team_color ? (
-                            <button
-                              type="button"
-                              onClick={() => update(row.club_key, { team_color: "" })}
-                              className="text-[11px] text-slate-400 hover:text-slate-200"
-                            >
-                              reset
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-slate-500">auto</span>
-                          )}
+                        <div className="flex items-center gap-3">
+                          {/* Live preview of the player number badge. */}
+                          <span
+                            className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-xs font-bold"
+                            style={{
+                              backgroundColor:
+                                row.primary_color || clubBadgeColor(row.club_key),
+                              color: row.secondary_color || "#ffffff",
+                            }}
+                            title="Player number preview"
+                          >
+                            9
+                          </span>
+                          <label className="flex flex-col items-center gap-0.5">
+                            <input
+                              type="color"
+                              aria-label="Primary (square) colour"
+                              value={row.primary_color || clubBadgeColor(row.club_key)}
+                              onChange={(e) =>
+                                update(row.club_key, { primary_color: e.target.value })
+                              }
+                              className="h-7 w-9 cursor-pointer rounded border border-white/15 bg-transparent"
+                            />
+                            <span className="text-[9px] uppercase text-slate-500">
+                              Primary
+                            </span>
+                          </label>
+                          <label className="flex flex-col items-center gap-0.5">
+                            <input
+                              type="color"
+                              aria-label="Secondary (number) colour"
+                              value={row.secondary_color || "#ffffff"}
+                              onChange={(e) =>
+                                update(row.club_key, {
+                                  secondary_color: e.target.value,
+                                })
+                              }
+                              className="h-7 w-9 cursor-pointer rounded border border-white/15 bg-transparent"
+                            />
+                            <span className="text-[9px] uppercase text-slate-500">
+                              Number
+                            </span>
+                          </label>
                         </div>
-                      </td>
-                      <td className="px-3 py-2">
-                        <input
-                          value={row.competitions}
-                          onChange={(e) =>
-                            update(row.club_key, { competitions: e.target.value })
-                          }
-                          placeholder="NTFL Men's, Women's…"
-                          className={`${inputCls} w-44`}
-                        />
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center justify-end gap-1.5">
@@ -559,9 +633,10 @@ export default function AdminConfigPage() {
             </div>
           )}
           <p className="mt-2 text-xs text-slate-500">
-            Changes take effect on the Live Scores tab (logos + team colours).
-            The colour is used for each team on the Players stats tab and the
-            comparison bars; &quot;auto&quot; uses a generated colour.
+            Changes take effect on the Live Scores tab. On the Players stats
+            tab, the Primary colour is the player number square&apos;s
+            background and the Secondary colour is the number text. Pick a
+            competition above to edit just that league&apos;s clubs.
           </p>
         </section>
       </div>

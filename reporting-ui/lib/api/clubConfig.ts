@@ -24,7 +24,12 @@ export type ClubConfig = {
   playhq_club_id: string | null;
   s3_club_uid: number | null;
   logo_url: string | null;
+  /** @deprecated kept for back-compat; use primary_color. */
   team_color: string | null;
+  /** Number-square BACKGROUND on the Players stats tab. */
+  primary_color: string | null;
+  /** Number TEXT colour on the Players stats tab. */
+  secondary_color: string | null;
   competitions: string | null;
 };
 
@@ -34,19 +39,45 @@ export type ClubConfigInput = {
   playhq_club_id?: string | null;
   s3_club_uid?: number | null;
   logo_url?: string | null;
-  team_color?: string | null;
+  primary_color?: string | null;
+  secondary_color?: string | null;
   competitions?: string | null;
 };
+
+/** The effective primary colour (new column, falling back to legacy team_color). */
+export function primaryColorOf(cfg: ClubConfig | null | undefined): string | null {
+  return cfg?.primary_color ?? cfg?.team_color ?? null;
+}
+export function secondaryColorOf(cfg: ClubConfig | null | undefined): string | null {
+  return cfg?.secondary_color ?? null;
+}
 
 // ── Reads ───────────────────────────────────────────────────────────────────
 
 export async function listClubConfigs(): Promise<ClubConfig[]> {
-  const { data, error } = await supabase
+  const withColors =
+    "id, club_key, display_name, playhq_club_id, s3_club_uid, logo_url, team_color, primary_color, secondary_color, competitions";
+  const legacy =
+    "id, club_key, display_name, playhq_club_id, s3_club_uid, logo_url, team_color, competitions";
+
+  const first = await supabase
     .from("club_config")
-    .select(
-      "id, club_key, display_name, playhq_club_id, s3_club_uid, logo_url, team_color, competitions"
-    )
+    .select(withColors)
     .order("display_name", { ascending: true });
+
+  let data: unknown = first.data;
+  let error = first.error;
+
+  // If the colour columns haven't been migrated yet, fall back to the legacy
+  // select so the page still works (primary falls back to team_color).
+  if (error && /primary_color|secondary_color/.test(error.message || "")) {
+    const retry = await supabase
+      .from("club_config")
+      .select(legacy)
+      .order("display_name", { ascending: true });
+    data = retry.data;
+    error = retry.error;
+  }
   if (error) {
     console.error("Failed loading club_config:", error);
     throw new Error(error.message || "Failed loading club configuration");
@@ -59,6 +90,7 @@ export async function listClubConfigs(): Promise<ClubConfig[]> {
 export async function upsertClubConfig(input: ClubConfigInput): Promise<void> {
   const key = normaliseClub(input.club_key);
   if (!key) throw new Error("A club name/key is required.");
+  const primary = input.primary_color?.trim() || null;
   const row = {
     club_key: key,
     display_name: input.display_name ?? "",
@@ -68,12 +100,26 @@ export async function upsertClubConfig(input: ClubConfigInput): Promise<void> {
         ? null
         : input.s3_club_uid,
     logo_url: input.logo_url?.trim() || null,
-    team_color: input.team_color?.trim() || null,
+    primary_color: primary,
+    secondary_color: input.secondary_color?.trim() || null,
+    // Keep the legacy column in sync with the primary so older readers still work.
+    team_color: primary,
     competitions: input.competitions?.trim() || null,
   };
-  const { error } = await supabase
+  let { error } = await supabase
     .from("club_config")
     .upsert(row, { onConflict: "club_key" });
+
+  // If the colour columns aren't migrated yet, retry without them (primary
+  // still lands in the legacy team_color so the Players tab background works).
+  if (error && /primary_color|secondary_color/.test(error.message || "")) {
+    const { primary_color, secondary_color, ...legacyRow } = row;
+    void primary_color;
+    void secondary_color;
+    ({ error } = await supabase
+      .from("club_config")
+      .upsert(legacyRow, { onConflict: "club_key" }));
+  }
   if (error) {
     console.error("Failed saving club_config:", error);
     throw new Error(error.message || "Failed saving club configuration");
@@ -152,6 +198,8 @@ export type DiscoveredClub = {
   playhq_club_id: string | null;
   s3_club_uid: number | null;
   logo_url: string | null;
+  /** Competition labels this club was seen in (e.g. "NTFL Men's, NTFL Women's"). */
+  competitions: string | null;
 };
 
 /**
@@ -163,8 +211,10 @@ export async function discoverClubsFromFeeds(
   onProgress?: (done: number, total: number) => void
 ): Promise<DiscoveredClub[]> {
   const byKey = new Map<string, DiscoveredClub>();
+  // Competition labels seen per club (dedup set), joined into `competitions`.
+  const comps = new Map<string, Set<string>>();
 
-  const ensure = (name: string): DiscoveredClub => {
+  const ensure = (name: string, compLabel?: string): DiscoveredClub => {
     const key = normaliseClub(name);
     let d = byKey.get(key);
     if (!d) {
@@ -174,8 +224,15 @@ export async function discoverClubsFromFeeds(
         playhq_club_id: null,
         s3_club_uid: null,
         logo_url: null,
+        competitions: null,
       };
       byKey.set(key, d);
+    }
+    if (compLabel) {
+      const set = comps.get(key) ?? new Set<string>();
+      set.add(compLabel);
+      comps.set(key, set);
+      d.competitions = Array.from(set).join(", ");
     }
     return d;
   };
@@ -193,11 +250,11 @@ export async function discoverClubsFromFeeds(
     for (const game of games) {
       const { home, away } = sides(game);
       if (home?.name && home.id) {
-        const d = ensure(home.name);
+        const d = ensure(home.name, grade.label);
         if (!d.playhq_club_id) d.playhq_club_id = home.id;
       }
       if (away?.name && away.id) {
-        const d = ensure(away.name);
+        const d = ensure(away.name, grade.label);
         if (!d.playhq_club_id) d.playhq_club_id = away.id;
       }
       allGames.push({ game });
