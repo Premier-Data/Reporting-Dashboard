@@ -18,14 +18,12 @@ import {
   Settings,
   Target,
   User,
-  Users,
 } from "lucide-react";
 
 import {
   getMatchReportForGame,
   playerDePercent,
   type MatchReport,
-  type MatchReportTeam,
   type TeamStatRow,
 } from "@/lib/api/matchReport";
 import type { PlayerStatLine } from "@/types/fixtureReport";
@@ -38,7 +36,7 @@ import {
   type PlayHqGame,
 } from "@/lib/api/playhq";
 
-type TabKey = "general" | "efficiencies" | "players" | "teamlists";
+type TabKey = "general" | "efficiencies" | "players";
 
 // ── Shared bits (crest, bars, tables) ───────────────────────────────────────
 
@@ -359,70 +357,6 @@ function PlayersTable({ report }: { report: MatchReport }) {
   );
 }
 
-function TeamLists({ report }: { report: MatchReport }) {
-  const [side, setSide] = useState<"home" | "away">("home");
-  const team: MatchReportTeam = side === "home" ? report.home : report.away;
-
-  const roster = useMemo(() => {
-    return [...team.players].sort((a, b) => {
-      const na = a.playerNumber || Number.POSITIVE_INFINITY;
-      const nb = b.playerNumber || Number.POSITIVE_INFINITY;
-      if (na !== nb) return na - nb;
-      return a.playerName.localeCompare(b.playerName);
-    });
-  }, [team]);
-
-  const dotColor = side === "home" ? "bg-red-500" : "bg-emerald-500";
-
-  const tab = (val: "home" | "away", name: string) => (
-    <button
-      type="button"
-      onClick={() => setSide(val)}
-      className={`flex-1 truncate rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
-        side === val
-          ? "border-sky-500 bg-sky-500 text-white"
-          : "border-white/15 bg-white/5 text-slate-300 hover:bg-white/10"
-      }`}
-    >
-      {name}
-    </button>
-  );
-
-  return (
-    <div>
-      <div className="mb-4 flex gap-2">
-        {tab("home", report.home.name)}
-        {tab("away", report.away.name)}
-      </div>
-
-      <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
-        <span>Player</span>
-        <span>{roster.length} players</span>
-      </div>
-
-      <ul className="divide-y divide-white/5">
-        {roster.map((p) => (
-          <li key={p.playerUid} className="flex items-center gap-3 py-2.5">
-            <span
-              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${dotColor}`}
-            >
-              {p.playerNumber || "-"}
-            </span>
-            <span className="truncate text-sm font-medium text-slate-100">
-              {p.playerName}
-            </span>
-          </li>
-        ))}
-        {roster.length === 0 && (
-          <li className="py-8 text-center text-sm text-slate-400">
-            No team list available.
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
-
 // ── The page ────────────────────────────────────────────────────────────────
 
 function MatchStatsInner() {
@@ -502,7 +436,6 @@ function MatchStatsInner() {
     { key: "general", label: "General", icon: Settings },
     { key: "efficiencies", label: "Efficiencies", icon: Target },
     { key: "players", label: "Players", icon: User },
-    { key: "teamlists", label: "Team Lists", icon: Users },
   ];
 
   return (
@@ -640,9 +573,8 @@ function MatchStatsInner() {
                 </div>
               )}
               {tab === "players" && <PlayersTable report={report} />}
-              {tab === "teamlists" && <TeamLists report={report} />}
 
-              {tab !== "players" && tab !== "teamlists" && (
+              {tab !== "players" && (
                 <div className="mt-6 flex items-center justify-center gap-5 text-xs text-slate-400">
                   <span className="flex items-center gap-1.5">
                     <span className="h-2.5 w-2.5 rounded-full bg-red-500" />
