@@ -43,6 +43,10 @@ import {
   clubInitials,
   clubBadgeColor,
 } from "@/lib/api/clubLogos";
+import {
+  ensureClubConfigCache,
+  clubLogoOverride,
+} from "@/lib/api/clubConfig";
 
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
 // Worker's edge cache means concurrent viewers share one upstream call.
@@ -211,7 +215,9 @@ function ClubCrest({
   name: string | undefined;
   size?: number;
 }) {
-  const logo = clubLogo(name);
+  // Admin-configured logo URL wins over the bundled public/clubs/*.png, so
+  // clubs without a bundled file (e.g. PFL) still show their crest.
+  const logo = clubLogoOverride(name) || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
     // eslint-disable-next-line @next/next/no-img-element
@@ -502,6 +508,21 @@ export default function LiveScoresPage() {
   // Season picker. Only the current season's grades are wired up, so this is a
   // single option today; it drives the UI the same way the official app does.
   const [season, setSeason] = useState<string>(SEASONS[0]);
+
+  // Prime the club_config override cache (logos + colours) once, then bump a
+  // tick so the crests re-render with any admin-configured logos.
+  const [, setClubCfgTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    ensureClubConfigCache()
+      .then(() => {
+        if (!cancelled) setClubCfgTick((t) => t + 1);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const grade = useMemo(
     () => LIVE_SCORE_GRADES.find((g) => g.key === comp) ?? LIVE_SCORE_GRADES[0],
     [comp]

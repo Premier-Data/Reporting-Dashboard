@@ -26,8 +26,17 @@ import {
   type TeamListSide,
 } from "@/lib/api/playhq";
 
-function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
-  const logo = clubLogo(name);
+function Crest({
+  name,
+  size = 44,
+  logoUrl,
+}: {
+  name: string | undefined;
+  size?: number;
+  /** Admin-configured logo URL override; falls back to the bundled logo. */
+  logoUrl?: string | null;
+}) {
+  const logo = logoUrl || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
     // eslint-disable-next-line @next/next/no-img-element
@@ -118,6 +127,11 @@ function TeamListsInner() {
     home: { bg: "#ef4444", fg: "#ffffff" },
     away: { bg: "#10b981", fg: "#ffffff" },
   });
+  // Admin-configured logo overrides per side (for clubs with no bundled png).
+  const [logos, setLogos] = useState<{
+    home: string | null;
+    away: string | null;
+  }>({ home: null, away: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [side, setSide] = useState<"home" | "away">("home");
@@ -166,6 +180,10 @@ function TeamListsInner() {
               bg: primaryColorOf(ac) ?? "#10b981",
               fg: secondaryColorOf(ac) ?? "#ffffff",
             },
+          });
+          setLogos({
+            home: hc?.logo_url ?? null,
+            away: ac?.logo_url ?? null,
           });
         }
       } catch (e) {
@@ -223,7 +241,7 @@ function TeamListsInner() {
           <div className="border-b border-white/10 px-4 pb-4 pt-4">
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
               <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={home?.name} size={52} />
+                <Crest name={home?.name} size={52} logoUrl={logos.home} />
                 <span className="text-xs font-medium leading-tight text-slate-300">
                   {home?.name ?? "Home"}
                 </span>
@@ -255,7 +273,7 @@ function TeamListsInner() {
                 </div>
               </div>
               <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={away?.name} size={52} />
+                <Crest name={away?.name} size={52} logoUrl={logos.away} />
                 <span className="text-xs font-medium leading-tight text-slate-300">
                   {away?.name ?? "Away"}
                 </span>

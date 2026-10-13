@@ -143,11 +143,16 @@ export async function deleteClubConfig(id: number): Promise<void> {
 // share one request; it's invalidated after any admin write.
 
 let cache: Promise<Map<string, ClubConfig>> | null = null;
+// A SYNCHRONOUS snapshot of the resolved cache, so UI that renders many crests
+// (the Live Scores list) can read overrides without an async call per crest.
+// Populated when ensureClubConfigCache() resolves; null until then.
+let snapshot: Map<string, ClubConfig> | null = null;
 
 async function loadMap(): Promise<Map<string, ClubConfig>> {
   const rows = await listClubConfigs();
   const map = new Map<string, ClubConfig>();
   for (const r of rows) map.set(r.club_key, r);
+  snapshot = map;
   return map;
 }
 
@@ -165,6 +170,26 @@ export function ensureClubConfigCache(): Promise<Map<string, ClubConfig>> {
 
 export function invalidateClubConfigCache(): void {
   cache = null;
+  snapshot = null;
+}
+
+/**
+ * Synchronous override lookup from the resolved cache snapshot. Returns null
+ * until the cache has loaded (call ensureClubConfigCache() first and re-render
+ * once it resolves). Used by components that render many crests at once.
+ */
+export function clubConfigSnapshot(
+  name: string | null | undefined
+): ClubConfig | null {
+  if (!snapshot) return null;
+  const key = normaliseClub(name);
+  if (!key) return null;
+  return snapshot.get(key) ?? null;
+}
+
+/** The admin-configured logo URL for a club name, or null (sync). */
+export function clubLogoOverride(name: string | null | undefined): string | null {
+  return clubConfigSnapshot(name)?.logo_url ?? null;
 }
 
 /** The override row for a club name, or null. Resolves the cache first. */
