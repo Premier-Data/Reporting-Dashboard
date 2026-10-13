@@ -19,8 +19,16 @@ export function normaliseClub(name: string | null | undefined): string {
     .toLowerCase()
     .replace(/\u2019/g, "'") // curly → straight apostrophe
     .replace(/\b(men|women|mens|womens)\b/g, "")
+    // Division/grade suffix in parentheses, e.g. PFL "Baldivis (A)" → the "(A)"
+    // is the A-Grade marker. Strip a trailing "(x)" where x is a short grade
+    // token (a single letter, or "res"/"reserves"), BEFORE punctuation removal.
+    .replace(/\(\s*(?:[a-f]|res|reserve|reserves|grade)\s*\)\s*$/i, "")
     .replace(/\b(premier|premier league|seniors|senior|reserves|reserve|a[-\s]?grade|division \d+|div \d+)\b/g, "")
     .replace(/[^a-z0-9 ]/g, "") // drop punctuation
+    // Strip a leftover trailing single grade letter ("… a"/"… b") that came
+    // from an unparenthesised grade marker. Guarded to a single a–f so real
+    // club names aren't truncated.
+    .replace(/\s+[a-f]$/i, "")
     .replace(/\s+/g, " ")
     .trim();
 }
