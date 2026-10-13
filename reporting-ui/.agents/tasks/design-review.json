@@ -1,0 +1,24 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "NIT",
+      "location": "Design: The permission predicate (canFlagRow, ~line 960)",
+      "problem": "canFlagRow's empty-slot branch repeats `loadedCheckId != null`, which canFlag already encodes. This is correct (the empty-slot arm needs its own check-loaded guard) but could be mistaken for redundancy and 'simplified' away.",
+      "fix": "Keep the `loadedCheckId != null` conjunct in the empty-slot branch: `canFlag || (!!user && loadedCheckId != null && isEmptySlotStatus(status))`. Do not remove it."
+    },
+    {
+      "severity": "NIT",
+      "location": "Design: Wiring point 3 — hint text (~line 3464)",
+      "problem": "The broadened hint shows 'right-click a missed/extra instance to flag it' to any logged-in non-allocated viewer even when the loaded check has no missed/extra rows.",
+      "fix": "Optional: gate the phrase on `videoRows.some(r => r.status === 'missed' || r.status === 'extra')`. Permission logic is unaffected either way."
+    },
+    {
+      "severity": "NIT",
+      "location": "Design: Wiring point 2 — openFlagMenu internal guard (~line 1320)",
+      "problem": "Confirmation only: the admin-resolve path on an already-flagged fully-populated row relies on allowResolve staying true while allowFlag (canFlagRow) is false.",
+      "fix": "No change. Verified the new guard keeps `allowResolve = canResolveDispute && isFlagged` so admins keep resolve access on full rows."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\reporting-ui\\.agents\\tasks\\design-review.md"
+}

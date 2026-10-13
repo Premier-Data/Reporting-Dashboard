@@ -74,6 +74,7 @@ import {
   playerNumberMapFromReport,
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
+import { canFlagRowPure } from "./dispute-permissions";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -961,6 +962,18 @@ function AccuracyCompareInner() {
     loadedCheckId != null &&
     (user?.role === "admin" || user?.role === "super_admin");
 
+  // Who may FLAG a given comparison row. The allocated analyst (`canFlag`) may
+  // flag any row; any logged-in user viewing a loaded check may flag an
+  // empty-slot (missed/extra) row — the dispute attaches to the single
+  // populated side. Fully-populated rows stay allocated-analyst-only. The
+  // `hasCheck` guard gates the empty-slot arm for non-allocated users; keep it.
+  const canFlagRow = (status: MatchStatus): boolean =>
+    canFlagRowPure(status, {
+      isAllocated: canFlag,
+      isLoggedIn: !!user,
+      hasCheck: loadedCheckId != null,
+    });
+
   // Only admins/super admins may EDIT the master (fix a mis-coded player/stat,
   // remove a bad instance, or add one the master missed). Edits recompute the
   // accuracy live and can be downloaded / saved as a corrected master.
@@ -1319,10 +1332,11 @@ function AccuracyCompareInner() {
   const openFlagMenu = (
     e: React.MouseEvent,
     instance: Instance,
-    side: DisputeSide
+    side: DisputeSide,
+    status: MatchStatus
   ) => {
     const isFlagged = flaggedKeys.has(disputeKey(instance.id, side));
-    const allowFlag = canFlag;
+    const allowFlag = canFlagRow(status);
     const allowResolve = canResolveDispute && isFlagged;
     if (!allowFlag && !allowResolve) return;
     e.preventDefault();
@@ -3462,9 +3476,12 @@ function AccuracyCompareInner() {
                   · click any stat to jump to that moment
                   {canFlag
                     ? " · right-click an instance to flag it"
-                    : canResolveDispute
-                      ? " · right-click a flagged instance to resolve it"
+                    : user
+                      ? " · right-click a missed/extra instance to flag it"
                       : ""}
+                  {canResolveDispute
+                    ? " · right-click a flagged instance to resolve it"
+                    : ""}
                 </span>
               </span>
               <div className="flex items-center gap-3">
@@ -3715,8 +3732,15 @@ function AccuracyCompareInner() {
                             )
                           }
                           onFlag={
-                            (canFlag || canResolveDispute) && masterInstance
-                              ? (e) => openFlagMenu(e, masterInstance, "master")
+                            (canFlagRow(row.status) || canResolveDispute) &&
+                            masterInstance
+                              ? (e) =>
+                                  openFlagMenu(
+                                    e,
+                                    masterInstance,
+                                    "master",
+                                    row.status
+                                  )
                               : undefined
                           }
                         />
@@ -3737,9 +3761,15 @@ function AccuracyCompareInner() {
                             )
                           }
                           onFlag={
-                            (canFlag || canResolveDispute) && analystInstance
+                            (canFlagRow(row.status) || canResolveDispute) &&
+                            analystInstance
                               ? (e) =>
-                                  openFlagMenu(e, analystInstance, "analyst")
+                                  openFlagMenu(
+                                    e,
+                                    analystInstance,
+                                    "analyst",
+                                    row.status
+                                  )
                               : undefined
                           }
                         />
