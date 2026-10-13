@@ -52,6 +52,26 @@ export const CLUB_LOGO_FILES: Record<string, string> = {
   "darwin buffaloes": "darwin-buffaloes.png",
 };
 
+// Make a logo URL safe to use as an <img src>. Some stored club logo URLs
+// contain raw spaces and other characters that a browser rejects in an <img>
+// (even though a server fetch tolerates them), e.g.
+//   ".../637952074092884278south belgrave.png"
+// Encode the PATH + query (leaving the scheme/host and existing %xx intact) so
+// those load. Returns the input unchanged when it isn't an http(s) URL.
+export function safeImageUrl(url: string | null | undefined): string | null {
+  const u = (url ?? "").trim();
+  if (!u) return null;
+  const m = u.match(/^(https?:\/\/[^/]+)(\/.*)?$/i);
+  if (!m) return u; // relative/local path — leave as-is
+  const origin = m[1];
+  const rest = m[2] ?? "";
+  // Encode anything a browser would choke on, but don't double-encode %xx.
+  const encoded = rest.replace(/%(?![0-9a-fA-F]{2})|[^A-Za-z0-9/_.~!*'();:@&=+$,?#%-]/g, (c) =>
+    encodeURIComponent(c)
+  );
+  return origin + encoded;
+}
+
 /** Local logo path for a team name, or null when the club isn't mapped yet. */
 export function clubLogo(name: string | null | undefined): string | null {
   const key = normaliseClub(name);

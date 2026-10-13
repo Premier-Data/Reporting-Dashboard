@@ -7,7 +7,7 @@
 // Configuration page.
 
 import { supabase } from "@/lib/supabase";
-import { normaliseClub } from "@/lib/api/clubLogos";
+import { normaliseClub, safeImageUrl } from "@/lib/api/clubLogos";
 import {
   getGradeGames,
   sides,
@@ -187,9 +187,9 @@ export function clubConfigSnapshot(
   return snapshot.get(key) ?? null;
 }
 
-/** The admin-configured logo URL for a club name, or null (sync). */
+/** The admin-configured logo URL for a club name, or null (sync, img-safe). */
 export function clubLogoOverride(name: string | null | undefined): string | null {
-  return clubConfigSnapshot(name)?.logo_url ?? null;
+  return safeImageUrl(clubConfigSnapshot(name)?.logo_url);
 }
 
 /** The override row for a club name, or null. Resolves the cache first. */

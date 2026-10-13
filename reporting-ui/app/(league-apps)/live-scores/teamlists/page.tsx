@@ -10,7 +10,12 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Loader2, AlertTriangle } from "lucide-react";
 
-import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
+import {
+  clubLogo,
+  clubInitials,
+  clubBadgeColor,
+  safeImageUrl,
+} from "@/lib/api/clubLogos";
 import {
   clubConfigFor,
   primaryColorOf,
@@ -36,7 +41,7 @@ function Crest({
   /** Admin-configured logo URL override; falls back to the bundled logo. */
   logoUrl?: string | null;
 }) {
-  const logo = logoUrl || clubLogo(name);
+  const logo = safeImageUrl(logoUrl) || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
     // eslint-disable-next-line @next/next/no-img-element
