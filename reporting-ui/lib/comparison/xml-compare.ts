@@ -211,8 +211,10 @@ export function codeTime(stat: string, start: number, end: number): number {
   );
   if (rule) {
     // Honour the configured offset exactly (these are deliberate fixed
-    // lead-ins, e.g. a goal is coded 45s after the start marker, so the
-    // window is expected to be long enough — don't clamp to end).
+    // lead-ins, e.g. a corner is coded 5s after the start marker, so the
+    // window is expected to be long enough — don't clamp to end). NB: goals
+    // carry NO fixed offset (see STAT_START_OFFSETS) and fall through to the
+    // window midpoint below.
     return start + rule.offset;
   }
   const mid = (start + end) / 2;
@@ -327,6 +329,33 @@ function isExcludedCompareLabel(label: string): boolean {
   return v.length > 0 && EXCLUDED_COMPARE_LABELS.has(v);
 }
 
+// Pitch-zone label bases. A zone label can carry trailing suffixes the exact
+// EXCLUDED_COMPARE_LABELS set doesn't cover (e.g. "Penalty Box (a)",
+// "Front Third 116,"), so match on a normalised START-WITH basis instead.
+const PITCH_ZONE_BASES = [
+  "back third",
+  "middle third",
+  "front third",
+  "penalty box",
+];
+
+/**
+ * Conservative pitch-zone detector: returns true when the (normalised) group
+ * OR text STARTS WITH a pitch-zone base ("back third", "middle third",
+ * "front third", "penalty box"), tolerant of trailing suffixes like " (a)" or
+ * " 116,". Anchored at the start so it never swallows unrelated stats that
+ * merely contain a zone word. Used only to SKIP a pitch-zone label when
+ * selecting an instance's stat — the exclusion guard below is unchanged.
+ */
+function isPitchZoneLabel(group: string, text: string): boolean {
+  const norm = (s: string) => (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+  const g = norm(group);
+  const t = norm(text);
+  return PITCH_ZONE_BASES.some(
+    (base) => g.startsWith(base) || t.startsWith(base)
+  );
+}
+
 export function parseInstances(xml: string): Instance[] {
   const instances: Instance[] = [];
   if (typeof window === "undefined" || typeof DOMParser === "undefined") {
@@ -359,8 +388,12 @@ export function parseInstances(xml: string): Instance[] {
       const g = group.toLowerCase();
       if (g === "team") team = text;
       else if (g === "player") playerRaw = text;
-      else if (!stat) {
-        // First non-meta label is treated as the stat + category.
+      else if (!stat && !isPitchZoneLabel(group, text)) {
+        // First non-meta, non-pitch-zone label is the stat + category. Pitch
+        // zones (e.g. "Penalty Box (a)", "Front Third 116,") are SKIPPED here
+        // so the loop keeps scanning and the first REAL stat label wins. This
+        // stops real early stats being captured as a zone and then dropped by
+        // the exclusion guard below.
         category = group;
         stat = text;
       }
@@ -379,6 +412,13 @@ export function parseInstances(xml: string): Instance[] {
 
     const safeEnd = Number.isNaN(end) ? start : end;
     const cleanStat = stat.trim();
+
+    // No real stat label was found (e.g. the instance carried ONLY a pitch
+    // zone, which the loop above now skips as a stat candidate). Drop it — it
+    // represents no coded action. Previously such an instance was dropped by
+    // the exclusion guard because the pitch zone was captured as the stat;
+    // skipping the zone leaves `stat` empty, so drop explicitly here.
+    if (!cleanStat) continue;
 
     // Exclude non-action markers (substitutions, Start/End Half, pitch zones:
     // Back/Middle/Front/Penalty Box) from the comparison and the by-category
