@@ -25,10 +25,29 @@ const TOTAL_Q = 5 as const;
 
 // ── Resolve a PlayHQ game → JADE fixture uid ────────────────────────────────
 
-/** Pull the round number out of a round name ("Round 2" → 2; finals → null). */
-function roundNumber(name: string | null | undefined): number | null {
-  const m = String(name ?? "").match(/(\d+)/);
-  return m ? Number(m[1]) : null;
+/**
+ * A canonical token for a round that matches across the two feeds — PlayHQ uses
+ * long names ("Round 2", "Preliminary Final", "Grand Final") while comp_fixtures
+ * uses short codes ("R02", "PF", "GF", "FW1"). Numbered rounds → "r<n>"; finals
+ * → a canonical finals code ("gf", "pf", "sf", "qf", "ef", "fw<n>"). Returns ""
+ * when nothing recognisable is found (so two blanks don't falsely match).
+ */
+function roundToken(name: string | null | undefined): string {
+  const n = String(name ?? "").toLowerCase().trim();
+  if (!n) return "";
+  // Grand / Preliminary / Semi / Qualifying / Elimination finals (long or code).
+  if (/grand\s*final|\bgf\b/.test(n)) return "gf";
+  if (/prelim|\bpf\b/.test(n)) return "pf";
+  if (/semi|\bsf\b/.test(n)) return "sf";
+  if (/qualif|\bqf\b/.test(n)) return "qf";
+  if (/elim|\bef\b/.test(n)) return "ef";
+  // Finals week N ("FW1"/"Finals Week 1").
+  const fw = n.match(/f(?:inals)?\s*w(?:eek)?\s*(\d+)/) || n.match(/\bfw(\d+)\b/);
+  if (fw) return `fw${fw[1]}`;
+  // Numbered home-and-away round ("Round 2" / "R02").
+  const num = n.match(/(?:round|^r)\s*0*(\d+)/) || n.match(/\b0*(\d+)\b/);
+  if (num) return `r${Number(num[1])}`;
+  return "";
 }
 
 type Gender = "men" | "women";
@@ -118,7 +137,7 @@ export async function autoResolveJadeUidForGame(
   const year = game.schedule?.date
     ? Number(game.schedule.date.slice(0, 4))
     : null;
-  const rnd = roundNumber(game.round?.name);
+  const rndTok = roundToken(game.round?.name);
   // The PlayHQ team names carry the gender suffix ("… Men Premier" / "… Women
   // Premier"); use it to avoid matching a men's game to the women's fixture
   // between the same clubs (and vice-versa), which otherwise collide because
@@ -139,13 +158,15 @@ export async function autoResolveJadeUidForGame(
   );
   if (candidates.length === 0) return null;
 
-  // The two clubs usually meet twice a season (home + away legs), so round is
-  // the decider. Require an EXACT round match; only when a single candidate
-  // exists do we accept it without a round match. Never guess between legs —
-  // returning the wrong leg would show the wrong match's stats.
+  // The two clubs often meet several times a season (home + away legs, plus
+  // finals), so the round is the decider. Match on the canonical round token,
+  // which handles both numbered rounds and finals ("Preliminary Final"↔"PF",
+  // "Grand Final"↔"GF"). Only when a single candidate exists do we accept it
+  // without a round match. Never guess between legs — the wrong leg would show
+  // the wrong match's stats.
   const exact =
-    rnd != null
-      ? candidates.filter((r) => roundNumber(r.round) === rnd)
+    rndTok !== ""
+      ? candidates.filter((r) => roundToken(r.round) === rndTok)
       : [];
   const chosen = exact[0] ?? (candidates.length === 1 ? candidates[0] : null);
   if (!chosen) return null;
