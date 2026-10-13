@@ -26,6 +26,7 @@ import {
   clubBadgeColor,
   clubInitials,
   normaliseClub,
+  safeImageUrl,
 } from "@/lib/api/clubLogos";
 import {
   listClubConfigs,
@@ -108,7 +109,7 @@ function colorFor(row: Row): string {
 
 // Logo preview: the override URL, else the bundled file, else initials badge.
 function LogoPreview({ row }: { row: Row }) {
-  const src = row.logo_url || clubLogo(row.club_key);
+  const src = safeImageUrl(row.logo_url) || clubLogo(row.club_key);
   if (src) {
     // eslint-disable-next-line @next/next/no-img-element
     return (
