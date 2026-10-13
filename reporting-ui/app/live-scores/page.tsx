@@ -58,21 +58,50 @@ const LIVE_POLL_MS = 120_000;
 const SEASONS = ["2026"] as const;
 
 // A short, app-style round label: "Round 2" -> "02", "Round 12" -> "12",
-// finals keep a compact text label (e.g. "Finals Week 1" -> "F1", "Grand
-// Final" -> "GF"). Falls back to the raw name when nothing matches.
+// finals keep a compact text label. The finals series runs AFTER the last
+// home-and-away round as F1, F2, then Preliminary (PF) and Grand (GF) finals.
+// PlayHQ names them "Finals Round 1/2…", "Preliminary Final", "Grand Final";
+// comp feeds use "FW1/FW2", "PF", "GF". Falls back to the raw name.
 function roundShort(name: string): string {
   const n = name.trim();
   if (/grand\s*final/i.test(n)) return "GF";
-  if (/semi/i.test(n)) return "SF";
   if (/prelim/i.test(n)) return "PF";
+  if (/semi/i.test(n)) return "SF";
   if (/qualif/i.test(n)) return "QF";
   if (/elim/i.test(n)) return "EF";
-  const finals = n.match(/final.*?(\d+)/i) || (/final/i.test(n) ? null : null);
-  if (finals) return `F${finals[1]}`;
+  // "Finals Round N" / "Finals Week N" / "FWn" / "Fn" -> "F<n>".
+  const fin =
+    n.match(/final(?:s)?\s*(?:round|week)?\s*(\d+)/i) ||
+    n.match(/\bf(?:w)?\s*(\d+)\b/i);
+  if (fin) return `F${fin[1]}`;
   const m = n.match(/(\d+)/);
   if (m && /round/i.test(n)) return m[1].padStart(2, "0");
   if (m) return m[1].padStart(2, "0");
   return n;
+}
+
+// A sortable ORDER key so the pills read 01, 02, … 18, F1, F2, PF, GF — the
+// home-and-away rounds in numeric order, THEN the finals series. Numbered
+// rounds keep their number (1–99); finals are pushed past them:
+//   Finals Round/Week N, Fn, Elimination/Qualifying -> 1000 + n (default 1)
+//   Semi Final -> 2000, Preliminary Final -> 3000, Grand Final -> 4000.
+function roundOrder(name: string): number {
+  const n = name.trim();
+  if (/grand\s*final/i.test(n)) return 4000;
+  if (/prelim/i.test(n)) return 3000;
+  if (/semi/i.test(n)) return 2000;
+  if (/qualif|elim/i.test(n)) {
+    const q = n.match(/(\d+)/);
+    return 1000 + (q ? Number(q[1]) : 1);
+  }
+  const fin =
+    n.match(/final(?:s)?\s*(?:round|week)?\s*(\d+)/i) ||
+    n.match(/\bf(?:w)?\s*(\d+)\b/i);
+  if (fin) return 1000 + Number(fin[1]);
+  if (/final/i.test(n)) return 1000;
+  const m = n.match(/(\d+)/);
+  if (m) return Number(m[1]);
+  return 9999;
 }
 
 // "3rd Quarter" -> "Q3"; passes through anything else.
@@ -619,14 +648,14 @@ export default function LiveScoresPage() {
     return () => clearInterval(t);
   }, [anyLive, load]);
 
-  // Rounds present, ordered by their numeric suffix (Round 1, 2, …), finals last.
+  // Rounds present, ordered home-and-away first (01, 02, …) then the finals
+  // series (F1, F2, PF, GF) via roundOrder — not by the raw first number, which
+  // previously interleaved "Finals Round 1" with "Round 1".
   const rounds = useMemo(() => {
-    const names = Array.from(new Set(games.map((g) => g.round?.name).filter(Boolean)));
-    const num = (n: string) => {
-      const m = n.match(/(\d+)/);
-      return m ? Number(m[1]) : 9999;
-    };
-    return names.sort((a, b) => num(a) - num(b));
+    const names = Array.from(
+      new Set(games.map((g) => g.round?.name).filter(Boolean))
+    ) as string[];
+    return names.sort((a, b) => roundOrder(a) - roundOrder(b));
   }, [games]);
 
   // Default the round filter to the round being played today (then nearest
