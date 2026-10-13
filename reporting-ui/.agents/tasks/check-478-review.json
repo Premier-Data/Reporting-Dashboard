@@ -1,0 +1,39 @@
+{
+  "verdict": "APPROVED",
+  "verificationEvidence": {
+    "ranAt": "coder re-iteration (trusted, not re-run by reviewer)",
+    "cwd": "c:\\Users\\AndyDin\\reporting-dashboard\\reporting-ui",
+    "newTestFile": {
+      "cmd": "npx vitest --run lib/comparison/pitch-zone-stat.test.ts",
+      "result": "PASS",
+      "files": "1 passed (1)",
+      "tests": "5 passed (5)"
+    },
+    "comparisonSuite": {
+      "cmd": "npx vitest --run lib/comparison",
+      "result": "PASS",
+      "files": "3 passed (3)",
+      "tests": "16 passed (16)",
+      "breakdown": "cross-exact.test.ts 6, pitch-zone-stat.test.ts 5, json-adapter.test.ts 5"
+    },
+    "build": {
+      "cmd": "npm run build",
+      "result": "PASS",
+      "note": "Next.js 16.2.10 Turbopack; no TypeScript errors; 35 routes. A first-run 'Cannot find name safeImageUrl' was a stale .next cache and cleared after removing .next."
+    }
+  },
+  "itemChecks": {
+    "item1_isPitchZoneLabel_and_skip": "PASS — detector normalises (lowercase/collapse-whitespace/trim) and matches group OR text via startsWith against back third / middle third / front third / penalty box, anchored at start and suffix-tolerant. The else-if branch now reads !stat && !isPitchZoneLabel(group,text), skipping zones so the first real stat wins.",
+    "item2_exclusion_guard_unchanged": "PASS — EXCLUDED_COMPARE_LABELS has every original entry (sub/substitute, start/end half spaced+unspaced, four zones spaced+unspaced); post-loop guard intact and not loosened. Start/End Half, Substitution, and zone-only instances still drop (the latter via an additive `if (!cleanStat) continue;`).",
+    "item3_tests": "PASS — pitch-zone-stat.test.ts covers all four parser cases (Penalty-Box-first kept, Front-Third-first kept, Start-Half dropped, zone-only dropped) plus the compareInstances regression (early Claims master non-null).",
+    "item4_scope": "PASS — the fix under review (uncommitted working tree) touches only xml-compare.ts plus the new test file. json-adapter.ts, lib/api/clubConfig.ts, and lib/api/clubLogos.ts are unchanged vs main. The json-adapter.ts / goal-offset edits in the main-diff belong to the separate committed goal fix 8f0f03e, accepted out-of-scope by the orchestrator."
+  },
+  "findings": [],
+  "resolvedPriorFindings": [
+    "Logo-URL change (clubConfig/clubLogos): accepted out-of-scope; confirmed untouched vs main this pass.",
+    "json-adapter.ts goal-timing edits: accepted out-of-scope; separate committed fix 8f0f03e, not modified by this step.",
+    "Missing verification evidence: resolved; coder supplied vitest counts (5/5 new, 16/16 suite) and a clean build.",
+    "Stale codeTime docstring: resolved; docstring now uses the corner example and notes goals carry no fixed offset."
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\reporting-ui/.agents/tasks/check-478-review.md"
+}
