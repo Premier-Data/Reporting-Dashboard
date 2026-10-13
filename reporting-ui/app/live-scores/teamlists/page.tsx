@@ -10,18 +10,20 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Loader2, AlertTriangle } from "lucide-react";
 
-import {
-  getMatchReportForGame,
-  type MatchReport,
-  type MatchReportTeam,
-} from "@/lib/api/matchReport";
 import { clubLogo, clubInitials, clubBadgeColor } from "@/lib/api/clubLogos";
 import {
+  clubConfigFor,
+  primaryColorOf,
+  secondaryColorOf,
+} from "@/lib/api/clubConfig";
+import {
   getGradeGames,
+  getTeamLists,
   sides,
   goalsBehinds,
   LIVE_SCORE_GRADES,
   type PlayHqGame,
+  type TeamListSide,
 } from "@/lib/api/playhq";
 
 function Crest({ name, size = 44 }: { name: string | undefined; size?: number }) {
@@ -46,18 +48,21 @@ function Crest({ name, size = 44 }: { name: string | undefined; size?: number })
 // The team-list roster for one side, in jersey-number order.
 function TeamRoster({
   team,
-  dotColor,
+  badge,
 }: {
-  team: MatchReportTeam;
-  dotColor: string;
+  team: TeamListSide;
+  // The player-number badge colours: square background + number text.
+  badge: { bg: string; fg: string };
 }) {
+  // The worker already returns players in jumper-number order; keep as-is but
+  // be defensive in case of ties.
   const roster = useMemo(
     () =>
       [...team.players].sort((a, b) => {
-        const na = a.playerNumber || Number.POSITIVE_INFINITY;
-        const nb = b.playerNumber || Number.POSITIVE_INFINITY;
+        const na = Number(a.number) || Number.POSITIVE_INFINITY;
+        const nb = Number(b.number) || Number.POSITIVE_INFINITY;
         if (na !== nb) return na - nb;
-        return a.playerName.localeCompare(b.playerName);
+        return a.name.localeCompare(b.name);
       }),
     [team]
   );
@@ -69,21 +74,23 @@ function TeamRoster({
         <span>{roster.length} players</span>
       </div>
       <ul className="divide-y divide-white/5">
-        {roster.map((p) => (
-          <li key={p.playerUid} className="flex items-center gap-3 py-2.5">
+        {roster.map((p, i) => (
+          <li key={`${p.name}-${i}`} className="flex items-center gap-3 py-2.5">
             <span
-              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold text-white ${dotColor}`}
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold"
+              style={{ backgroundColor: badge.bg, color: badge.fg }}
             >
-              {p.playerNumber || "-"}
+              {p.number || "-"}
             </span>
             <span className="truncate text-sm font-medium text-slate-100">
-              {p.playerName}
+              {p.name}
             </span>
           </li>
         ))}
         {roster.length === 0 && (
           <li className="py-8 text-center text-sm text-slate-400">
-            No team list available.
+            No team list available yet. Lists appear once a match is live or
+            final.
           </li>
         )}
       </ul>
@@ -99,7 +106,18 @@ function TeamListsInner() {
   const gameId = params.get("id") ?? "";
 
   const [game, setGame] = useState<PlayHqGame | null>(null);
-  const [report, setReport] = useState<MatchReport | null>(null);
+  const [lists, setLists] = useState<{
+    home: TeamListSide;
+    away: TeamListSide;
+  } | null>(null);
+  // Admin-configured number-badge colours per side (primary bg, secondary text).
+  const [colors, setColors] = useState<{
+    home: { bg: string; fg: string };
+    away: { bg: string; fg: string };
+  }>({
+    home: { bg: "#ef4444", fg: "#ffffff" },
+    away: { bg: "#10b981", fg: "#ffffff" },
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [side, setSide] = useState<"home" | "away">("home");
@@ -118,7 +136,11 @@ function TeamListsInner() {
     setError(null);
     (async () => {
       try {
-        const games = await getGradeGames(grade.gradeId);
+        // Game (for the scoreboard header) + the PlayHQ team lists, in parallel.
+        const [games, tl] = await Promise.all([
+          getGradeGames(grade.gradeId),
+          getTeamLists(gameId),
+        ]);
         const g = games.find((x) => x.id === gameId) ?? null;
         if (cancelled) return;
         if (!g) {
@@ -127,14 +149,24 @@ function TeamListsInner() {
           return;
         }
         setGame(g);
-        const r = await getMatchReportForGame(g);
-        if (cancelled) return;
-        if (!r) {
-          setError(
-            "No team list is available for this match yet. These appear once a game has been coded."
-          );
-        } else {
-          setReport(r);
+        setLists({ home: tl.home, away: tl.away });
+
+        // Resolve configured club colours for each side (best-effort).
+        const [hc, ac] = await Promise.all([
+          clubConfigFor(tl.home.name ?? sides(g).home?.name),
+          clubConfigFor(tl.away.name ?? sides(g).away?.name),
+        ]);
+        if (!cancelled) {
+          setColors({
+            home: {
+              bg: primaryColorOf(hc) ?? "#ef4444",
+              fg: secondaryColorOf(hc) ?? "#ffffff",
+            },
+            away: {
+              bg: primaryColorOf(ac) ?? "#10b981",
+              fg: secondaryColorOf(ac) ?? "#ffffff",
+            },
+          });
         }
       } catch (e) {
         if (!cancelled)
@@ -151,6 +183,8 @@ function TeamListsInner() {
   const { home, away } = game ? sides(game) : { home: null, away: null };
   const homeScore = home?.scoreTotal ?? null;
   const awayScore = away?.scoreTotal ?? null;
+  const homeName = lists?.home.name ?? home?.name ?? "Home";
+  const awayName = lists?.away.name ?? away?.name ?? "Away";
 
   const tab = (val: "home" | "away", name: string) => (
     <button
@@ -166,11 +200,7 @@ function TeamListsInner() {
     </button>
   );
 
-  const activeTeam = report
-    ? side === "home"
-      ? report.home
-      : report.away
-    : null;
+  const activeTeam = lists ? (side === "home" ? lists.home : lists.away) : null;
 
   return (
     <div className="flex min-h-full flex-col bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
@@ -244,15 +274,15 @@ function TeamListsInner() {
             <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {error}
             </div>
-          ) : report && activeTeam ? (
+          ) : lists && activeTeam ? (
             <>
               <div className="mb-4 flex gap-2">
-                {tab("home", report.home.name)}
-                {tab("away", report.away.name)}
+                {tab("home", homeName)}
+                {tab("away", awayName)}
               </div>
               <TeamRoster
                 team={activeTeam}
-                dotColor={side === "home" ? "bg-red-500" : "bg-emerald-500"}
+                badge={side === "home" ? colors.home : colors.away}
               />
             </>
           ) : null}

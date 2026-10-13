@@ -177,6 +177,36 @@ export async function getLiveScore(
   return (await res.json()) as NormalisedLive;
 }
 
+// PlayHQ team lists (named players + jumper numbers), via the Worker. Populated
+// once a game is live/final; empty pre-game (PlayHQ has no pre-game lineup).
+export type TeamListPlayer = { name: string; number: string | null };
+
+export type TeamListSide = {
+  id: string | null;
+  name: string | null;
+  players: TeamListPlayer[];
+};
+
+export type TeamLists = {
+  id: string;
+  status: GameStatus | null;
+  home: TeamListSide;
+  away: TeamListSide;
+};
+
+/** One fixture's team lists (home/away rosters) via the Worker. */
+export async function getTeamLists(
+  gameId: string,
+  signal?: AbortSignal
+): Promise<TeamLists> {
+  const res = await fetch(`${WORKER_BASE}/api/fixtures/${gameId}/teamlists`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) throw new Error(`Failed loading team lists (HTTP ${res.status})`);
+  return (await res.json()) as TeamLists;
+}
+
 // A REST game is "not yet finalised" when its status is empty/null — in AFL
 // that means it's either about to start or currently in play. The REST feed
 // carries no live score for these, so they're the ones to enrich from the

@@ -228,6 +228,34 @@ function statVal(
   return typeof hit?.count === "number" ? hit.count : null;
 }
 
+// One player on a team list (name + jumper number).
+type TeamListPlayer = { name: string; number: string | null };
+
+// Extract one side's full team list from the game's player statistics
+// (statistics.{home,away}.players[]). PlayHQ populates this with every named
+// player (not just scorers) once a game has data (live/final); it's empty
+// pre-game. Sorted by jumper number ascending (unnumbered last, by name).
+function teamListFrom(
+  game: Record<string, unknown>,
+  side: "home" | "away"
+): TeamListPlayer[] {
+  const stats = (game.statistics ?? {}) as Record<string, unknown>;
+  const sideObj = (stats[side] ?? {}) as Record<string, unknown>;
+  const players = Array.isArray(sideObj.players)
+    ? (sideObj.players as Array<Record<string, unknown>>)
+    : [];
+  const out: TeamListPlayer[] = players.map((p) => ({
+    name: (p.name as string) ?? "",
+    number: (p.playerNumber as string) ?? null,
+  }));
+  const num = (n: string | null) => {
+    const v = Number(n);
+    return Number.isFinite(v) && n != null && n !== "" ? v : Number.POSITIVE_INFINITY;
+  };
+  out.sort((a, b) => num(a.number) - num(b.number) || a.name.localeCompare(b.name));
+  return out;
+}
+
 // Extract the goal scorers for one side from the game's player statistics
 // (statistics.{home,away}.players[]). Returns players with at least one goal or
 // behind, sorted by goals desc then behinds desc.
@@ -576,7 +604,7 @@ export default {
     // /api/fixtures/:id/live         (compact normalised live score)
     // /api/fixtures/:id/status       (just id/status/updatedAt)
     const m = url.pathname.match(
-      /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status)$/
+      /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status|teamlists)$/
     );
     if (!m) return json({ error: "not_found" }, 404, cors);
 
@@ -608,10 +636,13 @@ export default {
 
     try {
       const game = (await fetchGame(id, env)) as Record<string, unknown>;
-      // For the normalised /live payload, attach team id+name resolved from the
-      // known grades' REST feeds (the spectator feed carries no team identity).
+      // For the normalised /live and /teamlists payloads, attach team id+name
+      // resolved from the known grades' REST feeds (the spectator feed carries
+      // no team identity).
       const teams =
-        kind === "live" ? await resolveGameTeams(id, env, ctx) : null;
+        kind === "live" || kind === "teamlists"
+          ? await resolveGameTeams(id, env, ctx)
+          : null;
       const payload =
         kind === "status"
           ? {
@@ -621,7 +652,22 @@ export default {
             }
           : kind === "live"
             ? normaliseLive(id, game, teams)
-            : game;
+            : kind === "teamlists"
+              ? {
+                  id,
+                  status: (game.status as string) ?? null,
+                  home: {
+                    id: teams?.home.id ?? null,
+                    name: teams?.home.name ?? null,
+                    players: teamListFrom(game, "home"),
+                  },
+                  away: {
+                    id: teams?.away.id ?? null,
+                    name: teams?.away.name ?? null,
+                    players: teamListFrom(game, "away"),
+                  },
+                }
+              : game;
 
       const bodyText = JSON.stringify(payload);
 
