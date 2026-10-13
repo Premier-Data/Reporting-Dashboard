@@ -8,7 +8,7 @@
 // Everything persists to Supabase (club_config) and overrides the hardcoded
 // defaults; a club with no row falls back to those defaults.
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Loader2,
   Save,
@@ -34,6 +34,13 @@ import {
   discoverClubsFromFeeds,
   type ClubConfig,
 } from "@/lib/api/clubConfig";
+import {
+  listFixturesForMapping,
+  upsertFixtureMap,
+  deleteFixtureMap,
+  listFixtureMap,
+  type FixtureMapping,
+} from "@/lib/api/fixtureMap";
 
 // A row in the editable table — merges a stored override (if any) with the
 // bundled default for display. `id` is null for a default-only (unsaved) club.
@@ -119,6 +126,298 @@ function LogoPreview({ row }: { row: Row }) {
     >
       {clubInitials(row.club_key)}
     </span>
+  );
+}
+
+// ── Fixture mapping (PlayHQ game → JADE report uid) ─────────────────────────
+
+type MapRow = FixtureMapping & {
+  override: string; // the editable uid input (string); "" = clear/none
+  dirty: boolean;
+  saving: boolean;
+  saved: boolean;
+};
+
+function FixtureMappingSection() {
+  const [grade, setGrade] = useState<string>(LIVE_SCORE_GRADES[0]?.key ?? "");
+  const [rows, setRows] = useState<MapRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+
+  const load = useCallback(async (gradeKey: string) => {
+    setLoading(true);
+    setErr(null);
+    try {
+      const list = await listFixturesForMapping(gradeKey);
+      setRows(
+        list.map((m) => ({
+          ...m,
+          override: m.hasStored && m.storedUid != null ? String(m.storedUid) : "",
+          dirty: false,
+          saving: false,
+          saved: false,
+        }))
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to load fixtures.");
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (grade) load(grade);
+  }, [grade, load]);
+
+  const setOverride = (id: string, val: string) =>
+    setRows((prev) =>
+      prev.map((r) =>
+        r.playhqGameId === id
+          ? { ...r, override: val.replace(/[^0-9]/g, ""), dirty: true, saved: false }
+          : r
+      )
+    );
+
+  async function saveRow(id: string) {
+    const r = rows.find((x) => x.playhqGameId === id);
+    if (!r) return;
+    setRows((prev) =>
+      prev.map((x) => (x.playhqGameId === id ? { ...x, saving: true } : x))
+    );
+    try {
+      await upsertFixtureMap({
+        playhq_game_id: r.playhqGameId,
+        jade_fixture_uid: r.override ? Number(r.override) : null,
+        grade_key: r.gradeKey,
+        label: r.label,
+        source: "manual",
+      });
+      setRows((prev) =>
+        prev.map((x) =>
+          x.playhqGameId === id
+            ? { ...x, saving: false, dirty: false, saved: true, hasStored: true, storedUid: r.override ? Number(r.override) : null }
+            : x
+        )
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to save mapping.");
+      setRows((prev) =>
+        prev.map((x) => (x.playhqGameId === id ? { ...x, saving: false } : x))
+      );
+    }
+  }
+
+  // Persist every FINAL game's AUTO-resolved uid as a stored mapping (source
+  // 'auto'), so the resolver reads them directly later. Skips games with no
+  // auto match and ones already overridden manually.
+  async function saveAllAuto() {
+    setSavingAll(true);
+    setErr(null);
+    try {
+      const existing = await listFixtureMap();
+      const manual = new Set(
+        existing.filter((r) => r.source === "manual").map((r) => r.playhq_game_id)
+      );
+      let saved = 0;
+      for (const r of rows) {
+        if (r.autoUid == null || manual.has(r.playhqGameId)) continue;
+        await upsertFixtureMap({
+          playhq_game_id: r.playhqGameId,
+          jade_fixture_uid: r.autoUid,
+          grade_key: r.gradeKey,
+          label: r.label,
+          source: "auto",
+        });
+        saved += 1;
+      }
+      await load(grade);
+      setErr(saved > 0 ? null : "Nothing to save — no auto-resolved fixtures.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Failed to save mappings.");
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
+  async function clearRow(id: string) {
+    const existing = await listFixtureMap();
+    const row = existing.find((r) => r.playhq_game_id === id);
+    if (row) {
+      try {
+        await deleteFixtureMap(row.id);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : "Failed to clear mapping.");
+        return;
+      }
+    }
+    setRows((prev) =>
+      prev.map((x) =>
+        x.playhqGameId === id
+          ? { ...x, override: "", hasStored: false, storedUid: null, dirty: false, saved: false }
+          : x
+      )
+    );
+  }
+
+  const inputCls =
+    "w-full rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-sky-500";
+
+  return (
+    <section className="mt-10">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-bold uppercase tracking-wide text-sky-300">
+            Fixture Mapping
+          </h2>
+          <select
+            value={grade}
+            onChange={(e) => setGrade(e.target.value)}
+            className="rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-sm font-medium text-slate-100 outline-none focus:border-sky-500 [&>option]:bg-slate-800"
+          >
+            {LIVE_SCORE_GRADES.map((g) => (
+              <option key={g.key} value={g.key}>
+                {g.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <button
+          type="button"
+          onClick={saveAllAuto}
+          disabled={savingAll || loading}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-50"
+        >
+          {savingAll ? (
+            <Loader2 size={15} className="animate-spin" />
+          ) : (
+            <Download size={15} />
+          )}
+          Save all auto-matches
+        </button>
+      </div>
+
+      {err && (
+        <div className="mb-3 flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-200">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" /> {err}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="flex items-center gap-2 py-16 text-sm text-slate-400">
+          <Loader2 size={16} className="animate-spin" /> Loading fixtures…
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-white/10">
+          <table className="w-full min-w-[720px] text-sm">
+            <thead>
+              <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
+                <th className="px-3 py-2 font-semibold">Fixture</th>
+                <th className="px-3 py-2 font-semibold">Status</th>
+                <th className="px-3 py-2 font-semibold">Auto match</th>
+                <th className="px-3 py-2 font-semibold">JADE uid (override)</th>
+                <th className="px-3 py-2 font-semibold text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const effective = r.hasStored ? r.storedUid : r.autoUid;
+                return (
+                  <tr key={r.playhqGameId} className="border-b border-white/5">
+                    <td className="px-3 py-2">
+                      <div className="font-medium text-slate-100">{r.label}</div>
+                      <div className="font-mono text-[10px] text-slate-500">
+                        {r.playhqGameId}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.isFinal ? (
+                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-slate-300">
+                          Final
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-[11px] text-sky-300">
+                          Upcoming
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      {r.autoUid != null ? (
+                        <span className="font-mono text-xs text-slate-300">
+                          {r.autoUid}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">no match</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2">
+                      <input
+                        value={r.override}
+                        onChange={(e) => setOverride(r.playhqGameId, e.target.value)}
+                        placeholder={
+                          r.autoUid != null ? `auto: ${r.autoUid}` : "e.g. 32664"
+                        }
+                        inputMode="numeric"
+                        className={`${inputCls} w-28`}
+                      />
+                      <div className="mt-0.5 text-[10px] text-slate-500">
+                        {r.hasStored
+                          ? `stored: ${effective ?? "suppressed"}`
+                          : "using auto"}
+                      </div>
+                    </td>
+                    <td className="px-3 py-2">
+                      <div className="flex items-center justify-end gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => saveRow(r.playhqGameId)}
+                          disabled={r.saving || !r.dirty}
+                          className="inline-flex items-center gap-1 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-xs font-semibold text-sky-300 transition hover:bg-sky-500/20 disabled:opacity-40"
+                        >
+                          {r.saving ? (
+                            <Loader2 size={13} className="animate-spin" />
+                          ) : r.saved ? (
+                            <Check size={13} />
+                          ) : (
+                            <Save size={13} />
+                          )}
+                          {r.saved ? "Saved" : "Save"}
+                        </button>
+                        {r.hasStored && (
+                          <button
+                            type="button"
+                            onClick={() => clearRow(r.playhqGameId)}
+                            aria-label="Clear mapping"
+                            className="rounded-lg border border-white/10 p-1.5 text-slate-400 transition hover:bg-red-500/15 hover:text-red-300"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-3 py-8 text-center text-slate-400">
+                    No fixtures for this competition.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-2 text-xs text-slate-500">
+        Each PlayHQ fixture resolves to a JADE report automatically by team +
+        round. Override the uid for any game the auto-matcher gets wrong, or
+        leave it blank to suppress (no report). &quot;Save all auto-matches&quot;
+        stores the current auto results so the Live Scores tab reads them
+        directly. Reports only exist once a match has been coded.
+      </p>
+    </section>
   );
 }
 
@@ -639,6 +938,9 @@ export default function AdminConfigPage() {
             competition above to edit just that league&apos;s clubs.
           </p>
         </section>
+
+        {/* Fixture mapping */}
+        <FixtureMappingSection />
       </div>
     </div>
   );

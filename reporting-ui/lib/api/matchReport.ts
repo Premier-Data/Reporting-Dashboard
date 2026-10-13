@@ -17,6 +17,7 @@ import type { FixtureReport } from "@/types/fixtureReport";
 import type { FixtureTimeline, PlayerStatLine } from "@/types/fixtureReport";
 import { queryCompFixtures } from "@/lib/api/compFixtures";
 import { normaliseClub } from "@/lib/api/clubLogos";
+import { mappingFor } from "@/lib/api/fixtureMap";
 import { sides, type PlayHqGame } from "@/lib/api/playhq";
 
 // AFL whole-game total lives in quarter 5 of each player's column breakdown.
@@ -87,11 +88,26 @@ function teamsMatch(
 }
 
 /**
- * Find the JADE fixture uid for a PlayHQ game by matching teams + round + year
- * against comp_fixtures. Returns null when no confident match exists (e.g. the
- * match isn't finalised / coded yet, so no report).
+ * Resolve a PlayHQ game to its JADE fixture uid. Consults the stored
+ * fixture_map FIRST (an admin override / cached mapping): a stored row wins
+ * verbatim — including an explicit null, which means "no report, don't guess".
+ * With no stored row, falls back to the automatic team/round matcher.
  */
 export async function resolveJadeUidForGame(
+  game: PlayHqGame
+): Promise<number | null> {
+  const stored = await mappingFor(game.id);
+  if (stored.present) return stored.uid;
+  return autoResolveJadeUidForGame(game);
+}
+
+/**
+ * The AUTOMATIC matcher: find the JADE fixture uid for a PlayHQ game by
+ * matching teams + round + year against comp_fixtures. Returns null when no
+ * confident match exists (match not finalised/coded, or an ambiguous finals
+ * leg). Exposed so the Admin fixture-mapping page can show/seed auto results.
+ */
+export async function autoResolveJadeUidForGame(
   game: PlayHqGame
 ): Promise<number | null> {
   const { home, away } = sides(game);
