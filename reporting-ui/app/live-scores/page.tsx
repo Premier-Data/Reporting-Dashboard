@@ -249,14 +249,19 @@ function ClubCrest({
   const logo = clubLogoOverride(name) || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
-    // eslint-disable-next-line @next/next/no-img-element
+    // A filled circular badge behind the logo: bundled club PNGs are square and
+    // fill the box, but admin `logo_url` overrides are often non-square, so
+    // `object-contain` letterboxes them. The subtle `bg-white/10` circle keeps
+    // the crest reading as a full-size badge instead of a small floating image.
     return (
-      <img
-        src={logo}
-        alt={`${name ?? ""} logo`}
-        style={dim}
-        className="shrink-0 rounded-full object-contain"
-      />
+      <span className="flex shrink-0 items-center justify-center rounded-full bg-white/10" style={dim}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={logo}
+          alt={`${name ?? ""} logo`}
+          className="h-full w-full rounded-full object-contain"
+        />
+      </span>
     );
   }
   return (
