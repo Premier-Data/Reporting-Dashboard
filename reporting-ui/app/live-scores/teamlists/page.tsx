@@ -44,9 +44,14 @@ function Crest({
   const logo = safeImageUrl(logoUrl) || clubLogo(name);
   const dim = { width: size, height: size };
   if (logo) {
-    // eslint-disable-next-line @next/next/no-img-element
+    // Filled circular badge behind the logo so non-square admin `logo_url`
+    // overrides (letterboxed by `object-contain`) still read as a full-size
+    // crest rather than a small floating image. Mirrors the live-scores list.
     return (
-      <img src={logo} alt="" style={dim} className="shrink-0 rounded-full object-contain" />
+      <span className="flex shrink-0 items-center justify-center rounded-full bg-white/10" style={dim}>
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img src={logo} alt="" className="h-full w-full rounded-full object-contain" />
+      </span>
     );
   }
   return (
