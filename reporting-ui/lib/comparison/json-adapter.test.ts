@@ -98,18 +98,21 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     }
   });
 
-  it("applies the same goal +45s code-time offset on the JSON side", () => {
-    // The XML parser codes a goal 45s after its start marker; the adapter must
-    // do the same via codeTime() so goals align across the two sources.
+  it("codes a goal at the window midpoint (no fixed offset), same as the XML side", () => {
+    // Goals carry NO special start offset: the true moment is the lead/lag
+    // window midpoint, which is what the SportsCode timeline shows. The JSON
+    // adapter must derive the goal's code time via the SAME codeTime() the XML
+    // parser uses, so goals align across the two sources. The feed has no
+    // window (end == start), so mid == start for this event.
     const feed = loadFeed();
     const goal = feed.allStatistics.find((e) => e.statTypeCode === "Goal");
     expect(goal).toBeDefined();
     const analyst = jsonEventsToInstances([goal!], {});
     expect(analyst).toHaveLength(1);
-    // start == relativeTime; mid == start + 45 (the goal offset).
     expect(analyst[0].start).toBe(goal!.relativeTime);
     expect(analyst[0].mid).toBe(codeTime("Goals", goal!.relativeTime, goal!.relativeTime));
-    expect(analyst[0].mid - analyst[0].start).toBe(45);
+    // No fixed offset -> midpoint; with end == start that's start itself.
+    expect(analyst[0].mid - analyst[0].start).toBe(0);
   });
 
   it("runs the full comparison and produces sane, self-consistent totals", () => {

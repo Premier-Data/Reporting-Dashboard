@@ -96,7 +96,7 @@ export type JsonAdapterOptions = {
    * How to interpret `relativeTime`:
    *   - "start-marker" (DEFAULT): it equals the XML instance <start>. The
    *     code-time `mid` is derived with the XML's codeTime() so stat offsets
-   *     (goal +45s, corner +5s, …) match the master. This is correct for the
+   *     (corner +5s, throw-in +7s, …) match the master. This is correct for the
    *     confirmed Chester/Merthyr feed.
    *   - "code-time": it is already the true moment of the action; use it
    *     directly as `mid` with no offset. For feeds that pre-resolve timing.
@@ -223,9 +223,10 @@ function eventTime(ev: JsonEvent, opts: JsonAdapterOptions): number {
  * `relativeTime` corresponds to the XML instance <start>. The feed has no
  * separate lead/lag window, so end = start. The code-time `mid` — which the
  * matcher actually compares — is then computed with the SAME `codeTime()` the
- * XML parser uses, so stat-specific offsets (a goal is coded +45s after start,
- * corners +5s, etc.) are applied identically on both sides. Skipping this
- * would push offset stats (goals, corners, throw-ins…) out of tolerance
+ * XML parser uses, so stat-specific offsets (corners +5s, throw-ins +7s, etc.;
+ * goals use the window midpoint with no fixed offset) are applied identically
+ * on both sides. Skipping this
+ * would push offset stats (corners, throw-ins…) out of tolerance
  * against the master XML.
  */
 export function jsonEventsToInstances(

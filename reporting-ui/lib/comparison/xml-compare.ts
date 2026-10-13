@@ -187,8 +187,14 @@ const STAT_START_OFFSETS: {
   { keyword: "rushed behinds", offset: 6, exact: true },
   { keyword: "behind", offset: 30, exact: true },
   { keyword: "behinds", offset: 30, exact: true },
-  { keyword: "goal", offset: 45, exact: true },
-  { keyword: "goals", offset: 45, exact: true },
+  // NB: Goals get NO fixed start offset. They are coded within a short
+  // lead/lag window (e.g. start 2609s / end 2619s in the master export), so
+  // the true moment is the window midpoint — exactly what SportsCode's
+  // timeline shows. An earlier +45s offset pushed the code time ~35s PAST the
+  // instance's own end, so goals displayed (and matched) far too late (a 6:32
+  // goal appeared at ~7:17). Falling through to the midpoint rule below keeps
+  // goals aligned with the source timeline. Both the XML parser and the JSON
+  // adapter call codeTime(), so this applies identically to both sources.
 ];
 
 /**
