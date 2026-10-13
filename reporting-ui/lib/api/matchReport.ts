@@ -26,28 +26,37 @@ const TOTAL_Q = 5 as const;
 // ── Resolve a PlayHQ game → JADE fixture uid ────────────────────────────────
 
 /**
- * A canonical token for a round that matches across the two feeds — PlayHQ uses
- * long names ("Round 2", "Preliminary Final", "Grand Final") while comp_fixtures
- * uses short codes ("R02", "PF", "GF", "FW1"). Numbered rounds → "r<n>"; finals
- * → a canonical finals code ("gf", "pf", "sf", "qf", "ef", "fw<n>"). Returns ""
- * when nothing recognisable is found (so two blanks don't falsely match).
+ * The home-and-away round NUMBER for a round label ("Round 2"/"R02"/"02" → 2),
+ * or null for a finals round. Note "Finals Round 1" is NOT a number here — it's
+ * a final (see isFinalsRound), matched by date instead.
  */
-function roundToken(name: string | null | undefined): string {
+function roundNumber(name: string | null | undefined): number | null {
   const n = String(name ?? "").toLowerCase().trim();
-  if (!n) return "";
-  // Grand / Preliminary / Semi / Qualifying / Elimination finals (long or code).
-  if (/grand\s*final|\bgf\b/.test(n)) return "gf";
-  if (/prelim|\bpf\b/.test(n)) return "pf";
-  if (/semi|\bsf\b/.test(n)) return "sf";
-  if (/qualif|\bqf\b/.test(n)) return "qf";
-  if (/elim|\bef\b/.test(n)) return "ef";
-  // Finals week N ("FW1"/"Finals Week 1").
-  const fw = n.match(/f(?:inals)?\s*w(?:eek)?\s*(\d+)/) || n.match(/\bfw(\d+)\b/);
-  if (fw) return `fw${fw[1]}`;
-  // Numbered home-and-away round ("Round 2" / "R02").
-  const num = n.match(/(?:round|^r)\s*0*(\d+)/) || n.match(/\b0*(\d+)\b/);
-  if (num) return `r${Number(num[1])}`;
-  return "";
+  if (!n || isFinalsRound(n)) return null;
+  const m = n.match(/(?:round|^r)?\s*0*(\d+)/) || n.match(/\b0*(\d+)\b/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * Whether a round label is a FINAL (not a home-and-away round). Both feeds have
+ * inconsistent finals naming — PlayHQ: "Finals Round 1/2…", "Preliminary
+ * Final", "Grand Final"; comp_fixtures: "FW1/FW2", "PF", "GF", "SF/QF/EF". The
+ * ordering is always finals-after-the-last-round, so finals games are matched
+ * by DATE (reliable + identical across feeds) rather than by label.
+ */
+function isFinalsRound(name: string | null | undefined): boolean {
+  const n = String(name ?? "").toLowerCase().trim();
+  if (!n) return false;
+  return (
+    /final/.test(n) || // "… final", "finals round N"
+    /\b(gf|pf|sf|qf|ef|fw\d+)\b/.test(n) // short codes
+  );
+}
+
+/** The schedule date (yyyy-mm-dd) of a PlayHQ game, or null. */
+function gameDateIso(game: PlayHqGame): string | null {
+  const d = game.schedule?.date;
+  return d ? String(d).slice(0, 10) : null;
 }
 
 type Gender = "men" | "women";
@@ -137,7 +146,10 @@ export async function autoResolveJadeUidForGame(
   const year = game.schedule?.date
     ? Number(game.schedule.date.slice(0, 4))
     : null;
-  const rndTok = roundToken(game.round?.name);
+  const roundName = game.round?.name;
+  const isFinal = isFinalsRound(roundName);
+  const rnd = roundNumber(roundName);
+  const gameDate = gameDateIso(game);
   // The PlayHQ team names carry the gender suffix ("… Men Premier" / "… Women
   // Premier"); use it to avoid matching a men's game to the women's fixture
   // between the same clubs (and vice-versa), which otherwise collide because
@@ -164,10 +176,21 @@ export async function autoResolveJadeUidForGame(
   // "Grand Final"↔"GF"). Only when a single candidate exists do we accept it
   // without a round match. Never guess between legs — the wrong leg would show
   // the wrong match's stats.
-  const exact =
-    rndTok !== ""
-      ? candidates.filter((r) => roundToken(r.round) === rndTok)
-      : [];
+  // Pick the right leg among the candidates:
+  //   - FINALS: match by DATE. Finals labels differ between the feeds and the
+  //     same two teams can meet in several finals (e.g. FW1 then PF), but the
+  //     fixture date is identical across feeds and unique per meeting.
+  //   - HOME & AWAY: match by round number.
+  // Fall back to a sole candidate when there's exactly one; never guess
+  // between multiple legs (the wrong leg would show the wrong match's stats).
+  let exact: typeof candidates = [];
+  if (isFinal && gameDate) {
+    exact = candidates.filter(
+      (r) => (r.fixture_date ?? "").slice(0, 10) === gameDate
+    );
+  } else if (!isFinal && rnd != null) {
+    exact = candidates.filter((r) => roundNumber(r.round) === rnd);
+  }
   const chosen = exact[0] ?? (candidates.length === 1 ? candidates[0] : null);
   if (!chosen) return null;
 
