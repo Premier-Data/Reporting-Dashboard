@@ -74,7 +74,7 @@ import {
   playerNumberMapFromReport,
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
-import { canFlagRowPure } from "./dispute-permissions";
+import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -3678,6 +3678,18 @@ function AccuracyCompareInner() {
                     const analystInstance = sideShows(row.analyst)
                       ? row.analyst
                       : null;
+                    // For a missed/extra row the empty cell's dispute anchors
+                    // to the OPPOSING populated instance. Use the RAW row
+                    // sides (filter-independent) so a stat/player filter never
+                    // suppresses the affordance — permission is gated by the
+                    // filter-independent row.status via canFlagRow below.
+                    const emptyAnchor = emptyCellAnchor(row.status, {
+                      master: row.master,
+                      analyst: row.analyst,
+                    });
+                    const emptyFlagAllowed =
+                      !!emptyAnchor &&
+                      (canFlagRow(row.status) || canResolveDispute);
                     const masterActive =
                       !!masterInstance &&
                       videoTime >= masterInstance.start &&
@@ -3743,6 +3755,31 @@ function AccuracyCompareInner() {
                                   )
                               : undefined
                           }
+                          emptyFlag={
+                            !masterInstance &&
+                            !row.master &&
+                            emptyAnchor &&
+                            emptyAnchor.side === "analyst" &&
+                            emptyFlagAllowed
+                              ? {
+                                  onFlag: (e) =>
+                                    openFlagMenu(
+                                      e,
+                                      emptyAnchor.instance,
+                                      emptyAnchor.side,
+                                      row.status
+                                    ),
+                                  flagged: flaggedKeys.has(
+                                    disputeKey(
+                                      emptyAnchor.instance.id,
+                                      emptyAnchor.side
+                                    )
+                                  ),
+                                  title:
+                                    "right-click to dispute this extra event",
+                                }
+                              : undefined
+                          }
                         />
                         <TimelineCell
                           instance={analystInstance}
@@ -3770,6 +3807,31 @@ function AccuracyCompareInner() {
                                     "analyst",
                                     row.status
                                   )
+                              : undefined
+                          }
+                          emptyFlag={
+                            !analystInstance &&
+                            !row.analyst &&
+                            emptyAnchor &&
+                            emptyAnchor.side === "master" &&
+                            emptyFlagAllowed
+                              ? {
+                                  onFlag: (e) =>
+                                    openFlagMenu(
+                                      e,
+                                      emptyAnchor.instance,
+                                      emptyAnchor.side,
+                                      row.status
+                                    ),
+                                  flagged: flaggedKeys.has(
+                                    disputeKey(
+                                      emptyAnchor.instance.id,
+                                      emptyAnchor.side
+                                    )
+                                  ),
+                                  title:
+                                    "right-click to dispute this missing event",
+                                }
                               : undefined
                           }
                         />
@@ -4081,6 +4143,7 @@ function TimelineCell({
   onFlag,
   onEdit,
   teamLabel,
+  emptyFlag,
 }: {
   instance: Instance | null;
   delta?: number | null;
@@ -4092,8 +4155,39 @@ function TimelineCell({
   onEdit?: () => void;
   /** Real club name to show instead of the canonical "Home"/"Away". */
   teamLabel?: string;
+  /**
+   * Makes the EMPTY "— no entry —" cell of a missed/extra row flaggable. The
+   * dispute anchors to the OPPOSING populated instance (handled by the caller
+   * via `onFlag`). When undefined the empty cell stays the inert placeholder.
+   */
+  emptyFlag?: {
+    onFlag: (e: React.MouseEvent) => void;
+    flagged: boolean;
+    title: string;
+  };
 }) {
   if (!instance) {
+    if (emptyFlag) {
+      return (
+        <div
+          className={`border-l border-slate-200 px-2 py-1 cursor-context-menu hover:bg-amber-50/60 ${
+            emptyFlag.flagged ? "ring-2 ring-inset ring-amber-500" : ""
+          }`}
+          onContextMenu={emptyFlag.onFlag}
+          title={emptyFlag.title}
+        >
+          <span className="flex items-center gap-x-1.5 text-[11px] italic text-slate-300">
+            {emptyFlag.flagged && (
+              <Flag
+                size={10}
+                className="shrink-0 not-italic fill-amber-500 text-amber-600"
+              />
+            )}
+            — no entry —
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="border-l border-slate-200 px-2 py-1">
         <span className="text-[11px] italic text-slate-300">— no entry —</span>
