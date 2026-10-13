@@ -700,26 +700,39 @@ export default function LiveScoresPage() {
     );
     if (needed.length === 0) return;
     let cancelled = false;
+
+    // Fetch with BOUNDED CONCURRENCY and update state as each result lands.
+    // Firing one request per visible final at once would hammer the spectator
+    // feed (and trip its rate limit), which previously left most games with no
+    // scorers/periods. A small worker pool keeps load gentle and makes each
+    // game's extended scores + goal kickers appear as soon as it resolves.
+    const CONCURRENCY = 3;
     (async () => {
-      const results = await Promise.allSettled(
-        needed.map((g) => getLiveScore(g.id))
-      );
-      if (cancelled) return;
-      const add: Record<string, NormalisedLive> = {};
-      results.forEach((r, i) => {
-        if (
-          r.status === "fulfilled" &&
-          (r.value.home.scorers.length > 0 ||
-            r.value.away.scorers.length > 0 ||
-            r.value.home.periods.length > 0)
-        ) {
-          add[needed[i].id] = r.value;
+      let cursor = 0;
+      const runOne = async () => {
+        while (!cancelled && cursor < needed.length) {
+          const g = needed[cursor++];
+          try {
+            const live = await getLiveScore(g.id);
+            if (cancelled) return;
+            if (
+              live.home.scorers.length > 0 ||
+              live.away.scorers.length > 0 ||
+              live.home.periods.length > 0
+            ) {
+              setScorersById((prev) => ({ ...prev, [g.id]: live }));
+            }
+          } catch {
+            // Ignore a single game's failure; others still enrich. A later
+            // round switch / refresh re-attempts the ones still missing.
+          }
         }
-      });
-      if (Object.keys(add).length > 0) {
-        setScorersById((prev) => ({ ...prev, ...add }));
-      }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(CONCURRENCY, needed.length) }, runOne)
+      );
     })();
+
     return () => {
       cancelled = true;
     };
