@@ -16,14 +16,24 @@ function cleanReply(s: string): string {
   return (s ?? "").replace(/^"+|"+$/g, "");
 }
 
-// Strip the " Men Premier" / " Women Premier …" grade suffix PlayHQ appends so
-// the match column stays short.
-function shortTeam(s: string): string {
-  return s.replace(/\s+(men|women)\s+premier.*$/i, "").trim();
-}
+// The worker now sends a clean "Home vs Away" (grade suffix already stripped),
+// plus separate grade + round. Just normalise the "vs" separator for display.
 function shortMatch(match: string): string {
-  const [h, a] = match.split(" vs ");
-  return `${shortTeam(h ?? "")} v ${shortTeam(a ?? "")}`;
+  return (match ?? "").replace(/\s+vs\s+/i, " v ");
+}
+
+// Compact round label: "Round 2" -> "R2", finals keep their short form.
+function shortRound(round: string | undefined): string {
+  const n = (round ?? "").trim();
+  if (!n) return "";
+  const m = n.match(/round\s*(\d+)/i);
+  if (m) return `R${m[1]}`;
+  if (/grand\s*final/i.test(n)) return "GF";
+  if (/prelim/i.test(n)) return "PF";
+  if (/semi/i.test(n)) return "SF";
+  if (/qualif/i.test(n)) return "QF";
+  if (/elim/i.test(n)) return "EF";
+  return n;
 }
 
 // Compact time: "10:19:14" (today) — just the clock, since rows are frequent.
@@ -129,6 +139,8 @@ export default function PushLogPage() {
               <thead className="sticky top-0 bg-[#0d1526] text-left text-[10px] uppercase tracking-wide text-slate-500">
                 <tr className="border-b border-white/10">
                   <th className="px-2 py-1.5 font-semibold">Time</th>
+                  <th className="px-2 py-1.5 font-semibold">Grade</th>
+                  <th className="px-2 py-1.5 font-semibold">Rnd</th>
                   <th className="px-2 py-1.5 font-semibold">Match</th>
                   <th className="px-2 py-1.5 text-right font-semibold">Score</th>
                   <th className="px-2 py-1.5 font-semibold">PlayHQ → TT</th>
@@ -147,6 +159,24 @@ export default function PushLogPage() {
                     >
                       <td className="whitespace-nowrap px-2 py-1 font-mono text-[11px] text-slate-500">
                         {clock(e.ts)}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1">
+                        {e.grade ? (
+                          <span
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${
+                              e.grade === "Women's"
+                                ? "bg-fuchsia-500/15 text-fuchsia-300"
+                                : "bg-sky-500/15 text-sky-300"
+                            }`}
+                          >
+                            {e.grade}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
+                      </td>
+                      <td className="whitespace-nowrap px-2 py-1 font-mono text-[11px] text-slate-400" title={e.round || ""}>
+                        {shortRound(e.round) || "—"}
                       </td>
                       <td className="max-w-[180px] truncate px-2 py-1 font-medium text-slate-200" title={shortMatch(e.match)}>
                         {shortMatch(e.match)}

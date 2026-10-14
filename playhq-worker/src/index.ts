@@ -856,7 +856,9 @@ type PushLogEntry = {
   id: string; // short PlayHQ fixture id
   playhqId: string; // full PlayHQ fixture UUID (what we push to TT)
   ttId: number | null; // confirmed TT (JADE) fixtureUid, or null if not mapped
-  match: string; // "Home vs Away"
+  grade: string; // "Men's" | "Women's" | ""
+  round: string; // "Round 2" etc.
+  match: string; // "Home vs Away" (grade suffix stripped)
   score: string; // "G.B (T) - G.B (T)"
   endpoint: string; // the TT base URL pushed to
   scoreReply: string; // TT's reply to /PlayHQScoreUpdate (e.g. "ok")
@@ -888,6 +890,8 @@ async function recordPushLog(
         id: String(r.id ?? ""),
         playhqId: String(r.fullId ?? ""),
         ttId: (r.ttId as number | null) ?? null,
+        grade: String(r.grade ?? ""),
+        round: String(r.round ?? ""),
         match: String(r.match ?? ""),
         score: String(r.score ?? ""),
         endpoint: base,
@@ -951,13 +955,28 @@ async function pushFixtureToTT(
     ? await ttPost(env, "/PlayHQTeamUpdate", ttTeamBody(fullId, lists))
     : { status: 0, body: "no_appearances" };
 
+  // Grade (Men's / Women's) from the team-name suffix PlayHQ appends
+  // ("… Men Premier" / "… Women Premier"); round from the grade feed record.
+  const rawNames = `${live.home.name ?? ""} ${live.away.name ?? ""}`;
+  const grade = /\bwomen\b/i.test(rawNames)
+    ? "Women's"
+    : /\bmen\b/i.test(rawNames)
+      ? "Men's"
+      : "";
+  const roundObj = (full.round ?? {}) as Record<string, unknown>;
+  const round = (roundObj.name as string) ?? "";
+  const stripGrade = (n: string | null) =>
+    (n ?? "?").replace(/\s+(men|women)\s+premier.*$/i, "").trim();
+
   return {
     id: shortId,
     fullId,
     ttId: ttFixtureUidFor(fullId),
     status: summary.status ?? null,
-    // Human-readable match + score for the live push console.
-    match: `${live.home.name ?? "?"} vs ${live.away.name ?? "?"}`,
+    grade, // "Men's" | "Women's" | ""
+    round, // "Round 2" etc.
+    // Human-readable match (grade suffix stripped from each team name).
+    match: `${stripGrade(live.home.name)} vs ${stripGrade(live.away.name)}`,
     score: `${live.home.goals ?? 0}.${live.home.behinds ?? 0} (${live.home.total ?? 0}) - ${live.away.goals ?? 0}.${live.away.behinds ?? 0} (${live.away.total ?? 0})`,
     scorePush: score,
     teamPush: team,

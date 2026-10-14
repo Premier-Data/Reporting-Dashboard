@@ -233,6 +233,8 @@ export type PushLogEntry = {
   id: string; // short PlayHQ fixture id
   playhqId?: string; // full PlayHQ fixture UUID (what we push to TT)
   ttId?: number | null; // confirmed TT (JADE) fixtureUid, or null if unmapped
+  grade?: string; // "Men's" | "Women's" | ""
+  round?: string; // "Round 2" etc.
   match: string; // "Home vs Away"
   score: string; // "G.B (T) - G.B (T)"
   endpoint: string; // the TT base URL pushed to
