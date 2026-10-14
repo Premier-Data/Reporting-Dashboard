@@ -47,7 +47,7 @@ import {
   ensureClubConfigCache,
   clubLogoOverride,
 } from "@/lib/api/clubConfig";
-import { getScorersAndPeriodsForGame } from "@/lib/api/matchReport";
+
 
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
 // Worker's edge cache means concurrent viewers share one upstream call.
@@ -326,15 +326,21 @@ function GameRow({
   // Detailed reports exist only once a game is finalised AND coded.
   const isFinalGame = String(effectiveStatus).toUpperCase() === "FINAL";
 
-  // Per-side score: live payload first, else the REST scoreTotal.
-  const homeScore = liveData ? liveData.home.total : home?.scoreTotal ?? null;
-  const awayScore = liveData ? liveData.away.total : away?.scoreTotal ?? null;
-  const homeGB = liveData
-    ? `${liveData.home.goals ?? 0}.${liveData.home.behinds ?? 0}`
-    : goalsBehinds(home);
-  const awayGB = liveData
-    ? `${liveData.away.goals ?? 0}.${liveData.away.behinds ?? 0}`
-    : goalsBehinds(away);
+  // Per-side score: the REST scoreTotal is authoritative for a finalised game,
+  // so prefer it and only fall back to the live/overlay payload when REST has
+  // no score (an in-play game the REST feed reports as null). The spectator
+  // overlay can carry a null total for some fixtures, which must NOT blank a
+  // known final score.
+  const homeScore = home?.scoreTotal ?? liveData?.home.total ?? null;
+  const awayScore = away?.scoreTotal ?? liveData?.away.total ?? null;
+  const homeRestGB = goalsBehinds(home);
+  const awayRestGB = goalsBehinds(away);
+  const homeGB =
+    homeRestGB ||
+    (liveData ? `${liveData.home.goals ?? 0}.${liveData.home.behinds ?? 0}` : "");
+  const awayGB =
+    awayRestGB ||
+    (liveData ? `${liveData.away.goals ?? 0}.${liveData.away.behinds ?? 0}` : "");
 
   const showScore =
     (homeScore != null || awayScore != null) &&
@@ -791,12 +797,11 @@ export default function LiveScoresPage() {
         while (!cancelled && cursor < needed.length) {
           const g = needed[cursor++];
           try {
-            // Prefer the JADE report — the spectator feed only attributes some
-            // goals to named players, so its goal kickers are often partial.
-            // The coded report has Goal/Behind per player for the whole team.
-            // Fall back to the spectator feed when no report is matched yet.
-            let data = await getScorersAndPeriodsForGame(g).catch(() => null);
-            if (!data) data = await getLiveScore(g.id);
+            // Goal kickers + quarter scores come from the PlayHQ spectator feed
+            // (same source as the live score + totals), so the overlay also
+            // carries the real score. The feed can be incomplete for some
+            // fixtures, but it's the live, authoritative PlayHQ source.
+            const data = await getLiveScore(g.id);
             if (cancelled) return;
             if (
               data.home.scorers.length > 0 ||
