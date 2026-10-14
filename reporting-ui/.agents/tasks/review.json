@@ -1,7 +1,5 @@
 {
   "verdict": "APPROVED",
-  "findings": [
-    "Non-blocking: prefersReducedMotion() is sampled only when the effect runs (deps [scrollRef]), so toggling the OS reduced-motion setting mid-session is not reflected until remount. Optional improvement; not required for merge."
-  ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\pull-to-refresh\\reporting-ui\\.agents\\tasks\\review.md"
+  "findings": [],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\ptr-bind-fix\\reporting-ui\\.agents\\tasks\\review-doc.md"
 }
