@@ -231,6 +231,8 @@ export async function getScorers(
 export type PushLogEntry = {
   ts: string; // ISO timestamp of the push
   id: string; // short PlayHQ fixture id
+  playhqId?: string; // full PlayHQ fixture UUID (what we push to TT)
+  ttId?: number | null; // confirmed TT (JADE) fixtureUid, or null if unmapped
   match: string; // "Home vs Away"
   score: string; // "G.B (T) - G.B (T)"
   endpoint: string; // the TT base URL pushed to

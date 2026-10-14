@@ -57,6 +57,45 @@ const DEFAULT_GRADE_IDS = [
 const PLAYHQ_URL = "https://spectator.playhq.com/graphql";
 const PLAYHQ_REST = "https://api.playhq.com/v1";
 
+// Confirmed PlayHQ fixture UUID -> TT (JADE) fixtureUid map. Built by matching
+// the live grade feed against TT's fixtures list (date + teams). TT resolves
+// the mapping internally when we push by PlayHQ id; this table is for DISPLAY
+// in the push log so the confirmed PlayHQ<->TT pairing is visible. Fixtures not
+// listed here still push fine (TT does its own lookup) — they just show "—"
+// for the TT id in the log. Extend as later rounds / Women's ids are confirmed.
+const PLAYHQ_TO_TT_FIXTURE: Record<string, number> = {
+  "a4c47814-bd91-45d5-93e8-227f9c0d72ba": 32656,
+  "07dce55b-e777-42c4-baa6-532e0b50d0da": 32657,
+  "27cb3ff2-0efd-4ba6-85e2-4446298c7030": 32659,
+  "493a5808-d166-4b3b-9966-0339700e0245": 32658,
+  "6209d317-5984-4ac6-b68d-c093b8dc4b29": 32660,
+  "ab5ae0c9-b938-438c-bbf3-bffe351bebfd": 32661,
+  "a8fbb269-be06-4232-9abd-14329d0eb09d": 32662,
+  "7faaae3d-5c9d-42ce-95b0-20836b41e051": 32663,
+  "78454e3d-a8d9-42a5-b409-edcebd8bc904": 32664,
+  "239b2098-a7bd-4793-b181-0c82d189dff9": 32665,
+  "22c22bb1-471b-4ae3-8295-15568b69a829": 32666,
+  "53f60f45-fd31-42cf-b3ed-ef0c491f45ce": 32669,
+  "cbb849cc-9e1a-46a7-97d4-28362acde06e": 32667,
+  "ee614e56-807d-444d-8118-b7a5e0f6ad9a": 32668,
+  "d07ce3d6-2db5-4a6c-9df3-446ecf9b05a9": 32670,
+  "366346b7-d08a-4a2c-9dd9-f5eb9d3a6b2c": 32671,
+  "14bd3c37-9459-41a5-a6dc-96f7325623dc": 32673,
+  "92270e92-5f51-4c1e-939c-c65085ff2ae1": 32675,
+  "e605c9ce-4d52-44bc-acab-17b7ba6ead5b": 32672,
+  "b6a7d925-7ca5-4a41-bad2-1c8f275e4b80": 32674,
+  "93234344-8527-41c0-a029-f43ac8e39690": 32676,
+  "e257a74f-9817-4468-9d21-7cb4680c1244": 32678,
+  "cf1156e1-0e7d-4814-afaa-1bfade911c07": 32680,
+  "47783dbf-d991-4e52-be6b-10fb7b989fce": 32679,
+  "aef9effb-26d8-4778-b9bf-7894f0bd24a2": 32677,
+};
+
+/** TT fixtureUid for a full PlayHQ fixture UUID, or null if not in the table. */
+function ttFixtureUidFor(fullId: string): number | null {
+  return PLAYHQ_TO_TT_FIXTURE[fullId] ?? null;
+}
+
 // The GraphQL document (from the spectator cURL, whitespace trimmed). Includes
 // per-player statistics under statistics.{home,away}.players[] so we can derive
 // goal scorers (TOTAL_GOALS / TOTAL_BEHINDS per player).
@@ -729,6 +768,8 @@ async function ttPost(
 type PushLogEntry = {
   ts: string; // ISO timestamp
   id: string; // short PlayHQ fixture id
+  playhqId: string; // full PlayHQ fixture UUID (what we push to TT)
+  ttId: number | null; // confirmed TT (JADE) fixtureUid, or null if not mapped
   match: string; // "Home vs Away"
   score: string; // "G.B (T) - G.B (T)"
   endpoint: string; // the TT base URL pushed to
@@ -759,6 +800,8 @@ async function recordPushLog(
       return {
         ts: now,
         id: String(r.id ?? ""),
+        playhqId: String(r.fullId ?? ""),
+        ttId: (r.ttId as number | null) ?? null,
         match: String(r.match ?? ""),
         score: String(r.score ?? ""),
         endpoint: base,
@@ -787,8 +830,10 @@ function logPushResult(r: Record<string, unknown>, base: string): void {
   const team = r.teamPush as { status: number; body: string } | undefined;
   const okScore = /ok/i.test(score?.body ?? "");
   const okTeam = /ok/i.test(team?.body ?? "");
+  const ttId = r.ttId != null ? String(r.ttId) : "—";
   console.log(
     `[${ts}] ${okScore ? "✓" : "✗"} SCORE ${r.match} | ${r.score} ` +
+      `| PlayHQ ${r.fullId} -> TT ${ttId} ` +
       `-> POST ${base}/PlayHQScoreUpdate => ${score?.body ?? "no reply"}`
   );
   console.log(
@@ -823,6 +868,7 @@ async function pushFixtureToTT(
   return {
     id: shortId,
     fullId,
+    ttId: ttFixtureUidFor(fullId),
     status: summary.status ?? null,
     // Human-readable match + score for the live push console.
     match: `${live.home.name ?? "?"} vs ${live.away.name ?? "?"}`,

@@ -155,6 +155,24 @@ export default function PushLogPage() {
                       {timeLabel(e.ts)}
                     </span>
                   </div>
+                  {/* Confirmed PlayHQ -> TT (JADE) fixture mapping. */}
+                  {(e.playhqId || e.ttId != null) && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 pl-6 font-mono text-[11px]">
+                      <span className="rounded bg-white/5 px-1.5 py-0.5 text-slate-400">
+                        PlayHQ {e.playhqId || e.id}
+                      </span>
+                      <span className="text-slate-600">→</span>
+                      <span
+                        className={`rounded px-1.5 py-0.5 ${
+                          e.ttId != null
+                            ? "bg-sky-500/15 text-sky-300"
+                            : "bg-white/5 text-slate-500"
+                        }`}
+                      >
+                        TT {e.ttId != null ? e.ttId : "—"}
+                      </span>
+                    </div>
+                  )}
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 pl-6 text-[11px] text-slate-500">
                     <span
                       className={`rounded px-1.5 py-0.5 font-semibold ${
