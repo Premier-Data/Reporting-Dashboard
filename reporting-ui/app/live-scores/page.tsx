@@ -297,11 +297,16 @@ function GameRow({
   game,
   gradeKey,
   live: liveData,
+  scorersData,
 }: {
   game: PlayHqGame;
   /** The grade key the game belongs to — used to build the match-stats link. */
   gradeKey: string;
+  /** Score/clock source: spectator overlay (live) with REST fallback. */
   live?: NormalisedLive;
+  /** COMPLETE goal kickers + quarter scores (REST summary); preferred for the
+   *  expandable sections over the spectator feed's partial scorers. */
+  scorersData?: NormalisedLive;
 }) {
   const router = useRouter();
   const [scoresOpen, setScoresOpen] = useState(false);
@@ -326,6 +331,10 @@ function GameRow({
   const won = wonSide(game); // outcome only exists once FINAL
   // Detailed reports exist only once a game is finalised AND coded.
   const isFinalGame = String(effectiveStatus).toUpperCase() === "FINAL";
+
+  // Source for the expandable Extended Scores + Goal kickers: prefer the REST
+  // summary (complete), fall back to the spectator overlay (score source).
+  const detail = scorersData ?? liveData;
 
   // Per-side score: the REST scoreTotal is authoritative for a finalised game,
   // so prefer it and only fall back to the live/overlay payload when REST has
@@ -476,7 +485,7 @@ function GameRow({
 
       {/* Quarter-by-quarter scores — collapsed behind an "Extended Scores"
           toggle (same pattern as Goal kickers). */}
-      {liveData && liveData.home.periods.length > 0 && (
+      {detail && detail.home.periods.length > 0 && (
         <div className="mt-3 border-t border-white/10 pt-2.5">
           <button
             type="button"
@@ -497,8 +506,8 @@ function GameRow({
               <QuarterTable
                 homeName={home?.name ?? "Home"}
                 awayName={away?.name ?? "Away"}
-                home={liveData.home.periods}
-                away={liveData.away.periods}
+                home={detail.home.periods}
+                away={detail.away.periods}
               />
             </div>
           )}
@@ -507,9 +516,9 @@ function GameRow({
 
       {/* Goal kickers — still collapsed behind an expand toggle. One team at a
           time (home default) with a Home/Away switch. */}
-      {liveData &&
-        (liveData.home.scorers.length > 0 ||
-          liveData.away.scorers.length > 0) && (
+      {detail &&
+        (detail.home.scorers.length > 0 ||
+          detail.away.scorers.length > 0) && (
           <div className="mt-3 border-t border-white/10 pt-2.5">
             <button
               type="button"
@@ -554,8 +563,8 @@ function GameRow({
                 <ScorerList
                   scorers={
                     scorerTeam === "home"
-                      ? liveData.home.scorers
-                      : liveData.away.scorers
+                      ? detail.home.scorers
+                      : detail.away.scorers
                   }
                 />
               </div>
@@ -777,12 +786,19 @@ export default function LiveScoresPage() {
   // scorers via liveById, so they're skipped here. Re-runs when the visible
   // set changes (round switch / data load).
   useEffect(() => {
-    const needed = visible.filter(
-      (g) =>
-        String(g.status).toUpperCase() === "FINAL" &&
-        !scorersById[g.id] &&
-        !liveById[g.id]
-    );
+    // Fetch COMPLETE goal kickers + quarter scores (REST summary) for every
+    // visible game that has started — FINAL or currently LIVE. The spectator
+    // feed only attributes some goals, so we use the summary for the kickers
+    // even while a match is in progress (the live SCORE still comes from the
+    // spectator overlay in liveById; this only supplies the kickers/periods).
+    const needed = visible.filter((g) => {
+      const isFinal = String(g.status).toUpperCase() === "FINAL";
+      const isLiveNow = liveById[g.id] != null;
+      // Final games are fetched once (their kickers don't change). Live games
+      // ALWAYS re-fetch so the kickers/periods update as goals are scored.
+      if (isLiveNow) return true;
+      return isFinal && !scorersById[g.id];
+    });
     if (needed.length === 0) return;
     let cancelled = false;
 
@@ -831,8 +847,10 @@ export default function LiveScoresPage() {
     return () => {
       cancelled = true;
     };
+    // Re-runs on visible-set changes AND when live overlays refresh (poll), so
+    // a live game's kickers/periods update each cycle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible]);
+  }, [visible, liveById]);
 
   const selectClass =
     "w-full appearance-none rounded-xl border border-white/15 bg-white/5 px-3.5 py-2.5 pr-10 text-sm font-medium text-slate-100 outline-none transition focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30 [&>option]:bg-slate-800 [&>option]:text-slate-100";
@@ -961,6 +979,7 @@ export default function LiveScoresPage() {
               game={g}
               gradeKey={comp}
               live={liveById[g.id] ?? scorersById[g.id]}
+              scorersData={scorersById[g.id]}
             />
           ))}
         </div>
