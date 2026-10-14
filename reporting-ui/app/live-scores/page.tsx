@@ -47,6 +47,7 @@ import {
   ensureClubConfigCache,
   clubLogoOverride,
 } from "@/lib/api/clubConfig";
+import { getScorersAndPeriodsForGame } from "@/lib/api/matchReport";
 
 // Poll interval while any game is live (ms). 2 minutes — modest load, and the
 // Worker's edge cache means concurrent viewers share one upstream call.
@@ -790,14 +791,19 @@ export default function LiveScoresPage() {
         while (!cancelled && cursor < needed.length) {
           const g = needed[cursor++];
           try {
-            const live = await getLiveScore(g.id);
+            // Prefer the JADE report — the spectator feed only attributes some
+            // goals to named players, so its goal kickers are often partial.
+            // The coded report has Goal/Behind per player for the whole team.
+            // Fall back to the spectator feed when no report is matched yet.
+            let data = await getScorersAndPeriodsForGame(g).catch(() => null);
+            if (!data) data = await getLiveScore(g.id);
             if (cancelled) return;
             if (
-              live.home.scorers.length > 0 ||
-              live.away.scorers.length > 0 ||
-              live.home.periods.length > 0
+              data.home.scorers.length > 0 ||
+              data.away.scorers.length > 0 ||
+              data.home.periods.length > 0
             ) {
-              setScorersById((prev) => ({ ...prev, [g.id]: live }));
+              setScorersById((prev) => ({ ...prev, [g.id]: data }));
             }
           } catch {
             // Ignore a single game's failure; others still enrich. A later

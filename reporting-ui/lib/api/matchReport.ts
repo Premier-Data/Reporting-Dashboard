@@ -18,7 +18,13 @@ import type { FixtureTimeline, PlayerStatLine } from "@/types/fixtureReport";
 import { queryCompFixtures } from "@/lib/api/compFixtures";
 import { normaliseClub } from "@/lib/api/clubLogos";
 import { mappingFor } from "@/lib/api/fixtureMap";
-import { sides, type PlayHqGame } from "@/lib/api/playhq";
+import {
+  sides,
+  type PlayHqGame,
+  type NormalisedLive,
+  type Scorer,
+  type PeriodScore,
+} from "@/lib/api/playhq";
 
 // AFL whole-game total lives in quarter 5 of each player's column breakdown.
 const TOTAL_Q = 5 as const;
@@ -441,6 +447,101 @@ export function playerDePercent(p: PlayerStatLine): number {
   const d = p.columns.d?.[TOTAL_Q] ?? 0;
   const de = p.columns.de?.[TOTAL_Q] ?? 0;
   return pct(de, d);
+}
+
+// ── Goal kickers + quarter scores from the JADE report ──────────────────────
+//
+// The PlayHQ spectator feed only attributes SOME goals to named players (often
+// just one or two), so goal kickers sourced from it are incomplete. The JADE
+// report's allPlayerStats carries Goal/Behind per quarter for EVERY player, so
+// for coded (finalised) games it's the complete, authoritative source. This
+// builds a NormalisedLive-shaped object (scorers + per-quarter periods) from a
+// report so the Live Scores card renders it exactly like the spectator overlay.
+
+function scorersFromPlayers(players: PlayerStatLine[]): Scorer[] {
+  const out: Scorer[] = [];
+  for (const p of players) {
+    const goals = p.columns.g?.[TOTAL_Q] ?? 0;
+    const behinds = p.columns.b?.[TOTAL_Q] ?? 0;
+    if (goals > 0 || behinds > 0) {
+      out.push({
+        name: p.playerName,
+        number: p.playerNumber ? String(p.playerNumber) : null,
+        goals,
+        behinds,
+      });
+    }
+  }
+  // Goals desc, then behinds desc (matches the spectator ordering).
+  out.sort((a, b) => b.goals - a.goals || b.behinds - a.behinds);
+  return out;
+}
+
+const PERIOD_LABELS: Record<number, { period: string; label: string }> = {
+  1: { period: "Q1", label: "First Quarter" },
+  2: { period: "Q2", label: "Second Quarter" },
+  3: { period: "Q3", label: "Third Quarter" },
+  4: { period: "Q4", label: "Fourth Quarter" },
+};
+
+// Per-quarter goals/behinds for a team, summed across its players (q1–4).
+function periodsFromPlayers(players: PlayerStatLine[]): PeriodScore[] {
+  const out: PeriodScore[] = [];
+  for (let q = 1 as 1 | 2 | 3 | 4; q <= 4; q++) {
+    let goals = 0;
+    let behinds = 0;
+    for (const p of players) {
+      goals += p.columns.g?.[q] ?? 0;
+      behinds += p.columns.b?.[q] ?? 0;
+    }
+    // Only include quarters that actually have scoring data.
+    out.push({
+      period: PERIOD_LABELS[q].period,
+      label: PERIOD_LABELS[q].label,
+      goals,
+      behinds,
+      total: goals * 6 + behinds,
+    });
+  }
+  return out;
+}
+
+/**
+ * Build a NormalisedLive (scorers + periods per side) for a game from its JADE
+ * report. Returns null when the game can't be matched to a coded report (no
+ * report yet) — the caller then falls back to the spectator feed. This is the
+ * COMPLETE goal-kicker source for finalised games.
+ */
+export async function getScorersAndPeriodsForGame(
+  game: PlayHqGame
+): Promise<NormalisedLive | null> {
+  const report = await getMatchReportForGame(game);
+  if (!report) return null;
+  // Orient report home/away to the PlayHQ game's home/away by name, so the
+  // card's home column matches the report's home team.
+  const { home: gHome } = sides(game);
+  const reportHomeIsGameHome =
+    normaliseClub(gHome?.name) === normaliseClub(report.home.name);
+  const rHome = reportHomeIsGameHome ? report.home : report.away;
+  const rAway = reportHomeIsGameHome ? report.away : report.home;
+
+  const side = (team: MatchReportTeam) => ({
+    id: null,
+    name: team.name,
+    total: null,
+    goals: scorersFromPlayers(team.players).reduce((s, p) => s + p.goals, 0),
+    behinds: scorersFromPlayers(team.players).reduce((s, p) => s + p.behinds, 0),
+    scorers: scorersFromPlayers(team.players),
+    periods: periodsFromPlayers(team.players),
+  });
+
+  return {
+    id: game.id,
+    status: game.status ?? null,
+    clock: { period: null, time: null, status: null },
+    home: side(rHome),
+    away: side(rAway),
+  };
 }
 
 /** Expose the player column defs (label/title) for the Players table header. */
