@@ -44,6 +44,22 @@ describe("bare vs outcome crosses/through balls", () => {
     expect(res.rows[0].status).toBe("exact");
   });
 
+  it("scores master Catch as EXACT vs analyst Catches (and vice versa)", () => {
+    // "Catch" and "Catches" are the same GK action: either timeline showing
+    // either form must score as exact at the same time + player.
+    const m2a = [inst("m1", 250, "Catch", "Home", 1)];
+    const a2a = [inst("a1", 250, "Catches", "Home", 1)];
+    expect(
+      compareInstances(m2a, a2a, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    const m2b = [inst("m1", 260, "Catches", "Home", 1)];
+    const a2b = [inst("a1", 260, "Catch", "Home", 1)];
+    expect(
+      compareInstances(m2b, a2b, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
   it("keeps short vs long passes as DIFFERENT (not exact)", () => {
     const master = [inst("m1", 300, "Short Passes Successful", "Home", 7)];
     const analyst = [inst("a1", 300, "Long Passes Successful", "Home", 7)];

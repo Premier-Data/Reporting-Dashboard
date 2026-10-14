@@ -547,10 +547,17 @@ function normStat(s: string): string {
  * granularity difference, not a different action.
  */
 function baseAction(s: string): string {
-  return normStat(s)
-    .replace(/\b(unsuccessful|unsuccesful|successful|effective|ineffective)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    normStat(s)
+      .replace(/\b(unsuccessful|unsuccesful|successful|effective|ineffective)\b/g, "")
+      // Canonicalise the singular/plural "catch"/"catches" to one base so a
+      // coder's "Catch" counts as the SAME action as another's "Catches"
+      // (either side, treated as an exact match). Scoped to this one word
+      // rather than blanket plural-stripping so unrelated stats aren't merged.
+      .replace(/\bcatches\b/g, "catch")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /**
@@ -728,9 +735,12 @@ const STAT_PREFERENCES: Record<string, string[]> = {
   "crosses successful": ["crosses successful", "crosses unsuccesful", "crosses"],
   "crosses unsuccesful": ["crosses unsuccesful", "crosses successful", "crosses"],
   // --- Goalkeeper handling ---
-  catches: ["catches", "claims", "saves"],
-  claims: ["claims", "catches", "saves"],
-  saves: ["saves", "catches", "claims"],
+  // "catch" and "catches" are the SAME action (see baseAction) — list both the
+  // singular and plural forms so comparability holds whichever a timeline uses.
+  catches: ["catches", "catch", "claims", "saves"],
+  catch: ["catch", "catches", "claims", "saves"],
+  claims: ["claims", "catches", "catch", "saves"],
+  saves: ["saves", "catches", "catch", "claims"],
   // --- Goal kicks (succ/unsucc are the same action, different outcome) ---
   "goal kicks successful": [
     "goal kicks successful",
