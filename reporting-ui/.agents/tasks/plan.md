@@ -1,106 +1,167 @@
-# Implementation Plan — Fix video-review timeline random jumping
+# Implementation Plan — Consistent scoreboard layout + fixed crest badges on the two other Live Scores surfaces
 
-Branch: `fix/video-timeline-jumping`
-Worktree root: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui`
+Apply the SAME consistent-layout + fixed-crest-badge treatment already shipped on the Live Scores LIST page (`app/live-scores/page.tsx`, branch `feature/empty-slot-dispute-permission` @ `d254cd4`) to the two other Live Scores surfaces so all three match.
 
-## Scope (hard constraints)
+Scope is STRICTLY two files, and within them ONLY the `Crest` component + the scoreboard-header JSX:
 
-- Edit ONLY:
-  - `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\page.tsx`
-  - NEW `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\review-seek.ts` (pure helpers)
-  - NEW `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\review-seek.test.ts` (unit tests)
-- Do NOT touch `lib/comparison/*` (the `mid`/`codeTime` offsets are correct and intentional), `disputes.ts`, or any unrelated file.
-- Do NOT commit or push. Do NOT restart the main dev server on port 3000. If a dev server is ever needed from the worktree, use port 3200 and stop it when done.
+1. `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
+2. `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
 
-## Key facts established by investigation (do not re-derive)
+Do NOT touch `app/live-scores/page.tsx`, `lib/*`, the tabs, rosters, stat tables, data fetching, or any other content. This is a presentational tweak.
 
-- `videoRows` (page.tsx ~L1855) is `ComparisonRow[]` sorted by `mid` (code time) via the comparison engine; this is the DISPLAY order and MUST stay as-is.
-- `reviewClips` (page.tsx ~L1953) maps `videoRows` to `{ start, end }[]` in that SAME mid order. `reviewClipsRef` mirrors it (effect ~L1982) and feeds the auto-skip handler.
-- `handleVideoTimeUpdate` (page.tsx ~L1199–1282) is the bug site: forward-only `while (t > clips[idx].end - 0.05)` walk, seek-to-`clips[idx].start`, a `seeked = t<prev-0.4 || t>prev+1` manual-seek detector that its own seeks trip, and a `findIndex` resync that returns the first mid-order match. It assumes `start`/`end` are non-decreasing by index, which is FALSE for mid order (goals +45s, behinds +30s, corners +5s, etc. per `STAT_START_OFFSETS`/`codeTime` in `lib/comparison/xml-compare.ts`).
-- IMPORTANT (reduces risk): the timeline ROW HIGHLIGHT does NOT read `reviewIndex`. It is computed directly from the playhead: `masterActive = videoTime >= start && videoTime <= end` (page.tsx ~L3668–3675). So reordering the seek list does NOT affect the highlight — the highlight is already playhead-driven and correct for any order.
-- `reviewIndex` is used ONLY for: the Prev/Next buttons via `goToClip(reviewIndex ± 1, reviewSeekTimes)` (page.tsx ~L3575/3588) and the "N / M" counter (~L3585). `reviewSeekTimes = reviewClips.map(c => c.start)` (~L1977), in display order. Prev/Next must keep stepping in DISPLAY order so the counter stays consistent with the visible list.
-- The `<video>` binds only `onTimeUpdate={handleVideoTimeUpdate}` (page.tsx ~L3611). No `onSeeking`/`onSeeked` yet.
-- The worktree has NO `node_modules`; it must be installed before building/testing (also required so `node_modules/next/dist/docs/` exists per AGENTS.md).
+## Design decisions (grounded in the reference + the two targets' real structure)
 
-## Design decisions (chosen, with rationale)
+- **Reference pattern (confirmed by reading the shipped list page).** `ClubCrest` locks its box on all six axes (`width/height/minWidth/minHeight/maxWidth/maxHeight = size`), wraps the `<img>` in a `span` with `flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10`, and renders the img as `h-full w-full rounded-full object-contain`. The initials fallback uses the same locked box with `background: clubBadgeColor(name)` and `fontSize: Math.round(size * 0.4)`. The list scoreboard is a `grid grid-cols-[1fr_auto_1fr] items-start` with mirrored outer-pushed team blocks (crest+score on one `flex-row` / `flex-row-reverse` row, name on a single `block w-full truncate` line below) and a fixed-width clamped centre column whose venue line uses `min-w-0 truncate`.
 
-1. Keep display order (mid) untouched; introduce a SEPARATE start-sorted seek array. Rationale: the handler's invariant is "start/end non-decreasing by index"; satisfy it with a dedicated array rather than disturbing the engine or the visible list.
-2. Carry the display-row index on each seek clip (`{ start, end, rowIndex }`) so the handler can map a seek clip back to its display row and keep `reviewIndex` (Prev/Next cursor + counter) in sync with playback. Rationale: avoids introducing a second index space in the UI; `reviewIndex` stays a display-order index everywhere it's read.
-3. Derive the current clip from the playhead each tick via binary search (last clip with `start <= t`), replacing the forward-only drifting walk. Rationale: removes drift and dependence on prior ticks (root-cause fix).
-4. Use a `skippingRef` flag plus `onSeeking`/`onSeeked` bindings to distinguish programmatic seeks from user scrubs, instead of the fragile `prev±` delta. Rationale: eliminates the self-seek re-entry oscillation deterministically.
-5. Extract ordering + index-from-playhead + nearest-clip as PURE functions in `review-seek.ts` so they are unit-testable without a DOM. Rationale: the brief's verification strategy; the handler becomes a thin wrapper.
+- **Keep each target's existing data wiring.** Both target `Crest` components already resolve the logo as `safeImageUrl(logoUrl) || clubLogo(name)`, where `logoUrl` comes from the page's own `teamLogos`/`logos` state. Preserve that exact resolution; only the returned markup changes. Do NOT switch to `clubLogoOverride` (the targets pass the override through `logoUrl`). Rationale: minimal change, no new imports, identical data behaviour.
+
+- **Fallback font scale 0.4 (not the targets' current 0.38).** Match the reference exactly so all three surfaces render identical badges. Rationale: the task's invariant is "all three match"; 0.4 is what shipped.
+
+- **Centre column adaptation.** The two targets' headers differ from the list card: they have NO fixture-row/venue-under-schedule layout — instead their centre block holds `[homeScore + G.B] [FT pill + venue] [awayScore + G.B]` all bunched together, which is exactly why scores overlap the venue/location. The fix moves each team's score OUT to its own side block (next to that side's crest, pushed to the outer edge) and leaves ONLY the FT pill + venue in a fixed-width clamped centre column with a truncating venue. This mirrors the reference's "scores against the outer edge, centre column fixed-width" shape while respecting that these pages show FT/venue (not date/time/vs) in the centre. Rationale: directly removes the score↔venue overlap the user reported while keeping both pages' real centre content (FT + venue).
+
+- **Crest size stays 52.** Both target headers already call `<Crest ... size={52} />`. Keep 52 (the badge is now a locked filled box at that size). Rationale: no visual size regression; task says "scaled to its size".
+
+- **Names truncate to one line.** Replace each side's `leading-tight` wrapping name span with a single-line `block w-full truncate` + `title` tooltip so a long club name can never wrap and knock the two sides out of alignment. Rationale: the "names on a single line truncated with …" invariant.
+
+## Invariants to achieve (verify these by eye after the coder step on all three surfaces)
+
+- Fixed, equal-size circular crest badges that never letterbox-shrink and never grow/overflow into neighbouring score/name (locked box + `overflow-hidden` + `bg-white/10` fill + `object-contain`).
+- Non-square admin `logo_url` overrides read as a full-size badge, uncropped.
+- Scores never overlap the FT pill / venue / location text.
+- Team names render on a single line, truncated with `…`, with a `title` tooltip carrying the full name.
+- Home and away blocks are exact mirrors so they always line up regardless of name length.
+- Each page's existing data, tabs, toggles, rosters, stat tables, and non-header content are unchanged.
 
 ---
 
 ## Steps
 
-- [ ] 1. Install dependencies in the worktree so build/test/docs are available.
-      This is a prerequisite for every later verification and for the AGENTS.md Next.js docs rule. No code change.
-      Files: none (installs into `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\node_modules`).
-      Verify: run `npm install` in `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui`; confirm it exits 0 and that `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\node_modules\.bin\vitest.cmd` and `node_modules\next\dist\docs` now exist.
+- [ ] 1. Replace the `Crest` component in `app/live-scores/match/page.tsx` (~line 53) with the locked-box filled-badge pattern.
+      Keep the exact props `{ name, size = 44, logoUrl }` and the exact logo resolution `const logo = safeImageUrl(logoUrl) || clubLogo(name);`. Replace the body with the reference markup below (same imports already present: `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor`).
 
-- [ ] 2. Create the pure-helper module `review-seek.ts` with the ordering, index-from-playhead, and nearest-clip functions.
-      Export a `SeekClip` type `{ start: number; end: number; rowIndex: number }` and these pure functions:
-        - `buildSeekClips(clips: { start: number; end: number }[]): SeekClip[]` — maps each display clip to `{ start, end, rowIndex: i }`, then returns a COPY sorted by `start` ascending, tie-broken by `end` ascending (stable; preserve input `rowIndex`). Must not mutate the input.
-        - `currentSeekIndex(sorted: SeekClip[], t: number): number` — binary search for the LAST clip with `start <= t`; returns that index, or `-1` if `t` is before the first clip's start. (Caller decides whether `t <= end`.)
-        - `nextSkipIndex(sorted: SeekClip[], t: number): number` — index of the first clip with `start > t` (binary search), or `sorted.length` if none. Used to find the next gap to skip to.
-        - `nearestClipIndex(sorted: SeekClip[], t: number): number` — if a clip's `[start,end]` window contains `t`, return it; otherwise return the clip whose `start` is nearest to `t` (compare the candidate at `nextSkipIndex` and the one before it, pick smaller `|start - t|`; ties go to the earlier index). Returns `-1` only for an empty array.
-      All functions are O(log n), pure, no React/DOM imports.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\review-seek.ts`
-      Verify: `npx tsc --noEmit` passes (run in the worktree root).
+      Exact replacement for the component body (everything after the destructured props / type):
+      ```tsx
+      const logo = safeImageUrl(logoUrl) || clubLogo(name);
+      // Lock the badge box on every axis so flex can neither grow nor shrink it,
+      // and clip overflow so a logo can never bleed into the score/name beside it.
+      const box = {
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        maxWidth: size,
+        maxHeight: size,
+      };
+      if (logo) {
+        // eslint-disable-next-line @next/next/no-img-element
+        return (
+          <span
+            className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10"
+            style={box}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={logo}
+              alt={`${name ?? ""} logo`}
+              className="h-full w-full rounded-full object-contain"
+            />
+          </span>
+        );
+      }
+      return (
+        <span
+          className="flex shrink-0 items-center justify-center rounded-full font-bold text-white"
+          style={{ ...box, background: clubBadgeColor(name), fontSize: Math.round(size * 0.4) }}
+          aria-hidden="true"
+        >
+          {clubInitials(name)}
+        </span>
+      );
+      ```
+      (Keep the single `// eslint-disable-next-line` that sits immediately above the `<img>`; remove the now-stale `const dim = { width: size, height: size };`.)
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
+      Verify: `npm run build` (from `reporting-ui`) compiles with no type/lint errors for this file. Then load `/live-scores/match?grade=<key>&id=<gameId>` in the dev app and confirm both crests are equal-size filled circles.
 
-- [ ] 3. Add unit tests `review-seek.test.ts` encoding the report's trace cases.
-      Use `import { describe, it, expect } from "vitest"` and import from `./review-seek`. Cover:
-        a. Ordering/reshuffle: input display clips with starts `[100,110,130]` whose mids `[102,155,135]` reshuffle display order to P(102)/C(135)/G(155) i.e. input `[{100,104},{130,140},{110,170}]` → `buildSeekClips` returns start-sorted `[{100,104,rowIndex:0},{110,170,rowIndex:2},{130,140,rowIndex:1}]`.
-        b. `currentSeekIndex` at `t=104` on that sorted list returns `0` (last start<=104 is the 100 clip), and `t<=end` holds; `nextSkipIndex` at `t=104` returns `1` (clip starting 110) — i.e. the next target is 110, NEVER a backward target.
-        c. Monotonic/no-backseek: assert `nextSkipIndex` is non-decreasing as `t` increases across `100→105→111→131`, and that the targeted `start` values are non-decreasing (never yanks backward).
-        d. Goal-before-pass case: display clips `[{50,170}/*goal mid95*/, {90,94}/*pass mid92*/]` arrive mid-sorted as pass then goal → input to `buildSeekClips` is `[{90,94},{50,170}]`; result start-sorted is `[{50,170,rowIndex:1},{90,94,rowIndex:0}]`. After playing past the pass (`t=94`), `nextSkipIndex(sorted,94)` returns `2` (length) — there is NO clip starting after 94 — so the handler will NOT seek back to the goal's start 50. Assert this explicitly (the "must not yank the playhead back to 50" case).
-        e. `nearestClipIndex`: on sorted `[{100,104},{110,170},{130,140}]`, `t=120` (inside the 110–170 window) → index 1; `t=107` (gap) → nearest start is 110 → index 1; `t=50` (before all) → index 0.
-        f. Empty list: `buildSeekClips([])` → `[]`; `currentSeekIndex([],5)` → `-1`; `nearestClipIndex([],5)` → `-1`.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\review-seek.test.ts`
-      Verify: `npx vitest --run app/accuracy-compare/review-seek.test.ts` — all new tests pass.
+- [ ] 2. Rework the match-page scoreboard header JSX so each team's score sits beside that team's crest on the outer edge, the name truncates on one line, and only the FT pill + venue remain in a fixed-width centre column.
+      This is the `{game && ( <div className="border-b border-white/10 px-4 pb-4 pt-4"> ... </div> )}` block in `MatchStatsInner` (the `grid grid-cols-[1fr_auto_1fr] items-center gap-3` and its three children). Preserve the surrounding `border-b … px-4 pb-4 pt-4` wrapper and the `{winner && margin != null && ( <p …> )}` line underneath (unchanged). Replace ONLY the inner grid.
 
-- [ ] 4. Wire the start-sorted seek array into page.tsx and point the handler ref at it.
-      After the `reviewClips` memo (~L1953–1975), add `const seekClips = useMemo(() => buildSeekClips(reviewClips), [reviewClips]);` and import `buildSeekClips, currentSeekIndex, nextSkipIndex, nearestClipIndex, type SeekClip` from `./review-seek`. Change `reviewClipsRef` to type `SeekClip[]` (declaration ~L1141) and change the sync effect (~L1982) to `reviewClipsRef.current = seekClips;` with dep `[seekClips]`. Leave `reviewClips`, `reviewSeekTimes`, `videoRows`, and the display render untouched (Prev/Next and the counter keep using display-order `reviewSeekTimes`).
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\page.tsx`
-      Verify: `npx tsc --noEmit` passes.
+      Replace the current grid (home crest+name column / centre `[score][FT+venue][score]` group / away crest+name column) with a symmetric outer-pushed layout. Target markup:
+      ```tsx
+      <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2 md:gap-3">
+        {/* Home block: crest + score on one row pushed LEFT, name truncated below */}
+        <div className="flex min-w-0 flex-col items-start gap-2">
+          <div className="flex items-center gap-2">
+            <Crest name={home?.name} size={52} logoUrl={teamLogos.home} />
+            <div className="flex flex-col items-start">
+              <span className="text-3xl font-extrabold leading-none tabular-nums">
+                {homeScore ?? "-"}
+              </span>
+              <span className="mt-1 text-[11px] tabular-nums text-slate-400">
+                {goalsBehinds(home)}
+              </span>
+            </div>
+          </div>
+          <span
+            className="block w-full truncate text-left text-xs font-medium text-slate-300"
+            title={home?.name ?? "Home"}
+          >
+            {home?.name ?? "Home"}
+          </span>
+        </div>
 
-- [ ] 5. Add the self-seek guard ref and bind `onSeeking`/`onSeeked` to the `<video>`.
-      Near the other refs (~L1138–1145) add `const skippingRef = useRef(false);`. On the `<video>` element (~L3607–3614) add `onSeeking={() => { skippingRef.current = true; }}` is NOT correct for user scrubs; instead set `skippingRef` to true ONLY when WE assign `currentTime` (step 6), and add `onSeeked={() => { skippingRef.current = false; }}` to clear it once the browser finishes the programmatic seek. Keep `onTimeUpdate={handleVideoTimeUpdate}`. (User scrubs fire `seeking`/`seeked` too but with `skippingRef` false, so they are treated as manual seeks by the handler.)
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\page.tsx`
-      Verify: `npx tsc --noEmit` passes.
+        {/* Centre: fixed-width clamped column — FT pill + venue (venue truncates) */}
+        <div className="flex w-[108px] min-w-[108px] max-w-[108px] flex-col items-center px-1 text-center md:w-[128px] md:min-w-[128px] md:max-w-[128px]">
+          <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
+            FT
+          </span>
+          <span className="mt-1 block w-full min-w-0 truncate text-[11px] text-slate-400" title={game.venue?.name ?? ""}>
+            {game.venue?.name ?? ""}
+          </span>
+        </div>
 
-- [ ] 6. Rewrite the body of `handleVideoTimeUpdate` (~L1199–1282) to use the pure helpers and the guard.
-      New logic, in order:
-        1. `const t = e.currentTarget.currentTime; setVideoTime(t);` Keep updating `lastTimeRef` for compatibility but do not use `prev±` for seek detection.
-        2. `const clips = reviewClipsRef.current; if (clips.length === 0) return;` (now `SeekClip[]`, start-sorted).
-        3. If `skippingRef.current` is true, this tick is the result of OUR programmatic seek — early-return WITHOUT seeking again (the `onSeeked` handler clears the flag). This is the self-seek guard (brief item 3).
-        4. Compute the current clip from the playhead: `const curSorted = currentSeekIndex(clips, t);` Map to display row for the counter: if `curSorted >= 0` set `const rowIdx = clips[curSorted].rowIndex;` and, when it changed, `reviewIndexRef.current = rowIdx; setReviewIndex(rowIdx);` (keeps Prev/Next cursor + "N / M" in sync with playback, in DISPLAY order). This replaces the forward-only `while` walk (brief item 2). Do NOT setState every tick if unchanged.
-        5. `if (!autoSkipRef.current) return;` — auto-skip OFF plays straight through, only the highlight (playhead-driven) and the row cursor advance; NEVER writes `currentTime` (brief item 5).
-        6. Gap-skip: `const nextIdx = nextSkipIndex(clips, t);` If `nextIdx >= clips.length`: we're at/after the last clip's start. Only `pause()` if also past the last clip's `end` (so clusters/overlaps play through); otherwise return. If `nextIdx < clips.length`: `const nextStart = clips[nextIdx].start; const GAP = 1;` and only when we are NOT currently inside a clip window (`currentSeekIndex`'s clip has `t > its end`, i.e. real dead air) AND `nextStart > t + GAP`, perform the skip: set `skippingRef.current = true; const v = videoRef.current; if (v) { v.currentTime = Math.max(0, nextStart); lastTimeRef.current = nextStart; v.play().catch(() => {}); }`. Because `clips` is start-sorted, `nextStart` is always `>= t` within GAP tolerance — never backward (brief items 1 & 5, gap behavior preserved and correct).
-      Remove the old `seeked`/`findIndex` manual-resync block entirely; manual scrubs are now handled naturally because `currentSeekIndex` recomputes the row cursor from the playhead every tick and the skip only fires on genuine forward gaps.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\page.tsx`
-      Verify: `npx tsc --noEmit` passes; `npx vitest --run` passes (helper tests green).
+        {/* Away block: mirror of home (crest + score pushed RIGHT via flex-row-reverse) */}
+        <div className="flex min-w-0 flex-col items-end gap-2">
+          <div className="flex flex-row-reverse items-center gap-2">
+            <Crest name={away?.name} size={52} logoUrl={teamLogos.away} />
+            <div className="flex flex-col items-end">
+              <span className="text-3xl font-extrabold leading-none tabular-nums">
+                {awayScore ?? "-"}
+              </span>
+              <span className="mt-1 text-[11px] tabular-nums text-slate-400">
+                {goalsBehinds(away)}
+              </span>
+            </div>
+          </div>
+          <span
+            className="block w-full truncate text-right text-xs font-medium text-slate-300"
+            title={away?.name ?? "Away"}
+          >
+            {away?.name ?? "Away"}
+          </span>
+        </div>
+      </div>
+      ```
+      Notes: the "FT" literal and `game.venue?.name`, `homeScore`/`awayScore`, `goalsBehinds(home/away)`, `teamLogos.home/away`, and `home?.name`/`away?.name` are all the page's EXISTING values — do not rename or re-fetch. Keep the `{winner && margin != null && ...}` paragraph exactly as-is after this grid.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
+      Verify: `npm run build` compiles clean. In the dev app, open a match with a long club name and a long venue: confirm names show on one line with `…`, scores sit beside their crest on the outer edges and do NOT overlap the FT pill/venue, and home/away mirror each other.
 
-- [ ] 7. Fix the manual-seek resync to pick the nearest-in-time clip (brief item 4).
-      The explicit `seeked` branch is removed in step 6; the equivalent behavior (jump the row cursor to where the user scrubbed) is now provided by `currentSeekIndex` each tick. For the case where `t` sits in a gap (no clip contains it), update the row cursor using `nearestClipIndex(clips, t)` so the highlighted/active Prev-Next cursor matches the clip NEAREST in time rather than the first mid-order match. Apply this only when `currentSeekIndex` returns `-1` or its clip's window does not contain `t`.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui\app\accuracy-compare\page.tsx`
-      Verify: `npx tsc --noEmit` passes; `npx vitest --run` passes.
+- [ ] 3. Replace the `Crest` component in `app/live-scores/teamlists/page.tsx` (~line 34) with the SAME locked-box filled-badge pattern from step 1.
+      The component is byte-identical to the match page's old `Crest` (same props, same `const dim`, same old `<img className="shrink-0 rounded-full object-contain">`). Apply the exact same replacement body as step 1 (same imports are already present on this page: `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor`). Remove the stale `const dim`.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
+      Verify: `npm run build` compiles clean. Load `/live-scores/teamlists?grade=<key>&id=<gameId>` and confirm both crests are equal-size filled circles.
 
-- [ ] 8. Confirm untouched behaviors still hold by inspection + build.
-      Re-read Prev/Next (`goToClip` ~L1189, buttons ~L3575/3588), `seekVideo` (~L1171), and the row-highlight block (~L3668) to confirm: clicking a timeline row and Prev/Next still seek to the instance `start` in display order; the counter still reads display order; the dispute/flag logic and `lib/comparison/*` are unchanged. No code change unless a regression is found.
-      Files: none expected (verification/inspection step).
-      Verify: `npm run build` completes successfully (Next.js production build) AND `npx tsc --noEmit` is clean AND `npx vitest --run` passes — all in `c:\Users\AndyDin\reporting-dashboard\.worktrees\video-timeline-fix\reporting-ui`.
+- [ ] 4. Rework the teamlists-page scoreboard header JSX to the same outer-pushed symmetric layout as step 2.
+      This is the `{game && ( <div className="border-b border-white/10 px-4 pb-4 pt-4"> ... </div> )}` block in `TeamListsInner`. Its inner grid is identical in shape to the match page's (centre `[score][FT+venue][score]` group), but it has NO winner/margin paragraph underneath. Replace ONLY the inner grid with the SAME markup block given in step 2, using THIS page's variable names: crests use `logoUrl={logos.home}` / `logoUrl={logos.away}` (this page's state is `logos`, not `teamLogos`); everything else (`home?.name`, `away?.name`, `homeScore`, `awayScore`, `goalsBehinds(home/away)`, `game.venue?.name`, the "FT" literal) is identical and already present. Keep the `border-b … px-4 pb-4 pt-4` wrapper.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
+      Verify: `npm run build` compiles clean. In the dev app open a team-lists page with a long name/venue: confirm the invariants (equal fixed crests, names one-line truncated with `…`, scores not overlapping FT/venue, home/away mirrored) and that the Home/Away roster toggle + roster list below are unchanged.
 
-## Final acceptance
-
-- `npm run build` succeeds, `npx tsc --noEmit` clean, `npx vitest --run` green.
-- Auto-skip ON: playhead advances start-sorted, skipping only genuine forward gaps; never ping-pongs backward (helper tests c/d encode this).
-- Auto-skip OFF: plays straight through, highlight/cursor advance only, no `currentTime` writes.
-- Row highlight and Prev/Next counter remain correct in display (mid) order.
-- Changes confined to `app/accuracy-compare/page.tsx`, `app/accuracy-compare/review-seek.ts`, `app/accuracy-compare/review-seek.test.ts`. No commit, no push.
+- [ ] 5. Final cross-surface consistency check.
+      With both files changed, visually compare all three surfaces — the Live Scores LIST (`/live-scores`, unchanged reference), the match page, and the team-lists page — and confirm the crest badges and scoreboard alignment read identically across them.
+      Files: none (verification only).
+      Verify: `npm run build` from `reporting-ui` succeeds with zero errors. If the repo exposes a lint/typecheck script in `package.json` (e.g. `npm run lint`), run it and confirm no new warnings in the two changed files. (Per `AGENTS.md`, if any Next.js build/config issue arises, consult `node_modules/next/dist/docs/` before changing config — but this change is JSX/Tailwind only and should not require it.)
 
 ## Notes / assumptions
 
-- Assumption: binding `onSeeked` to clear `skippingRef` is reliable in the target browsers; a defensive fallback is to also clear `skippingRef` on the first `onTimeUpdate` tick where `skippingRef` was set and `t` is within ~0.5s of the intended `nextStart`. Implement the `onSeeked` path first; add the fallback only if manual testing shows a stuck flag.
-- `lastTimeRef` is retained only for minimal churn; the new logic does not depend on it for correctness.
+- The build/verify command is `npm run build` run from the `reporting-ui` directory. The coder step should confirm the exact script names in `reporting-ui/package.json` (e.g. `build`, `lint`, `dev`) during execution and use the project's real scripts; grep is not a substitute for building.
+- `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor` are already imported on BOTH target pages, so no import changes are needed. `goalsBehinds` is also already imported on both.
+- If a target's header already differs slightly from what's described here (e.g. extra classes on the wrapper), preserve those outer-wrapper classes and only swap the inner grid as specified.

@@ -1,92 +1,63 @@
-# Start-sorted seek list and playhead-derived index for accuracy-compare video review
+# Consistent scoreboard layout + fixed crest badges on match & teamlists pages
 
-The auto-skip/manual-seek logic in the accuracy-compare video review used a forward-only drifting cursor over the *display-ordered* (mid-sorted) clip list, which let the playhead jump backward and ping-pong whenever the display order diverged from playback (time) order. This change introduces a dedicated start-sorted "seek list" (`buildSeekClips`) that the auto-skip handler walks, derives the current clip from the real playhead each tick via binary search instead of a stateful walk, adds a self-seek guard so a programmatic `currentTime` assignment can't retrigger a skip, and resyncs manual seeks to the clip nearest in time. The display timeline (rows, Prev/Next, the "N / M" counter) stays mid-sorted and is unchanged. The pure index/ordering logic is extracted into `review-seek.ts` with a 20-case unit test file.
+Ports the proven Live Scores LIST page pattern (`app/live-scores/page.tsx` @ `d254cd4`) onto the match and teamlists scoreboard headers. Each `Crest` becomes a fixed-size circular badge locked on all six box axes with `overflow-hidden` + `bg-white/10`, and both headers are rebuilt into a symmetric `[home | centre | away]` grid where each team's crest+score sit together on the outer edge, the club name truncates to a single line below, and the centre is a fixed-width clamped column holding the FT pill + a truncating venue. The change is scoped to exactly the two files' `Crest` component and scoreboard-header markup; no shared lib, tabs, rosters, or data fetching was touched.
 
-Watch for:
-- (confirmed) The self-seek guard clears only on `onSeeked`; a `currentTime` write that the browser treats as a no-op (target == current time) would not fire `onSeeked` and could leave `skippingRef` stuck. In practice the write only happens when `nextStart > t + 1s`, so a real seek always occurs and `onSeeked` fires. Non-blocking.
-- (confirmed) `seekVideo` (row click / Prev-Next / deep-link) writes `currentTime` without setting `skippingRef`; this is intentional and correct — those are treated as manual seeks and resync rather than retrigger a skip.
+Watch for: nothing blocking. The two files are byte-for-byte identical in the reviewed regions and both faithfully reproduce the reference pattern. (confirmed)
 
 **Verdict**: APPROVED
 
 ## High-level view
 
-The fix cleanly separates the two orderings the feature needs. Display order stays mid-sorted (`reviewClips` / `videoRows` are untouched), and a new `seekClips` memo produces a start-sorted projection carrying each clip's display `rowIndex`. The auto-skip handler now walks only the start-sorted list, so by construction it can never target a backward clip — the root cause of the random jumping.
+The crest fix locks the badge box on width/height/minWidth/minHeight/maxWidth/maxHeight so flex can neither grow nor shrink it, wraps the `<img>` in an `overflow-hidden rounded-full bg-white/10` span, and sets the `<img>` to `h-full w-full object-contain`. This is the reference pattern verbatim, so home and away crests render at exactly 52px regardless of sibling content and a letterboxed non-square logo reads as a full badge without cropping — satisfying invariant 1.
 
-Index selection is now stateless: each `timeupdate` tick binary-searches the playhead against the start-sorted list (`currentSeekIndex` for the containing/last-started clip, `nextSkipIndex` for the next forward gap target). This replaces the forward-only `while` walk that could drift out of sync after a manual scrub.
+Scores no longer share a centre flex row with the venue. Each score block moved out beside its team's crest in the outer `1fr` track (home pushed left, away mirrored via `flex-row-reverse` and pushed right), and the centre is a `108px`/`128px` column with equal min and max width holding only the FT pill and a truncating venue. A long venue can no longer widen the track into the scores — satisfying invariant 2.
 
-A `skippingRef` flag set immediately before the programmatic `currentTime` write and cleared on the `<video>` `onSeeked` event stops the handler's own seek from being read as a new manual seek and retriggering. Manual scrubs leave the flag false and fall through to a nearest-in-time resync (`nearestClipIndex`), replacing the old first-match `findIndex`.
+Team names are `block w-full truncate` with a `title` tooltip, one line with ellipsis, home `text-left` / away `text-right`, and the grid is `items-start` so neither block grows taller than the other — satisfying invariants 3 and 4.
 
-The row highlight remains driven directly off `videoTime` against each instance's start/end, so it stays correct for whatever is actually playing regardless of the seek list's order. Scope is tight: only `page.tsx` plus the new sibling helper and its test; the comparison engine, disputes, and unrelated files are untouched.
+The two files are structurally identical in the changed regions; teamlists references `logos.home/away` and match references `teamLogos.home/away`, which is the only intended difference. Scope is held to the two files — satisfying invariant 5.
 
 <details>
-<summary>Issues (2)</summary>
+<summary>Issues (0)</summary>
 
-1. **Stuck guard on no-op seek** — if a programmatic `currentTime` write targets the current time, `onSeeked` may not fire and `skippingRef` stays true. Guarded in practice by the `>1s` gap threshold; no action required, noted for future edits.
-2. **seekVideo bypasses the guard** — row click / Prev-Next write `currentTime` without setting `skippingRef`, so they're handled as manual seeks. This is the intended behavior; documenting it so a future change doesn't "fix" it by adding the guard and breaking manual seek resync.
+No blocking or non-blocking findings against the invariants.
 
 </details>
 
 <details>
 <summary>Details</summary>
 
-### Two orderings, cleanly separated
+### Fixed-size crest badge (invariant 1)
 
-The core design choice is to keep the existing mid-sorted display list and derive a second, start-sorted list purely for playback. `buildSeekClips` maps each display clip to `{start, end, rowIndex}` and sorts by `start` then `end`, without mutating the input. Because the sort key is `start`, walking this list forward can never produce a backward seek — this is the structural fix for the jumping, not a heuristic patch. The `rowIndex` carried on each entry is the bridge back to display order, so the Prev/Next cursor and the "N / M" counter (both built off `reviewSeekTimes`, which is still `reviewClips.map(c => c.start)` in display order) stay consistent with what's playing.
+Both `Crest` components replace the old `dim = { width, height }` with a six-axis `box` clamping `width/height/minWidth/minHeight/maxWidth/maxHeight = size`. Because min and max are equal on both axes, a flex parent cannot stretch or compress the badge, so the home and away crests are guaranteed equal size (52px in these headers). This is the mechanism the previous crest-only attempt was missing.
 
-The tie-break (`a.start - b.start || a.end - b.end`) with a stable sort gives deterministic ordering for clips sharing a start, and the test `tie-breaks equal starts by end ascending, stably` pins that down.
+The logo branch now wraps the `<img>` in `<span class="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10" style={box}>` with the image at `h-full w-full rounded-full object-contain`. `overflow-hidden` clips any bleed into the adjacent score, `object-contain` preserves aspect ratio without cropping, and `bg-white/10` fills the letterbox gaps so a non-square admin logo still reads as a full-size badge. This is identical to the reference `ClubCrest`. The initials fallback uses the same `box` and bumps `fontSize` from `0.38` to `0.4` of size, matching the reference exactly. The added `aria-hidden="true"` on the initials fallback and the `alt={`${name} logo`}` on the image are reasonable a11y touches carried from the reference.
 
-### Playhead-derived index instead of a drifting cursor
+One intentional difference from the reference: these pages resolve the logo via `safeImageUrl(logoUrl) || clubLogo(name)` where the list page uses `clubLogoOverride(name) || clubLogo(name)`. That resolution line is unchanged by this diff — the override still flows through the `logoUrl` prop (`teamLogos`/`logos`) — so data behaviour is preserved.
 
-The old handler kept `reviewIndexRef` as a forward-only cursor advanced by a `while (t > clips[idx].end)` walk, and separately detected manual seeks by comparing `t` against the previous tick's time with magic deltas (`t < prev - 0.4 || t > prev + 1`). Both are gone. Each tick now computes:
+### Scores pulled to the edges, centre column clamped (invariant 2)
 
-```
-cur      = currentSeekIndex(clips, t)   // last clip with start <= t, else -1
-inWindow = cur >= 0 && t <= clips[cur].end
-```
+The old layout placed `[homeScore][FT+venue][awayScore]` in a single centre flex row, so a wide venue could push the scores. The new layout moves each score block beside its own crest in the outer `1fr` grid track: home `items-start` with `flex items-center gap-2` (crest then score), away mirrored with `flex-row-reverse` and `items-end`. The centre is `w-[108px] min-w-[108px] max-w-[108px]` (`md:[128px]`) holding only the FT pill and the venue span at `block w-full min-w-0 truncate`. With equal min/max width the column cannot widen, and the venue truncates inside it, so the scores — now against the card edges — cannot be overlapped.
 
-`currentSeekIndex` is a correct "rightmost start <= t" binary search (returns `-1` before the first start, last index past all starts). `inWindow` distinguishes "inside a clip" from "in the dead air after it," which is exactly the signal the auto-skip gap logic needs. The trace case from the report — display `[{100,104},{130,140},{110,170}]`, mids reshuffling to pass/corner/goal — start-sorts to `[{100,104,r0},{110,170,r2},{130,140,r1}]`, and at `t=104` yields `cur=0, inWindow=true`, with `nextSkipIndex=1` (start 110). Forward, never backward. The test suite encodes this directly.
+### Single-line truncated names, mirrored blocks (invariants 3 & 4)
 
-### Auto-skip gap logic
+Each name span is `block w-full truncate` with `title={name}` for the full value, home `text-left` and away `text-right`. `truncate` forces one line with an ellipsis, so a long club name can no longer wrap and make one side taller. The grid wrapper is `grid-cols-[1fr_auto_1fr] items-start`, and the away block is an exact mirror of home (`items-end` + `flex-row-reverse` on the crest/score row), so the two sides stay symmetric and top-aligned at any name/venue length.
 
-With `inWindow` true, the handler returns before any seek, so clusters/overlapping stats in the same window play through naturally — preserving the documented "don't replay within a window" behavior. With `inWindow` false, `nextSkipIndex(clips, t)` finds the first clip starting after `t`; if there is none and the playhead is past the last clip, it pauses (avoids running into unrelated game action); otherwise it skips only when `nextStart > t + GAP` (1s). Because the list is start-sorted, `nextStart` is always ≥ the playhead, so the gap skip is strictly forward.
+### Scope (invariant 5)
 
-The goal-before-pass case is the important edge: display `[pass{90,94,r0}, goal{50,170,r1}]` start-sorts to `[{50,170,r1},{90,94,r0}]`. At `t=94` the playhead is inside the goal window `[50,170]`, so `cur=1, inWindow=true` and the handler returns — it does *not* yank back to start 50. If instead the playhead were in dead air there, `nextSkipIndex(…,94)` returns `length` (no forward clip), so again no backward seek. Both are covered by tests.
+`git status --porcelain` reports only `app/live-scores/match/page.tsx` and `app/live-scores/teamlists/page.tsx` modified (plus the untracked `.agents/` task-artifact directory). The reference `app/live-scores/page.tsx` is untouched. The diffs are confined to the `Crest` function and the scoreboard-header grid; the winner/margin line and `border-b … px-4 pb-4 pt-4` wrapper on the match page, the teamlists wrapper, and all tabs/rosters/toggles/stat-tables/data-fetching are outside the changed hunks.
 
-### Self-seek guard
+### Verification evidence
 
-`skippingRef` is set to `true` on the line immediately before `v.currentTime = nextStart`, and the `timeupdate` handler early-returns while it's set, so the echo tick from the browser settling the programmatic seek can't trigger a second skip. The `<video>` `onSeeked` handler clears it once the seek completes. This replaces the fragile prev±delta detector, which could misclassify a legitimate playback hiccup as a manual seek.
-
-Two behavioral notes worth recording. First, if the programmatic write ever targeted the current time (a no-op seek), the browser may not fire `onSeeked` and the flag would stick, suppressing auto-skip until the next real seek clears it. The `nextStart > t + 1s` precondition means the write always moves the playhead by more than a second, so a real seek — and thus `onSeeked` — always occurs. This is a latent coupling to keep in mind, not a current bug.
-
-Second, `seekVideo` (used by row click, Prev/Next via `goToClip`, and the deep-link path) writes `currentTime` directly and does *not* set `skippingRef`. That's correct: those are user-intent jumps and should be handled as manual seeks (resync to nearest, don't force-skip the tick), not suppressed. A future change that "symmetrically" wrapped `seekVideo` in the guard would break manual-seek resync — hence flagging it.
-
-### Manual-seek resync to nearest-in-time
-
-When the playhead is not inside a clip window, the display cursor is set from `nearestClipIndex(clips, t)` rather than the old first-`findIndex` match. `nearestClipIndex` prefers a window containing `t`, else compares the nearest start before and after `t` (ties to the earlier clip), and returns `-1` only for an empty list. This maps the Prev/Next cursor to the closest instance in time instead of the first display-order match, which is the behavior a user expects after scrubbing. The cursor update is gated on an actual change (`rowIdx !== reviewIndexRef.current`) so it doesn't thrash React state every tick.
-
-Note the handler maps `rowSource` (an index into the start-sorted list) back through `clips[rowSource].rowIndex` to a display index before setting `reviewIndex` — so the cursor is always a valid display-order index. Correct bridging between the two orderings.
-
-### Highlight vs seek mapping
-
-The row highlight (`masterActive` / `analystActive` / `rowActive`) is computed directly from `videoTime` against each instance's start/end in the `videoRows.map` render, entirely independent of the seek list. So even though the seek order differs from display order, the highlighted row always corresponds to the clip actually playing. This separation is what makes the start-sorted seek list safe to introduce without touching the display.
-
-### Scope and tests
-
-Only `page.tsx` and the two new sibling files were changed. `reviewClips`, `reviewSeekTimes`, `videoRows`, `seekVideo`, `goToClip`, the comparison engine (`lib/comparison/*`), and `disputes.ts` are untouched — verified by diff and grep. Per the verification note, `tsc --noEmit` is clean, `next build` succeeds (35/35 pages), and `vitest --run` passes 31 tests across 3 files including the 20 new helper tests. The new test file covers the reshuffle trace, forward-monotonic skip targets, the goal-before-pass no-yank guarantee, `nearestClipIndex` for inside/gap/before/after/empty, and the re-derivation property that underpins the self-seek guard.
-
-Not tested (acceptable — these are DOM/React integration seams, not pure logic): the `onSeeked`-clears-`skippingRef` wiring and the `seekVideo` manual-seek path are only exercisable with a real `<video>` element, so they're covered by reasoning rather than unit tests. No automated regression guards that `reviewClips` display order stays mid-sorted; it's preserved by not being touched.
-
-The two new files (`review-seek.ts`, `review-seek.test.ts`) are present on disk but untracked in git, so they don't appear in `git diff main`; they were read directly from the worktree.
+The coder's `verification.md` records `npx tsc --noEmit` (exit 0), `npx vitest --run` (11/11 pass), and `npm run build` (exit 0, all 35 routes incl. `/live-scores/match` and `/live-scores/teamlists`). The lockfile/workspace-root warning is noted as a pre-existing environment warning, not a code error. No browser test was claimed; correctness of the visual invariants is argued by markup analysis, which this review independently confirms against the diff and the reference commit. The evidence is sufficient; no re-run or spot-check was warranted.
 
 </details>
 
 <details>
 <summary>File map</summary>
 
-- `app/accuracy-compare/page.tsx` — swapped the forward-only cursor + prev-delta seek detector for a start-sorted seek list, playhead-derived binary-search index, self-seek guard (`skippingRef` + `onSeeked`), and nearest-in-time manual resync; added the `seekClips` memo.
-- `app/accuracy-compare/review-seek.ts` (new, untracked) — pure helpers `buildSeekClips`, `currentSeekIndex`, `nextSkipIndex`, `nearestClipIndex`, `type SeekClip`.
-- `app/accuracy-compare/review-seek.test.ts` (new, untracked) — 20 unit tests encoding the report trace cases.
+- `app/live-scores/match/page.tsx` — `Crest` locked-box badge + symmetric scoreboard-header grid; winner/margin line and wrapper preserved.
+- `app/live-scores/teamlists/page.tsx` — same `Crest` + scoreboard-header changes, referencing `logos.*` instead of `teamLogos.*`.
 
-Full diff: `git diff main -- app/accuracy-compare/page.tsx` (new files are untracked; read from the worktree).
+Full diff: `git -C c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui diff`
 
 </details>
