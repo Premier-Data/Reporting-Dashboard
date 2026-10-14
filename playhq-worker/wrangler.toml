@@ -2,6 +2,13 @@ name = "playhq-scores"
 main = "src/index.ts"
 compatibility_date = "2025-07-18"
 
+# ── Scheduled push to TT (advancedhp) ───────────────────────────────────────
+# Every minute, find all live fixtures and push their score + team list into
+# the TT REST system (/PlayHQScoreUpdate, /PlayHQTeamUpdate). The cron does
+# nothing when no fixtures are live, so it's cheap to run often.
+[triggers]
+crons = ["* * * * *"]
+
 # ── Config (safe to commit; no secrets here) ────────────────────────────────
 [vars]
 # Browser origins allowed to call this worker. List your dashboard origin(s)
@@ -16,6 +23,9 @@ LIVE_TTL_SECONDS = "15"
 # Grades the /live endpoint searches to attach team id+name to a game (the
 # spectator feed carries no team identity). NTFL Men's/Women's + EFNL, GVL, PFL.
 KNOWN_GRADE_IDS = "be950883-7630-4df5-81e4-a5bba0f24cb6,61ca876d-f028-4f60-ad85-33e8fb2e5be7,6f964e7b-a56f-471e-9d9d-30e1f80da8d1,6c2c7212-d1b7-48bb-acee-0fd75ce1984f,7540fef1-7fad-4375-8502-b95c09ae6105"
+# TT REST system that live scores + team lists are pushed to (scheduled job +
+# /api/push). No auth required on its write endpoints.
+TT_BASE_URL = "https://pdrest.advancedhp.com.au"
 
 # ── Route to your personal domain ───────────────────────────────────────────
 # Uncomment and set once your domain is on Cloudflare. Either a subdomain:

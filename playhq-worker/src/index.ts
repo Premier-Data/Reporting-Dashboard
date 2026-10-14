@@ -36,6 +36,10 @@ export interface Env {
   // /live endpoint can attach team id+name to a game by looking it up in these
   // grades' REST feeds. Defaults to the NTFL Premier Men's + Women's grades.
   KNOWN_GRADE_IDS?: string;
+  // Base URL of the TT REST system that live scores + team lists are pushed to
+  // (the scheduled job and the /api/push/:id endpoint). Defaults to the AHP
+  // production host. No auth is required on its write endpoints.
+  TT_BASE_URL?: string;
 }
 
 // Default grades the /live endpoint searches to resolve a game's teams.
@@ -634,6 +638,149 @@ function summaryToTeamLists(
   };
 }
 
+// ── TT REST push (advancedhp) ───────────────────────────────────────────────
+// Forward live scores + team lists INTO the TT system. TT keys fixtures by the
+// FULL PlayHQ game UUID (verified: a short id returns "n/a", the full UUID
+// returns "ok"). No auth is required on these write endpoints. The score push
+// takes current totals + per-player goals/behinds; the team push takes full
+// home/away rosters. Both are idempotent — safe to resend every cycle.
+
+// Default TT base; override with the TT_BASE_URL var in wrangler.toml.
+const TT_BASE_DEFAULT = "https://pdrest.advancedhp.com.au";
+
+// Build the /PlayHQScoreUpdate body from a REST summary payload. Sends the
+// current full totals for both sides. `requestor`/`sourceApp` identify the
+// caller to TT (0 / "reporting-dashboard" accepted in testing).
+function ttScoreBody(fullId: string, live: NormalisedLive) {
+  return {
+    fixturePlayHQId: fullId,
+    homeTeamId: live.home.id ?? "",
+    awayTeamId: live.away.id ?? "",
+    homeG: live.home.goals ?? 0,
+    homeB: live.home.behinds ?? 0,
+    awayG: live.away.goals ?? 0,
+    awayB: live.away.behinds ?? 0,
+    requestType: "SCORE",
+    sourceApp: "reporting-dashboard",
+    requestor: 0,
+  };
+}
+
+// Build the /PlayHQTeamUpdate body from a REST team-lists payload. Each side's
+// players carry name + number; TT matches players by name/number on its side.
+function ttTeamBody(fullId: string, lists: TeamListsPayload) {
+  const toTeam = (side: { id: string | null; name: string | null; players: TeamListPlayer[] }) => ({
+    playhqId: side.id ?? "",
+    teamName: side.name ?? "",
+    allPlayers: side.players.map((p) => {
+      const parts = p.name.trim().split(/\s+/);
+      const firstName = parts.length > 1 ? parts.slice(0, -1).join(" ") : (parts[0] ?? "");
+      const lastName = parts.length > 1 ? parts[parts.length - 1] : "";
+      const num = Number(p.number);
+      return {
+        firstName,
+        lastName,
+        playerId: "",
+        playerNumber: Number.isFinite(num) ? num : 0,
+        position: "",
+        teamId: side.id ?? "",
+      };
+    }),
+  });
+  return {
+    fixtureId: fullId,
+    myHomeTeam: toTeam(lists.home),
+    myAwayTeam: toTeam(lists.away),
+    sourceApp: "reporting-dashboard",
+    requestor: 0,
+  };
+}
+
+// POST a JSON body to a TT endpoint. Returns { status, body } (TT replies with
+// a short string like "ok" / "n/a"). Never throws — a push failure for one
+// fixture must not abort the others.
+async function ttPost(
+  env: Env,
+  path: string,
+  body: unknown
+): Promise<{ status: number; body: string }> {
+  const base = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    return { status: res.status, body: text.slice(0, 200) };
+  } catch (e) {
+    return { status: 0, body: e instanceof Error ? e.message : "error" };
+  }
+}
+
+// Resolve, fetch the summary for, and push ONE fixture's score + team list to
+// TT. `shortId` is the PlayHQ spectator id (short or full). Returns a small
+// result record for logging / the manual-trigger response.
+async function pushFixtureToTT(
+  shortId: string,
+  env: Env
+): Promise<Record<string, unknown>> {
+  const full = await resolveFullGame(shortId, env);
+  if (!full) return { id: shortId, resolved: false, error: "fixture_not_found" };
+  const fullId = String(full.id);
+
+  let summary: Record<string, unknown> | null = null;
+  try {
+    summary = await fetchGameSummary(fullId, env);
+  } catch (e) {
+    return { id: shortId, fullId, error: e instanceof Error ? e.message : "summary_failed" };
+  }
+
+  const live = summaryToScorersPeriods(shortId, summary);
+  const lists = summaryToTeamLists(shortId, summary);
+
+  const score = await ttPost(env, "/PlayHQScoreUpdate", ttScoreBody(fullId, live));
+  const team = lists
+    ? await ttPost(env, "/PlayHQTeamUpdate", ttTeamBody(fullId, lists))
+    : { status: 0, body: "no_appearances" };
+
+  return {
+    id: shortId,
+    fullId,
+    status: summary.status ?? null,
+    scorePush: score,
+    teamPush: team,
+  };
+}
+
+// Find all fixtures across the known grades whose status is in-progress/live,
+// so the scheduled push knows which to forward. Returns their SHORT ids.
+async function liveFixtureIds(env: Env): Promise<string[]> {
+  const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ids = new Set<string>();
+  for (const gradeId of gradeIds) {
+    if (!UUID_RE.test(gradeId)) continue;
+    let games: Array<Record<string, unknown>> = [];
+    try {
+      games = (await fetchGradeGames(gradeId, env)) as Array<Record<string, unknown>>;
+    } catch {
+      continue;
+    }
+    for (const g of games) {
+      const s = String(g.status ?? "").toUpperCase();
+      if (s === "IN_PROGRESS" || s === "LIVE") {
+        const id = String(g.id ?? "");
+        if (id) ids.add(id);
+      }
+    }
+  }
+  return [...ids];
+}
+
 // One side of a fixture — the PlayHQ competitor (team) id plus its name.
 type FixtureTeam = { id: string | null; name: string | null };
 
@@ -961,6 +1108,27 @@ export default {
       });
     }
 
+    // /api/push/:id — manually push ONE fixture's score + team list to TT (the
+    // same work the scheduled job does per live fixture). Lets you verify the
+    // TT integration on demand without waiting for a game to be live. Returns
+    // TT's reply for each push so you can see "ok" / "n/a".
+    const pushMatch = url.pathname.match(/^\/api\/push\/([^/]+)$/);
+    if (pushMatch) {
+      const pid = decodeURIComponent(pushMatch[1]);
+      if (!ID_RE.test(pid)) return json({ error: "invalid_fixture_id" }, 400, cors);
+      const result = await pushFixtureToTT(pid, env);
+      return json(result, 200, cors);
+    }
+
+    // /api/push — push ALL currently-live fixtures to TT on demand (same set
+    // the cron would push). Useful to trigger a sweep manually.
+    if (url.pathname === "/api/push") {
+      const ids = await liveFixtureIds(env);
+      const results = [];
+      for (const id of ids) results.push(await pushFixtureToTT(id, env));
+      return json({ count: results.length, results }, 200, cors);
+    }
+
     const m = url.pathname.match(
       /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status)$/
     );
@@ -1049,5 +1217,25 @@ export default {
       // Timeouts / network faults.
       return json({ error: "unable_to_retrieve_scores" }, 502, cors);
     }
+  },
+
+  // Cron trigger (see wrangler.toml [triggers]). Every run: find all live
+  // fixtures across the known grades and push each one's score + team list to
+  // the TT system. Runs independently of the browser-facing /live endpoints.
+  async scheduled(
+    _event: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext
+  ): Promise<void> {
+    const task = (async () => {
+      const ids = await liveFixtureIds(env);
+      for (const id of ids) {
+        const r = await pushFixtureToTT(id, env);
+        // Log so `wrangler tail` shows what was pushed and TT's reply.
+        console.log("TT push", JSON.stringify(r));
+      }
+      if (ids.length === 0) console.log("TT push: no live fixtures");
+    })();
+    ctx.waitUntil(task);
   },
 };
