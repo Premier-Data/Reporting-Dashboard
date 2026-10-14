@@ -3,11 +3,11 @@ main = "src/index.ts"
 compatibility_date = "2025-07-18"
 
 # ── Scheduled push to TT (advancedhp) ───────────────────────────────────────
-# Every minute, find all live fixtures and push their score + team list into
+# Every 2 minutes, find all live fixtures and push their score + team list into
 # the TT REST system (/PlayHQScoreUpdate, /PlayHQTeamUpdate). The cron does
 # nothing when no fixtures are live, so it's cheap to run often.
 [triggers]
-crons = ["* * * * *"]
+crons = ["*/2 * * * *"]
 
 # ── Push log (KV) ───────────────────────────────────────────────────────────
 # Stores the most recent TT pushes so the production dashboard can show a live
