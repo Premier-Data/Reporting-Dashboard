@@ -575,6 +575,65 @@ function summaryToScorersPeriods(
   };
 }
 
+// Build complete home/away team lists from a REST game summary. Every
+// `appearances[]` entry is a SELECTED player (not just scorers), so this is the
+// authoritative, complete roster — unlike the spectator feed's players[], which
+// PlayHQ only populates partially. Sides are keyed by competitors[].isHomeTeam;
+// each player is grouped by appearance.teamID. Returns null when the summary
+// carries no appearances (e.g. pre-match), so the caller can fall back.
+type TeamListsPayload = {
+  id: string;
+  status: string | null;
+  home: { id: string | null; name: string | null; players: TeamListPlayer[] };
+  away: { id: string | null; name: string | null; players: TeamListPlayer[] };
+};
+
+function summaryToTeamLists(
+  id: string,
+  summary: Record<string, unknown>
+): TeamListsPayload | null {
+  const appearances = Array.isArray(summary.appearances)
+    ? (summary.appearances as Array<Record<string, unknown>>)
+    : [];
+  if (appearances.length === 0) return null;
+
+  const comps = Array.isArray(summary.competitors)
+    ? (summary.competitors as Array<Record<string, unknown>>)
+    : [];
+  const homeComp = comps.find((c) => c.isHomeTeam === true);
+  const awayComp = comps.find((c) => c.isHomeTeam === false);
+  const homeId = homeComp ? String(homeComp.id) : null;
+  const awayId = awayComp ? String(awayComp.id) : null;
+
+  const num = (n: string | null) => {
+    const v = Number(n);
+    return Number.isFinite(v) && n != null && n !== "" ? v : Number.POSITIVE_INFINITY;
+  };
+
+  const rosterFor = (teamId: string | null): TeamListPlayer[] => {
+    if (!teamId) return [];
+    const out: TeamListPlayer[] = [];
+    for (const a of appearances) {
+      if (String(a.teamID) !== teamId) continue;
+      const name = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim();
+      if (!name) continue;
+      out.push({
+        name,
+        number: a.playerNumber != null ? String(a.playerNumber) : null,
+      });
+    }
+    out.sort((x, y) => num(x.number) - num(y.number) || x.name.localeCompare(y.name));
+    return out;
+  };
+
+  return {
+    id,
+    status: (summary.status as string) ?? null,
+    home: { id: homeId, name: (homeComp?.name as string) ?? null, players: rosterFor(homeId) },
+    away: { id: awayId, name: (awayComp?.name as string) ?? null, players: rosterFor(awayId) },
+  };
+}
+
 // One side of a fixture — the PlayHQ competitor (team) id plus its name.
 type FixtureTeam = { id: string | null; name: string | null };
 
@@ -815,8 +874,95 @@ export default {
       }
     }
 
+    // /api/fixtures/:id/teamlists — COMPLETE home/away rosters from the official
+    // REST game summary (appearances[] = the full selected squad). This matches
+    // the PlayHQ game-centre, unlike the spectator feed (players[]) which is
+    // often partial. If the summary has no appearances yet (e.g. the lineup
+    // isn't published), fall through to the spectator feed below.
+    const teamlistsMatch = url.pathname.match(
+      /^\/api\/fixtures\/([^/]+)\/teamlists$/
+    );
+    if (teamlistsMatch) {
+      const tid = decodeURIComponent(teamlistsMatch[1]);
+      if (!ID_RE.test(tid)) return json({ error: "invalid_fixture_id" }, 400, cors);
+      const tlCacheKey = new Request(`https://playhq-cache/teamlists/${tid}`);
+      const tlHit = await cache.match(tlCacheKey);
+      if (tlHit) {
+        return new Response(await tlHit.text(), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Cache": "HIT", ...cors },
+        });
+      }
+      // Try the authoritative REST summary first.
+      let payload: TeamListsPayload | null = null;
+      try {
+        const full = await resolveFullGame(tid, env);
+        if (full) {
+          const summary = await fetchGameSummary(String(full.id), env);
+          payload = summaryToTeamLists(tid, summary);
+        }
+      } catch {
+        // Summary unavailable (e.g. 404 pre-match, API hiccup) — fall back to
+        // the spectator feed below rather than failing the request.
+        payload = null;
+      }
+      // Fall back to the spectator feed when the summary carried no roster
+      // (pre-match / not yet published) so behaviour never regresses.
+      if (!payload) {
+        try {
+          const game = (await fetchGame(tid, env)) as Record<string, unknown>;
+          const teams = await resolveGameTeams(tid, env, ctx);
+          payload = {
+            id: tid,
+            status: (game.status as string) ?? null,
+            home: {
+              id: teams?.home.id ?? null,
+              name: teams?.home.name ?? null,
+              players: teamListFrom(game, "home"),
+            },
+            away: {
+              id: teams?.away.id ?? null,
+              name: teams?.away.name ?? null,
+              players: teamListFrom(game, "away"),
+            },
+          };
+        } catch (err) {
+          if (err instanceof UpstreamError) {
+            const extra: HeadersInit =
+              err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+            return json({ error: err.message }, err.status, extra);
+          }
+          return json({ error: "unable_to_retrieve_team_lists" }, 502, cors);
+        }
+      }
+      const bodyText = JSON.stringify(payload);
+      const tlTtl = Math.max(0, Number(env.LIVE_TTL_SECONDS ?? "15") || 15);
+      if (tlTtl > 0) {
+        ctx.waitUntil(
+          cache.put(
+            tlCacheKey,
+            new Response(bodyText, {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": `public, max-age=${tlTtl}`,
+              },
+            })
+          )
+        );
+      }
+      return new Response(bodyText, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Cache": "MISS",
+          "Cache-Control": `public, max-age=${tlTtl}`,
+          ...cors,
+        },
+      });
+    }
+
     const m = url.pathname.match(
-      /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status|teamlists)$/
+      /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status)$/
     );
     if (!m) return json({ error: "not_found" }, 404, cors);
 
@@ -848,13 +994,9 @@ export default {
 
     try {
       const game = (await fetchGame(id, env)) as Record<string, unknown>;
-      // For the normalised /live and /teamlists payloads, attach team id+name
-      // resolved from the known grades' REST feeds (the spectator feed carries
-      // no team identity).
-      const teams =
-        kind === "live" || kind === "teamlists"
-          ? await resolveGameTeams(id, env, ctx)
-          : null;
+      // For the normalised /live payload, attach team id+name resolved from the
+      // known grades' REST feeds (the spectator feed carries no team identity).
+      const teams = kind === "live" ? await resolveGameTeams(id, env, ctx) : null;
       const payload =
         kind === "status"
           ? {
@@ -864,22 +1006,7 @@ export default {
             }
           : kind === "live"
             ? normaliseLive(id, game, teams)
-            : kind === "teamlists"
-              ? {
-                  id,
-                  status: (game.status as string) ?? null,
-                  home: {
-                    id: teams?.home.id ?? null,
-                    name: teams?.home.name ?? null,
-                    players: teamListFrom(game, "home"),
-                  },
-                  away: {
-                    id: teams?.away.id ?? null,
-                    name: teams?.away.name ?? null,
-                    players: teamListFrom(game, "away"),
-                  },
-                }
-              : game;
+            : game;
 
       const bodyText = JSON.stringify(payload);
 
