@@ -74,6 +74,7 @@ import {
   playerNumberMapFromReport,
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
+import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -84,6 +85,13 @@ import {
   type AccuracyGroup,
 } from "@/lib/comparison/player-accuracy";
 import MasterEditModal from "@/components/MasterEditModal";
+import {
+  buildSeekClips,
+  currentSeekIndex,
+  nextSkipIndex,
+  nearestClipIndex,
+  type SeekClip,
+} from "./review-seek";
 
 // Accent colors (lms-platform used custom pd-red / pd-navy tokens; reporting-ui
 // doesn't define those, so we map to the closest standard Tailwind colors).
@@ -961,6 +969,18 @@ function AccuracyCompareInner() {
     loadedCheckId != null &&
     (user?.role === "admin" || user?.role === "super_admin");
 
+  // Who may FLAG a given comparison row. The allocated analyst (`canFlag`) may
+  // flag any row; any logged-in user viewing a loaded check may flag an
+  // empty-slot (missed/extra) row — the dispute attaches to the single
+  // populated side. Fully-populated rows stay allocated-analyst-only. The
+  // `hasCheck` guard gates the empty-slot arm for non-allocated users; keep it.
+  const canFlagRow = (status: MatchStatus): boolean =>
+    canFlagRowPure(status, {
+      isAllocated: canFlag,
+      isLoggedIn: !!user,
+      hasCheck: loadedCheckId != null,
+    });
+
   // Only admins/super admins may EDIT the master (fix a mis-coded player/stat,
   // remove a bad instance, or add one the master missed). Edits recompute the
   // accuracy live and can be downloaded / saved as a corrected master.
@@ -1137,10 +1157,16 @@ function AccuracyCompareInner() {
   // re-binding or capturing stale closures.
   const reviewIndexRef = useRef(0);
   const autoSkipRef = useRef(true);
-  const reviewClipsRef = useRef<{ start: number; end: number }[]>([]);
-  // Last observed playback time, used to detect manual seeks (scrubbing the
-  // video's progress bar) so auto-skip re-syncs to wherever you jumped to
-  // instead of dragging you back to the next clip from a stale index.
+  // Start-sorted seek list (NOT display order) that the auto-skip handler
+  // walks, so it never seeks backward. Mirrors the `seekClips` memo below.
+  const reviewClipsRef = useRef<SeekClip[]>([]);
+  // Set true only while WE assign currentTime (a programmatic gap-skip). The
+  // <video> onSeeked handler clears it. The timeupdate handler early-returns
+  // while it's set, so our own seek can't retrigger another skip. User scrubs
+  // leave it false and are handled as manual seeks.
+  const skippingRef = useRef(false);
+  // Last observed playback time (retained for minimal churn; the new seek
+  // logic derives everything from the current playhead, not this delta).
   const lastTimeRef = useRef(0);
   useEffect(() => {
     reviewIndexRef.current = reviewIndex;
@@ -1200,64 +1226,66 @@ function AccuracyCompareInner() {
     e: React.SyntheticEvent<HTMLVideoElement>
   ) => {
     const t = e.currentTarget.currentTime;
-    const prev = lastTimeRef.current;
     lastTimeRef.current = t;
     setVideoTime(t);
 
+    // `clips` is the dedicated start-sorted seek list (see `seekClips` memo),
+    // so start/end are non-decreasing by index and we never seek backward.
     const clips = reviewClipsRef.current;
     if (clips.length === 0) return;
 
-    // Detect a manual seek: the user scrubbed the video's progress bar. A
-    // normal playback tick advances by a small amount (~0.25s); a jump
-    // backward, or forward by more than ~1s, means they moved the playhead.
-    // On a seek we re-sync reviewIndex to the clip at the new position and do
-    // NOT force a jump this tick, so playback continues from where they
-    // clicked instead of snapping back to a stale clip.
-    const seeked = t < prev - 0.4 || t > prev + 1;
-    if (seeked) {
-      // Prefer a clip whose window contains t; otherwise the next clip that
-      // starts at/after t; otherwise the last clip.
-      let synced = clips.findIndex((c) => t >= c.start && t <= c.end);
-      if (synced === -1) {
-        synced = clips.findIndex((c) => c.start >= t);
-        if (synced === -1) synced = clips.length - 1;
+    // Self-seek guard: this tick is the echo of OUR programmatic gap-skip
+    // (we set currentTime, the browser is settling). Don't skip again — the
+    // <video> onSeeked handler clears the flag once the seek completes. User
+    // scrubs leave skippingRef false and fall through to normal handling.
+    if (skippingRef.current) return;
+
+    // Derive the current clip straight from the playhead (binary search for
+    // the last clip starting at/before t) instead of a forward-only cursor
+    // that could drift. `inWindow` means the playhead is actually inside the
+    // clip's [start,end] window (vs. the dead air after it).
+    const cur = currentSeekIndex(clips, t);
+    const inWindow = cur >= 0 && t <= clips[cur].end;
+
+    // Keep the DISPLAY-order cursor (reviewIndex: Prev/Next + "N / M" counter)
+    // in sync with what is actually playing. When the playhead is inside a
+    // clip, use that clip's display row; otherwise (gap or before the first
+    // clip) use the clip NEAREST in time, so the cursor matches the closest
+    // instance rather than a stale index. The row HIGHLIGHT is driven directly
+    // off `videoTime` elsewhere, so this only moves the Prev/Next cursor.
+    const rowSource = inWindow ? cur : nearestClipIndex(clips, t);
+    if (rowSource >= 0) {
+      const rowIdx = clips[rowSource].rowIndex;
+      if (rowIdx !== reviewIndexRef.current) {
+        reviewIndexRef.current = rowIdx;
+        setReviewIndex(rowIdx);
       }
-      reviewIndexRef.current = synced;
-      setReviewIndex(synced);
-      return;
     }
 
-    // Keep the tracked index in step with playback: advance past every clip
-    // whose end we've already passed, so the "current" clip is the one whose
-    // window we're in (or the next one coming up). This drives the row
-    // highlight WITHOUT seeking — overlapping stats in the same second just
-    // stay highlighted as the video plays naturally through them.
-    let idx = reviewIndexRef.current;
-    while (idx < clips.length && t > clips[idx].end - 0.05) {
-      idx += 1;
-    }
-    if (idx !== reviewIndexRef.current) {
-      reviewIndexRef.current = idx;
-      setReviewIndex(Math.min(idx, clips.length - 1));
-    }
-
+    // Auto-skip OFF: play straight through. Only the highlight (playhead-
+    // driven) and the cursor advance; we NEVER write currentTime.
     if (!autoSkipRef.current) return;
 
-    // Auto-skip only jumps across genuine GAPS: if the next coded clip starts
-    // more than a second ahead of the current position, skip the dead air.
-    // We never seek backward or to a time at/behind the playhead, so clusters
-    // of stats in the same window play through smoothly instead of replaying.
-    if (idx >= clips.length) {
-      // Past the last coded clip — stop so it doesn't run into unrelated
-      // game action that isn't part of this filter.
+    // Auto-skip ON: only jump across genuine forward GAPS (dead air). While
+    // the playhead is inside a clip window, let it play through (clusters /
+    // overlapping stats in the same window play naturally).
+    if (inWindow) return;
+
+    const nextIdx = nextSkipIndex(clips, t); // first clip starting after t
+    if (nextIdx >= clips.length) {
+      // No coded clip ahead. If we're also past the last clip's end, stop so
+      // playback doesn't run into unrelated game action. (If t were inside a
+      // clip we'd have returned above.)
       videoRef.current?.pause();
       return;
     }
+
     const GAP = 1; // seconds of dead air before we bother skipping
-    const nextStart = clips[idx].start;
+    const nextStart = clips[nextIdx].start;
     if (nextStart > t + GAP) {
       const v = videoRef.current;
       if (v) {
+        skippingRef.current = true;
         v.currentTime = Math.max(0, nextStart);
         lastTimeRef.current = nextStart;
         v.play().catch(() => {});
@@ -1319,10 +1347,11 @@ function AccuracyCompareInner() {
   const openFlagMenu = (
     e: React.MouseEvent,
     instance: Instance,
-    side: DisputeSide
+    side: DisputeSide,
+    status: MatchStatus
   ) => {
     const isFlagged = flaggedKeys.has(disputeKey(instance.id, side));
-    const allowFlag = canFlag;
+    const allowFlag = canFlagRow(status);
     const allowResolve = canResolveDispute && isFlagged;
     if (!allowFlag && !allowResolve) return;
     e.preventDefault();
@@ -1978,9 +2007,15 @@ function AccuracyCompareInner() {
     () => reviewClips.map((c) => c.start),
     [reviewClips]
   );
+  // Dedicated start-sorted seek list for the auto-skip handler. Display order
+  // (reviewClips/videoRows) stays mid-sorted; this list is sorted by `start`
+  // so the handler can walk clips in playback order without ever seeking
+  // backward. Each entry carries its display `rowIndex` so the handler can map
+  // back to the display cursor (reviewIndex) for Prev/Next + the counter.
+  const seekClips = useMemo(() => buildSeekClips(reviewClips), [reviewClips]);
   useEffect(() => {
-    reviewClipsRef.current = reviewClips;
-  }, [reviewClips]);
+    reviewClipsRef.current = seekClips;
+  }, [seekClips]);
 
   // Player Accuracy cards (football): volume of the analyst's coded stats vs
   // the master's, grouped into Overall / Passing / Offensive / Defensive /
@@ -3462,9 +3497,12 @@ function AccuracyCompareInner() {
                   · click any stat to jump to that moment
                   {canFlag
                     ? " · right-click an instance to flag it"
-                    : canResolveDispute
-                      ? " · right-click a flagged instance to resolve it"
+                    : user
+                      ? " · right-click a missed/extra instance to flag it"
                       : ""}
+                  {canResolveDispute
+                    ? " · right-click a flagged instance to resolve it"
+                    : ""}
                 </span>
               </span>
               <div className="flex items-center gap-3">
@@ -3609,6 +3647,13 @@ function AccuracyCompareInner() {
                     src={videoUrl.trim()}
                     controls
                     onTimeUpdate={handleVideoTimeUpdate}
+                    onSeeked={() => {
+                      // Clear the self-seek guard once the browser finishes a
+                      // seek. For OUR programmatic gap-skip this re-enables
+                      // auto-skip on the next tick; for a user scrub it's a
+                      // no-op (the flag was already false).
+                      skippingRef.current = false;
+                    }}
                     className="max-h-full max-w-full"
                   />
                 ) : (
@@ -3661,6 +3706,18 @@ function AccuracyCompareInner() {
                     const analystInstance = sideShows(row.analyst)
                       ? row.analyst
                       : null;
+                    // For a missed/extra row the empty cell's dispute anchors
+                    // to the OPPOSING populated instance. Use the RAW row
+                    // sides (filter-independent) so a stat/player filter never
+                    // suppresses the affordance — permission is gated by the
+                    // filter-independent row.status via canFlagRow below.
+                    const emptyAnchor = emptyCellAnchor(row.status, {
+                      master: row.master,
+                      analyst: row.analyst,
+                    });
+                    const emptyFlagAllowed =
+                      !!emptyAnchor &&
+                      (canFlagRow(row.status) || canResolveDispute);
                     const masterActive =
                       !!masterInstance &&
                       videoTime >= masterInstance.start &&
@@ -3715,8 +3772,40 @@ function AccuracyCompareInner() {
                             )
                           }
                           onFlag={
-                            (canFlag || canResolveDispute) && masterInstance
-                              ? (e) => openFlagMenu(e, masterInstance, "master")
+                            (canFlagRow(row.status) || canResolveDispute) &&
+                            masterInstance
+                              ? (e) =>
+                                  openFlagMenu(
+                                    e,
+                                    masterInstance,
+                                    "master",
+                                    row.status
+                                  )
+                              : undefined
+                          }
+                          emptyFlag={
+                            !masterInstance &&
+                            !row.master &&
+                            emptyAnchor &&
+                            emptyAnchor.side === "analyst" &&
+                            emptyFlagAllowed
+                              ? {
+                                  onFlag: (e) =>
+                                    openFlagMenu(
+                                      e,
+                                      emptyAnchor.instance,
+                                      emptyAnchor.side,
+                                      row.status
+                                    ),
+                                  flagged: flaggedKeys.has(
+                                    disputeKey(
+                                      emptyAnchor.instance.id,
+                                      emptyAnchor.side
+                                    )
+                                  ),
+                                  title:
+                                    "right-click to dispute this extra event",
+                                }
                               : undefined
                           }
                         />
@@ -3737,9 +3826,40 @@ function AccuracyCompareInner() {
                             )
                           }
                           onFlag={
-                            (canFlag || canResolveDispute) && analystInstance
+                            (canFlagRow(row.status) || canResolveDispute) &&
+                            analystInstance
                               ? (e) =>
-                                  openFlagMenu(e, analystInstance, "analyst")
+                                  openFlagMenu(
+                                    e,
+                                    analystInstance,
+                                    "analyst",
+                                    row.status
+                                  )
+                              : undefined
+                          }
+                          emptyFlag={
+                            !analystInstance &&
+                            !row.analyst &&
+                            emptyAnchor &&
+                            emptyAnchor.side === "master" &&
+                            emptyFlagAllowed
+                              ? {
+                                  onFlag: (e) =>
+                                    openFlagMenu(
+                                      e,
+                                      emptyAnchor.instance,
+                                      emptyAnchor.side,
+                                      row.status
+                                    ),
+                                  flagged: flaggedKeys.has(
+                                    disputeKey(
+                                      emptyAnchor.instance.id,
+                                      emptyAnchor.side
+                                    )
+                                  ),
+                                  title:
+                                    "right-click to dispute this missing event",
+                                }
                               : undefined
                           }
                         />
@@ -4051,6 +4171,7 @@ function TimelineCell({
   onFlag,
   onEdit,
   teamLabel,
+  emptyFlag,
 }: {
   instance: Instance | null;
   delta?: number | null;
@@ -4062,8 +4183,39 @@ function TimelineCell({
   onEdit?: () => void;
   /** Real club name to show instead of the canonical "Home"/"Away". */
   teamLabel?: string;
+  /**
+   * Makes the EMPTY "— no entry —" cell of a missed/extra row flaggable. The
+   * dispute anchors to the OPPOSING populated instance (handled by the caller
+   * via `onFlag`). When undefined the empty cell stays the inert placeholder.
+   */
+  emptyFlag?: {
+    onFlag: (e: React.MouseEvent) => void;
+    flagged: boolean;
+    title: string;
+  };
 }) {
   if (!instance) {
+    if (emptyFlag) {
+      return (
+        <div
+          className={`border-l border-slate-200 px-2 py-1 cursor-context-menu hover:bg-amber-50/60 ${
+            emptyFlag.flagged ? "ring-2 ring-inset ring-amber-500" : ""
+          }`}
+          onContextMenu={emptyFlag.onFlag}
+          title={emptyFlag.title}
+        >
+          <span className="flex items-center gap-x-1.5 text-[11px] italic text-slate-300">
+            {emptyFlag.flagged && (
+              <Flag
+                size={10}
+                className="shrink-0 not-italic fill-amber-500 text-amber-600"
+              />
+            )}
+            — no entry —
+          </span>
+        </div>
+      );
+    }
     return (
       <div className="border-l border-slate-200 px-2 py-1">
         <span className="text-[11px] italic text-slate-300">— no entry —</span>

@@ -247,23 +247,40 @@ function ClubCrest({
   // Admin-configured logo URL wins over the bundled public/clubs/*.png, so
   // clubs without a bundled file (e.g. PFL) still show their crest.
   const logo = clubLogoOverride(name) || clubLogo(name);
-  const dim = { width: size, height: size };
+  // Lock the badge box on every axis so flex can neither grow nor shrink it,
+  // and clip overflow so a logo can never bleed into the score/name beside it.
+  const box = {
+    width: size,
+    height: size,
+    minWidth: size,
+    minHeight: size,
+    maxWidth: size,
+    maxHeight: size,
+  };
   if (logo) {
-    // eslint-disable-next-line @next/next/no-img-element
+    // Fixed-size circular badge. A subtle bg fill makes a letterboxed
+    // (object-contain) non-square logo still read as a full-size badge
+    // rather than a small floating image, while the logo itself is never
+    // cropped.
     return (
-      <img
-        src={logo}
-        alt={`${name ?? ""} logo`}
-        style={dim}
-        className="shrink-0 rounded-full object-contain"
-      />
+      <span
+        className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10"
+        style={box}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={logo}
+          alt={`${name ?? ""} logo`}
+          className="h-full w-full rounded-full object-contain"
+        />
+      </span>
     );
   }
   return (
     <span
       className="flex shrink-0 items-center justify-center rounded-full font-bold text-white"
       style={{
-        ...dim,
+        ...box,
         background: clubBadgeColor(name),
         fontSize: Math.round(size * 0.4),
       }}
@@ -330,37 +347,66 @@ function GameRow({
           .join(" ")
       : "";
 
-  // One team column: crest on top, name below (centred). Winner is emphasised.
-  const teamCol = (name: string | undefined, side: "home" | "away") => (
-    <div className="flex min-w-0 flex-1 flex-col items-center gap-2 text-center">
-      <ClubCrest name={name} size={56} />
-      <span
-        className={`line-clamp-2 text-xs leading-tight md:text-sm ${
-          won === side ? "font-bold text-white" : "font-medium text-slate-300"
-        }`}
-      >
-        {name ?? "TBC"}
-      </span>
-    </div>
-  );
-
-  // One team's score block (big number + G.B underneath). Winner emphasised.
-  const scoreCol = (
+  // One team block: crest + score + G.B grouped on a single aligned row, with
+  // the club name on a fixed single line (truncated with "…") directly below.
+  // Home and away are exact mirrors (`side`), so the two blocks always line up
+  // regardless of name length — the name can only ever be one line, so no team
+  // column grows taller than the other and knocks the alignment out.
+  const teamBlock = (
+    name: string | undefined,
     score: number | null,
     gb: string,
     side: "home" | "away"
-  ) => (
-    <div className="flex flex-col items-center">
-      <span
-        className={`text-3xl leading-none tabular-nums md:text-4xl ${
-          won === side ? "font-extrabold text-white" : "font-bold text-slate-200"
+  ) => {
+    const isHome = side === "home";
+    const crest = <ClubCrest name={name} size={56} />;
+    const scoreBox = (
+      <div
+        className={`flex flex-col ${isHome ? "items-start" : "items-end"}`}
+      >
+        <span
+          className={`text-3xl leading-none tabular-nums md:text-4xl ${
+            won === side
+              ? "font-extrabold text-white"
+              : "font-bold text-slate-200"
+          }`}
+        >
+          {showScore ? score ?? "-" : "–"}
+        </span>
+        {showScore && (
+          <span className="mt-1 text-xs tabular-nums text-slate-400">{gb}</span>
+        )}
+      </div>
+    );
+    return (
+      <div
+        className={`flex min-w-0 flex-col gap-2 ${
+          isHome ? "items-start" : "items-end"
         }`}
       >
-        {score ?? "-"}
-      </span>
-      <span className="mt-1 text-xs tabular-nums text-slate-400">{gb}</span>
-    </div>
-  );
+        {/* crest + score on one row, pushed to the OUTER edge (home → left,
+            away → right) so the scores sit against the card edge and never
+            crowd the centre schedule column. */}
+        <div
+          className={`flex items-center gap-2 ${
+            isHome ? "flex-row" : "flex-row-reverse"
+          }`}
+        >
+          {crest}
+          {scoreBox}
+        </div>
+        {/* name: single line, ellipsis when too long, aligned under the crest */}
+        <span
+          className={`block w-full truncate text-xs md:text-sm ${
+            isHome ? "text-left" : "text-right"
+          } ${won === side ? "font-bold text-white" : "font-medium text-slate-300"}`}
+          title={name ?? "TBC"}
+        >
+          {name ?? "TBC"}
+        </span>
+      </div>
+    );
+  };
 
   const dateLabel = scheduleDateLabel(game);
   const timeLabel = scheduleTimeLabel(game);
@@ -386,34 +432,36 @@ function GameRow({
         </span>
       </div>
 
-      {/* Scoreboard: home | centre (scores + schedule) | away. */}
-      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 px-3 py-4 md:gap-3 md:px-4">
-        {teamCol(home?.name, "home")}
+      {/* Scoreboard: [home block] | [centre schedule] | [away block].
+          Each side block groups its own crest + score + name (mirrored), and
+          the centre is a fixed-width schedule column that never shifts when a
+          name is long (names truncate to one line). The outer tracks are equal
+          1fr so the two blocks are symmetric. */}
+      <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2 px-3 py-4 md:gap-3 md:px-4">
+        {teamBlock(home?.name, homeScore, homeGB, "home")}
 
-        <div className="flex items-center gap-3 md:gap-4">
-          {showScore ? (
-            scoreCol(homeScore, homeGB, "home")
-          ) : (
-            <span className="text-lg font-bold text-slate-500">vs</span>
+        {/* Centre schedule: a fixed-width column (clamped) so a long venue
+            truncates instead of widening the track and shoving the scores
+            into it. */}
+        <div className="flex w-[108px] min-w-[108px] max-w-[108px] flex-col items-center px-1 text-center md:w-[128px] md:min-w-[128px] md:max-w-[128px]">
+          {!showScore && (
+            <span className="mb-1 text-lg font-bold text-slate-500">vs</span>
           )}
-
-          <div className="flex min-w-[88px] flex-col items-center text-center">
-            <span className="text-xs font-semibold text-slate-200">
-              {dateLabel}
+          <span className="text-xs font-semibold text-slate-200">
+            {dateLabel}
+          </span>
+          {timeLabel && (
+            <span className="text-xs text-slate-400">{timeLabel}</span>
+          )}
+          <span className="mt-0.5 flex w-full items-center justify-center gap-0.5 text-[11px] text-slate-500">
+            <MapPin size={11} className="shrink-0" />
+            <span className="min-w-0 truncate" title={venue}>
+              {venue}
             </span>
-            {timeLabel && (
-              <span className="text-xs text-slate-400">{timeLabel}</span>
-            )}
-            <span className="mt-0.5 flex items-center justify-center gap-0.5 text-[11px] text-slate-500">
-              <MapPin size={11} className="shrink-0" />
-              <span className="line-clamp-1">{venue}</span>
-            </span>
-          </div>
-
-          {showScore && scoreCol(awayScore, awayGB, "away")}
+          </span>
         </div>
 
-        {teamCol(away?.name, "away")}
+        {teamBlock(away?.name, awayScore, awayGB, "away")}
       </div>
 
       <div className="px-3 pb-3 md:px-4">
