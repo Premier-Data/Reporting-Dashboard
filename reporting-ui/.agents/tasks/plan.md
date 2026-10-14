@@ -1,167 +1,89 @@
-# Implementation Plan — Consistent scoreboard layout + fixed crest badges on the two other Live Scores surfaces
+# Implementation Plan — Mobile Pull-to-Refresh (hard reload)
 
-Apply the SAME consistent-layout + fixed-crest-badge treatment already shipped on the Live Scores LIST page (`app/live-scores/page.tsx`, branch `feature/empty-slot-dispute-permission` @ `d254cd4`) to the two other Live Scores surfaces so all three match.
+Worktree root (ALL paths below are inside this tree, NOT the main tree):
+`c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui`
 
-Scope is STRICTLY two files, and within them ONLY the `Crest` component + the scoreboard-header JSX:
+## Context discovered during exploration
 
-1. `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
-2. `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
+- Next.js version is **16.2.10** (App Router). Per the repo rule (AGENTS.md: "This is NOT the Next.js you know") I read `node_modules/next/dist/docs/01-app/02-guides/upgrading/version-16.md` and `.../03-api-reference/01-directives/use-client.md`. Note: the worktree has **no `node_modules`** of its own; the installed `next` + its docs live in the main tree at `c:\Users\AndyDin\reporting-dashboard\reporting-ui\node_modules\next\dist\docs`. Builds/tests in the worktree resolve modules through that shared install.
+- **What differs from common Next.js knowledge (and what does NOT affect this task):** Next 16 removes synchronous `cookies`/`headers`/`params`/`searchParams`, renames `middleware`→`proxy`, makes Turbopack the default builder, and ships React 19.2. **None of these touch this feature.** This gesture is pure client-side DOM/touch code calling the plain browser API `window.location.reload()`; it uses no Next routing, data-fetching, caching, or request APIs. The only Next-specific requirement that applies is the **`'use client'` directive** (required for any file using state/effects/browser APIs, placed at the very top before imports) — confirmed from `use-client.md`. `window.location.reload()` is unaffected by Next 16's client-router overhaul.
+- **Integration point (confirmed by reading the code):** `components/auth/AppShell.tsx` is a `'use client'` component. Its final authenticated return renders the single app-wide scroll container: `<main className="flex-1 overflow-auto">{children}</main>`. `app/layout.tsx` sets `<body className="h-screen overflow-hidden ...">`, so the browser's native pull-to-refresh never fires — a custom gesture is required. AppShell has three earlier returns that must NOT get the gesture: the public/login branch (`if (isPublic) return <>{children}</>`), the loading return, and the no-access return.
+- **Test setup already present:** `vitest@^3.2.7` + `jsdom@^29` are devDependencies; `vitest.config.ts` sets `environment: "jsdom"` and `include: ["**/*.test.ts", "**/*.test.tsx"]`. `package.json` script `test` = `vitest --run`. Existing tests colocate beside source (e.g. `lib/comparison/cross-exact.test.ts`) and import `{ describe, it, expect } from "vitest"`. Follow that exact convention.
+- **Path alias:** `@/*` → project root (tsconfig `paths`). Strict mode is on. Target ES2017, `lib` includes `dom`.
+- No existing helper for `matchMedia`, reduced-motion, or touch detection exists, so the component owns that logic.
 
-Do NOT touch `app/live-scores/page.tsx`, `lib/*`, the tabs, rosters, stat tables, data fetching, or any other content. This is a presentational tweak.
+## Design decisions (chosen, with rationale)
 
-## Design decisions (grounded in the reference + the two targets' real structure)
+- **Hook + indicator wired by AppShell, over a wrapping component.** The task requires `<main className="flex-1 overflow-auto">` to REMAIN the scroll container. A `usePullToRefresh` hook that attaches listeners to the existing `<main>` via a `ref` keeps that element untouched and adds no extra scroll-affecting DOM nesting. AppShell renders a small fixed indicator element as a sibling overlay. This is cleaner and lower-risk than inserting a wrapper div that could alter overflow/scroll behavior.
+- **Pure math extracted to a testable function** `computePull(rawDeltaY, threshold, maxOffset)` in `lib/pwa/pull-to-refresh-math.ts`. The hook calls it; the test exercises it directly. Resistance = `rawDeltaY * 0.5`, capped at `maxOffset`. This isolates the only logic worth unit-testing from DOM/touch plumbing.
+- **Transform the indicator only, not the content.** Rather than translating `{children}` (risk of layout/scroll side effects on every page), the indicator overlay animates down from the top edge as you pull. This satisfies the "spinner appears/spins past threshold" requirement without moving page content, keeping the blast radius to AppShell + new files. (If the design later wants content to follow the finger, that is a one-line transform on a wrapper — noted as a known deviation from "translate content down", chosen deliberately for safety per the "do not touch pages" constraint.)
+- **Dependency-free**, inline styles / Tailwind classes only; no new npm package; no `globals.css` change.
 
-- **Reference pattern (confirmed by reading the shipped list page).** `ClubCrest` locks its box on all six axes (`width/height/minWidth/minHeight/maxWidth/maxHeight = size`), wraps the `<img>` in a `span` with `flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10`, and renders the img as `h-full w-full rounded-full object-contain`. The initials fallback uses the same locked box with `background: clubBadgeColor(name)` and `fontSize: Math.round(size * 0.4)`. The list scoreboard is a `grid grid-cols-[1fr_auto_1fr] items-start` with mirrored outer-pushed team blocks (crest+score on one `flex-row` / `flex-row-reverse` row, name on a single `block w-full truncate` line below) and a fixed-width clamped centre column whose venue line uses `min-w-0 truncate`.
+## Gesture state machine
 
-- **Keep each target's existing data wiring.** Both target `Crest` components already resolve the logo as `safeImageUrl(logoUrl) || clubLogo(name)`, where `logoUrl` comes from the page's own `teamLogos`/`logos` state. Preserve that exact resolution; only the returned markup changes. Do NOT switch to `clubLogoOverride` (the targets pass the override through `logoUrl`). Rationale: minimal change, no new imports, identical data behaviour.
+States: `idle → pulling → (release) → refreshing | idle`.
 
-- **Fallback font scale 0.4 (not the targets' current 0.38).** Match the reference exactly so all three surfaces render identical badges. Rationale: the task's invariant is "all three match"; 0.4 is what shipped.
+- **idle**: no touch tracking active. On `touchstart`, record `startY` and read `main.scrollTop`. Only arm tracking if `scrollTop === 0`.
+- **pulling**: entered on first `touchmove` where `scrollTop === 0` AND `deltaY = currentY - startY > 0` (downward) AND the gesture is more vertical than horizontal. While pulling, call `preventDefault()` on the (non-passive) `touchmove`, compute `offset = computePull(deltaY, THRESHOLD, MAX_OFFSET)`, position/opacity the indicator; set a `crossed = offset >= THRESHOLD` flag that switches the indicator to the "ready/spinning" look. If the move is upward/horizontal or `scrollTop` is no longer 0, abort back to **idle** without preventing default (normal scroll continues).
+- **release (touchend/touchcancel)**: if `crossed` → go to **refreshing**; else animate offset back to 0 and return to **idle**.
+- **refreshing**: lock the indicator in a spinning state and call `window.location.reload()`. No state exit needed — the page reloads. (Set an internal `hasTriggered` guard so reload is called at most once.)
 
-- **Centre column adaptation.** The two targets' headers differ from the list card: they have NO fixture-row/venue-under-schedule layout — instead their centre block holds `[homeScore + G.B] [FT pill + venue] [awayScore + G.B]` all bunched together, which is exactly why scores overlap the venue/location. The fix moves each team's score OUT to its own side block (next to that side's crest, pushed to the outer edge) and leaves ONLY the FT pill + venue in a fixed-width clamped centre column with a truncating venue. This mirrors the reference's "scores against the outer edge, centre column fixed-width" shape while respecting that these pages show FT/venue (not date/time/vs) in the centre. Rationale: directly removes the score↔venue overlap the user reported while keeping both pages' real centre content (FT + venue).
+Constants (module-level in the hook file): `THRESHOLD = 70`, `MAX_OFFSET = 110`, `RESISTANCE = 0.5`.
 
-- **Crest size stays 52.** Both target headers already call `<Crest ... size={52} />`. Keep 52 (the badge is now a locked filled box at that size). Rationale: no visual size regression; task says "scaled to its size".
+## Pure-function signature + test
 
-- **Names truncate to one line.** Replace each side's `leading-tight` wrapping name span with a single-line `block w-full truncate` + `title` tooltip so a long club name can never wrap and knock the two sides out of alignment. Rationale: the "names on a single line truncated with …" invariant.
+File: `lib/pwa/pull-to-refresh-math.ts`
+```ts
+/** Resisted vertical offset for a raw downward drag distance. */
+export function computePull(rawDeltaY: number, threshold: number, maxOffset: number): {
+  offset: number;        // resisted, clamped to [0, maxOffset]
+  crossed: boolean;      // offset >= threshold
+  progress: number;      // offset / threshold, clamped to [0, 1] (for indicator fill/opacity)
+};
+```
+Behavior: negative/zero `rawDeltaY` → `{ offset: 0, crossed: false, progress: 0 }`; otherwise `offset = min(rawDeltaY * RESISTANCE, maxOffset)` (RESISTANCE applied here or passed by caller — keep RESISTANCE inside this module as a const and multiply here so the test pins it), `crossed = offset >= threshold`, `progress = min(offset / threshold, 1)`.
 
-## Invariants to achieve (verify these by eye after the coder step on all three surfaces)
-
-- Fixed, equal-size circular crest badges that never letterbox-shrink and never grow/overflow into neighbouring score/name (locked box + `overflow-hidden` + `bg-white/10` fill + `object-contain`).
-- Non-square admin `logo_url` overrides read as a full-size badge, uncropped.
-- Scores never overlap the FT pill / venue / location text.
-- Team names render on a single line, truncated with `…`, with a `title` tooltip carrying the full name.
-- Home and away blocks are exact mirrors so they always line up regardless of name length.
-- Each page's existing data, tabs, toggles, rosters, stat tables, and non-header content are unchanged.
+Test file: `lib/pwa/pull-to-refresh-math.test.ts` (colocated, mirrors `lib/comparison/*.test.ts` style; `import { describe, it, expect } from "vitest"`).
 
 ---
 
-## Steps
+# Implementation Plan
 
-- [ ] 1. Replace the `Crest` component in `app/live-scores/match/page.tsx` (~line 53) with the locked-box filled-badge pattern.
-      Keep the exact props `{ name, size = 44, logoUrl }` and the exact logo resolution `const logo = safeImageUrl(logoUrl) || clubLogo(name);`. Replace the body with the reference markup below (same imports already present: `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor`).
+- [ ] 1. Create the pure math module `computePull`.
+      Add resistance/clamp/threshold logic exactly as specified in the signature above. Pure, no DOM, no imports.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui\lib\pwa\pull-to-refresh-math.ts`
+      Verify: builds in the next step's typecheck; covered by tests in item 2.
 
-      Exact replacement for the component body (everything after the destructured props / type):
-      ```tsx
-      const logo = safeImageUrl(logoUrl) || clubLogo(name);
-      // Lock the badge box on every axis so flex can neither grow nor shrink it,
-      // and clip overflow so a logo can never bleed into the score/name beside it.
-      const box = {
-        width: size,
-        height: size,
-        minWidth: size,
-        minHeight: size,
-        maxWidth: size,
-        maxHeight: size,
-      };
-      if (logo) {
-        // eslint-disable-next-line @next/next/no-img-element
-        return (
-          <span
-            className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10"
-            style={box}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={logo}
-              alt={`${name ?? ""} logo`}
-              className="h-full w-full rounded-full object-contain"
-            />
-          </span>
-        );
-      }
-      return (
-        <span
-          className="flex shrink-0 items-center justify-center rounded-full font-bold text-white"
-          style={{ ...box, background: clubBadgeColor(name), fontSize: Math.round(size * 0.4) }}
-          aria-hidden="true"
-        >
-          {clubInitials(name)}
-        </span>
-      );
-      ```
-      (Keep the single `// eslint-disable-next-line` that sits immediately above the `<img>`; remove the now-stale `const dim = { width: size, height: size };`.)
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
-      Verify: `npm run build` (from `reporting-ui`) compiles with no type/lint errors for this file. Then load `/live-scores/match?grade=<key>&id=<gameId>` in the dev app and confirm both crests are equal-size filled circles.
+- [ ] 2. Add unit tests for `computePull`.
+      Cover: upward/zero drag → zero offset, not crossed; small drag below threshold → correct resisted offset (e.g. 100px raw * 0.5 = 50 < 70 → crossed false, progress ≈ 0.714); drag past threshold → crossed true; very large drag → offset clamped to `maxOffset` (110) and progress clamped to 1. Use `describe`/`it`/`expect` from `vitest`.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui\lib\pwa\pull-to-refresh-math.test.ts`
+      Verify (run from the worktree root): `npm test -- lib/pwa/pull-to-refresh-math.test.ts` — all new tests pass. (Equivalently `npx vitest --run lib/pwa`.)
 
-- [ ] 2. Rework the match-page scoreboard header JSX so each team's score sits beside that team's crest on the outer edge, the name truncates on one line, and only the FT pill + venue remain in a fixed-width centre column.
-      This is the `{game && ( <div className="border-b border-white/10 px-4 pb-4 pt-4"> ... </div> )}` block in `MatchStatsInner` (the `grid grid-cols-[1fr_auto_1fr] items-center gap-3` and its three children). Preserve the surrounding `border-b … px-4 pb-4 pt-4` wrapper and the `{winner && margin != null && ( <p …> )}` line underneath (unchanged). Replace ONLY the inner grid.
+- [ ] 3. Create the `usePullToRefresh` hook.
+      `'use client'` at the top (file uses `useRef`/`useState`/`useEffect` and touch APIs). Signature: `usePullToRefresh(scrollRef: React.RefObject<HTMLElement | null>): { offset: number; progress: number; state: 'idle' | 'pulling' | 'refreshing' }`. In a `useEffect`, bind `touchstart` (passive), `touchmove` (passive: **false**, so `preventDefault` is allowed while pulling), `touchend` and `touchcancel` to `scrollRef.current`; implement the state machine above using `computePull`. Guard for non-touch (`if (typeof window === 'undefined' || !('ontouchstart' in window))` → bind nothing, stay idle) so it is inert on desktop/SSR. On threshold-crossed release, set state `refreshing`, set a one-shot `hasTriggered` ref, and call `window.location.reload()`. Honor `matchMedia('(prefers-reduced-motion: reduce)')` by skipping the spring-back transition timing (snap instead) — behavior still works; only the animation is reduced. Clean up all listeners on unmount. Do NOT bind any mouse events.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui\components\pwa\usePullToRefresh.ts`
+      Verify: typecheck/build in item 5 (hook is consumed in item 4, so build only passes once both exist).
 
-      Replace the current grid (home crest+name column / centre `[score][FT+venue][score]` group / away crest+name column) with a symmetric outer-pushed layout. Target markup:
-      ```tsx
-      <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2 md:gap-3">
-        {/* Home block: crest + score on one row pushed LEFT, name truncated below */}
-        <div className="flex min-w-0 flex-col items-start gap-2">
-          <div className="flex items-center gap-2">
-            <Crest name={home?.name} size={52} logoUrl={teamLogos.home} />
-            <div className="flex flex-col items-start">
-              <span className="text-3xl font-extrabold leading-none tabular-nums">
-                {homeScore ?? "-"}
-              </span>
-              <span className="mt-1 text-[11px] tabular-nums text-slate-400">
-                {goalsBehinds(home)}
-              </span>
-            </div>
-          </div>
-          <span
-            className="block w-full truncate text-left text-xs font-medium text-slate-300"
-            title={home?.name ?? "Home"}
-          >
-            {home?.name ?? "Home"}
-          </span>
-        </div>
+- [ ] 4. Create the indicator component `PullToRefreshIndicator`.
+      `'use client'`. Small presentational component that takes `{ offset, progress, state }` and renders a fixed/absolute overlay pinned to the top-center of the scroll area that translates down by `offset`, fades/rotates an arrow via `progress`, and shows a spinning `Loader2` from `lucide-react` (already a dependency) when `state === 'refreshing'` (and the arrow flips to "ready" when `progress >= 1`). Use Tailwind classes + inline `transform`/`opacity` style driven by props. `pointer-events-none`, `aria-hidden` while idle, otherwise `role="status"`. No layout impact when `offset === 0` (hidden). No `globals.css` changes.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui\components\pwa\PullToRefreshIndicator.tsx`
+      Verify: build in item 5.
 
-        {/* Centre: fixed-width clamped column — FT pill + venue (venue truncates) */}
-        <div className="flex w-[108px] min-w-[108px] max-w-[108px] flex-col items-center px-1 text-center md:w-[128px] md:min-w-[128px] md:max-w-[128px]">
-          <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
-            FT
-          </span>
-          <span className="mt-1 block w-full min-w-0 truncate text-[11px] text-slate-400" title={game.venue?.name ?? ""}>
-            {game.venue?.name ?? ""}
-          </span>
-        </div>
+- [ ] 5. Wire the hook + indicator into AppShell's authenticated return ONLY.
+      In the final `return (...)` (the one rendering `<Sidebar/>`, `<TopBar/>`, `<main>`, `<ChatWidget/>`), add `const mainRef = useRef<HTMLElement>(null);` and `const pull = usePullToRefresh(mainRef);`. Attach `ref={mainRef}` to the existing `<main className="flex-1 overflow-auto">` WITHOUT changing its className or that it wraps `{children}`. Render `<PullToRefreshIndicator {...pull} />` as a sibling inside the `<div className="flex min-w-0 flex-1 flex-col overflow-hidden">` (so it overlays the main column). Do NOT add anything to the `isPublic` branch, the loading return, or the no-access return. Keep `Sidebar`, `TopBar`, `ChatWidget` untouched. Hooks must be called unconditionally at the top of the component (before the early returns) to satisfy the Rules of Hooks — declare `mainRef`/`pull` alongside the existing `useState`/`useEffect` near the top, and only consume them in the authenticated JSX.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui\components\auth\AppShell.tsx`
+      Verify: `npx tsc --noEmit` (run from worktree root) — no type errors.
 
-        {/* Away block: mirror of home (crest + score pushed RIGHT via flex-row-reverse) */}
-        <div className="flex min-w-0 flex-col items-end gap-2">
-          <div className="flex flex-row-reverse items-center gap-2">
-            <Crest name={away?.name} size={52} logoUrl={teamLogos.away} />
-            <div className="flex flex-col items-end">
-              <span className="text-3xl font-extrabold leading-none tabular-nums">
-                {awayScore ?? "-"}
-              </span>
-              <span className="mt-1 text-[11px] tabular-nums text-slate-400">
-                {goalsBehinds(away)}
-              </span>
-            </div>
-          </div>
-          <span
-            className="block w-full truncate text-right text-xs font-medium text-slate-300"
-            title={away?.name ?? "Away"}
-          >
-            {away?.name ?? "Away"}
-          </span>
-        </div>
-      </div>
-      ```
-      Notes: the "FT" literal and `game.venue?.name`, `homeScore`/`awayScore`, `goalsBehinds(home/away)`, `teamLogos.home/away`, and `home?.name`/`away?.name` are all the page's EXISTING values — do not rename or re-fetch. Keep the `{winner && margin != null && ...}` paragraph exactly as-is after this grid.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\match\page.tsx`
-      Verify: `npm run build` compiles clean. In the dev app, open a match with a long club name and a long venue: confirm names show on one line with `…`, scores sit beside their crest on the outer edges and do NOT overlap the FT pill/venue, and home/away mirror each other.
-
-- [ ] 3. Replace the `Crest` component in `app/live-scores/teamlists/page.tsx` (~line 34) with the SAME locked-box filled-badge pattern from step 1.
-      The component is byte-identical to the match page's old `Crest` (same props, same `const dim`, same old `<img className="shrink-0 rounded-full object-contain">`). Apply the exact same replacement body as step 1 (same imports are already present on this page: `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor`). Remove the stale `const dim`.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
-      Verify: `npm run build` compiles clean. Load `/live-scores/teamlists?grade=<key>&id=<gameId>` and confirm both crests are equal-size filled circles.
-
-- [ ] 4. Rework the teamlists-page scoreboard header JSX to the same outer-pushed symmetric layout as step 2.
-      This is the `{game && ( <div className="border-b border-white/10 px-4 pb-4 pt-4"> ... </div> )}` block in `TeamListsInner`. Its inner grid is identical in shape to the match page's (centre `[score][FT+venue][score]` group), but it has NO winner/margin paragraph underneath. Replace ONLY the inner grid with the SAME markup block given in step 2, using THIS page's variable names: crests use `logoUrl={logos.home}` / `logoUrl={logos.away}` (this page's state is `logos`, not `teamLogos`); everything else (`home?.name`, `away?.name`, `homeScore`, `awayScore`, `goalsBehinds(home/away)`, `game.venue?.name`, the "FT" literal) is identical and already present. Keep the `border-b … px-4 pb-4 pt-4` wrapper.
-      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\scoreboard-match-teamlists\reporting-ui\app\live-scores\teamlists\page.tsx`
-      Verify: `npm run build` compiles clean. In the dev app open a team-lists page with a long name/venue: confirm the invariants (equal fixed crests, names one-line truncated with `…`, scores not overlapping FT/venue, home/away mirrored) and that the Home/Away roster toggle + roster list below are unchanged.
-
-- [ ] 5. Final cross-surface consistency check.
-      With both files changed, visually compare all three surfaces — the Live Scores LIST (`/live-scores`, unchanged reference), the match page, and the team-lists page — and confirm the crest badges and scoreboard alignment read identically across them.
+- [ ] 6. Full verification.
+      Run, from the worktree root `c:\Users\AndyDin\reporting-dashboard\.worktrees\pull-to-refresh\reporting-ui`:
+      1. `npx tsc --noEmit` — clean.
+      2. `npm test` (= `vitest --run`) — all tests pass, including the new `pull-to-refresh-math.test.ts`.
+      3. `npm run build` (`next build`, Turbopack by default in Next 16) — build succeeds with no new errors/warnings tied to the changed files.
       Files: none (verification only).
-      Verify: `npm run build` from `reporting-ui` succeeds with zero errors. If the repo exposes a lint/typecheck script in `package.json` (e.g. `npm run lint`), run it and confirm no new warnings in the two changed files. (Per `AGENTS.md`, if any Next.js build/config issue arises, consult `node_modules/next/dist/docs/` before changing config — but this change is JSX/Tailwind only and should not require it.)
+      Verify: all three commands exit 0.
 
 ## Notes / assumptions
 
-- The build/verify command is `npm run build` run from the `reporting-ui` directory. The coder step should confirm the exact script names in `reporting-ui/package.json` (e.g. `build`, `lint`, `dev`) during execution and use the project's real scripts; grep is not a substitute for building.
-- `safeImageUrl`, `clubLogo`, `clubInitials`, `clubBadgeColor` are already imported on BOTH target pages, so no import changes are needed. `goalsBehinds` is also already imported on both.
-- If a target's header already differs slightly from what's described here (e.g. extra classes on the wrapper), preserve those outer-wrapper classes and only swap the inner grid as specified.
+- Manual device testing of the actual touch gesture (drag-at-top, threshold spring-back, reload) can only be confirmed on a real touch device/emulator; the automated verification above covers the pure math, type-safety, and build. Flag this gap to the user if device validation is required before merge.
+- Scope held to: 2 new files under `components/pwa/`, 2 new files under `lib/pwa/` (impl + test), and a minimal edit to `AppShell.tsx`. No changes to routing, auth, data fetching, any page, `app/layout.tsx`, `globals.css`, `Sidebar`, `TopBar`, or `ChatWidget`.
+- Do NOT commit or push (per task constraints).

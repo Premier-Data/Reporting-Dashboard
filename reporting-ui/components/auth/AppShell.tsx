@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthContext";
 import { pageKeyForPath } from "@/lib/api/auth";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/Topbar";
 import ChatWidget from "@/components/chat/ChatWidget";
+import { usePullToRefresh } from "@/components/pwa/usePullToRefresh";
+import PullToRefreshIndicator from "@/components/pwa/PullToRefreshIndicator";
 
 // Pages that render without the app chrome / auth guard.
 const PUBLIC_PATHS = ["/login"];
@@ -18,6 +20,11 @@ export default function AppShell({ children }: { children: ReactNode }) {
 
     // Mobile sidebar drawer open/close. Desktop keeps the sidebar static.
     const [sidebarOpen, setSidebarOpen] = useState(false);
+    // Mobile pull-to-refresh wired to the app-wide <main> scroll container.
+    // Hooks must run unconditionally (before the early returns below), so it is
+    // declared here and only consumed in the authenticated return.
+    const mainRef = useRef<HTMLElement>(null);
+    const pull = usePullToRefresh(mainRef);
     // Close the drawer whenever the route changes (navigating from the menu).
     useEffect(() => {
         setSidebarOpen(false);
@@ -94,9 +101,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 open={sidebarOpen}
                 onClose={() => setSidebarOpen(false)}
             />
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
                 <TopBar onMenuClick={() => setSidebarOpen(true)} />
-                <main className="flex-1 overflow-auto">{children}</main>
+                <PullToRefreshIndicator {...pull} />
+                <main ref={mainRef} className="flex-1 overflow-auto">
+                    {children}
+                </main>
             </div>
             {/* App-wide floating chat (shows on every authenticated page,
                 including the accuracy pages). */}
