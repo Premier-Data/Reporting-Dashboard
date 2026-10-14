@@ -79,10 +79,19 @@ export const PAGES: PageDef[] = [
     { key: "admin-config", label: "Admin Configuration", href: "/admin-config" },
 ];
 
+// Companion routes that share another page's access (no separate permission).
+// Push Activity (/push-log) is a sub-view of Live Scores, so it inherits the
+// "live-scores" permission rather than defining its own (which would default
+// to denied for existing roles).
+const PAGE_KEY_ALIASES: Record<string, string> = {
+    "/push-log": "live-scores",
+};
+
 /** Map a route pathname to its page key, or null if unknown. */
 export function pageKeyForPath(pathname: string): string | null {
     // Longest href match wins (all hrefs are single-segment here).
     const seg = "/" + (pathname.split("/").filter(Boolean)[0] ?? "");
+    if (PAGE_KEY_ALIASES[seg]) return PAGE_KEY_ALIASES[seg];
     const hit = PAGES.find((p) => p.href === seg);
     return hit?.key ?? null;
 }
