@@ -102,12 +102,18 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 open={sidebarOpen}
                 onClose={() => setSidebarOpen(false)}
             />
-            <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
                 <TopBar onMenuClick={() => setSidebarOpen(true)} />
-                <PullToRefreshIndicator {...pull} />
-                <main ref={pull.ref} className="flex-1 overflow-auto">
-                    {children}
-                </main>
+                {/* The indicator is anchored to the SCROLL AREA (not the column
+                    including the TopBar), so its top-0 sits just below the
+                    TopBar and the icon is visible from the start of a pull
+                    rather than hidden behind the opaque 64px TopBar. */}
+                <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
+                    <PullToRefreshIndicator {...pull} />
+                    <main ref={pull.ref} className="flex-1 overflow-auto">
+                        {children}
+                    </main>
+                </div>
             </div>
             {/* App-wide floating chat (shows on every authenticated page,
                 including the accuracy pages). */}
