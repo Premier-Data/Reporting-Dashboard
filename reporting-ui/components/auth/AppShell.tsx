@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthContext";
 import { pageKeyForPath } from "@/lib/api/auth";
@@ -22,9 +22,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
     const [sidebarOpen, setSidebarOpen] = useState(false);
     // Mobile pull-to-refresh wired to the app-wide <main> scroll container.
     // Hooks must run unconditionally (before the early returns below), so it is
-    // declared here and only consumed in the authenticated return.
-    const mainRef = useRef<HTMLElement>(null);
-    const pull = usePullToRefresh(mainRef);
+    // declared here and only consumed in the authenticated return. The hook
+    // owns the element via a callback ref (pull.ref), so the gesture binds when
+    // <main> finally mounts after the pre-auth early-return branches below.
+    const pull = usePullToRefresh();
     // Close the drawer whenever the route changes (navigating from the menu).
     useEffect(() => {
         setSidebarOpen(false);
@@ -104,7 +105,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">
                 <TopBar onMenuClick={() => setSidebarOpen(true)} />
                 <PullToRefreshIndicator {...pull} />
-                <main ref={mainRef} className="flex-1 overflow-auto">
+                <main ref={pull.ref} className="flex-1 overflow-auto">
                     {children}
                 </main>
             </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { computePull } from "@/lib/pwa/pull-to-refresh-math";
 
 /** Resisted offset in px needed to arm the reload. */
@@ -18,6 +18,8 @@ export interface PullToRefresh {
     state: PullState;
     /** True while the spring-back animation should be eased (reduced-motion off). */
     animated: boolean;
+    /** Callback ref to attach to the scroll container. */
+    ref: (node: HTMLElement | null) => void;
 }
 
 function isTouchDevice(): boolean {
@@ -31,18 +33,27 @@ function prefersReducedMotion(): boolean {
 }
 
 /**
- * Attaches a touch-only pull-to-refresh gesture to the given scroll container.
+ * Attaches a touch-only pull-to-refresh gesture to a scroll container. The
+ * hook owns the element via a callback ref (returned as `ref`): attach it to
+ * the scroll container with `<main ref={pull.ref}>`.
  *
  * The gesture engages ONLY when the container is scrolled to the very top and
  * the first move is downward. Releasing past the threshold triggers a single
  * hard reload (`window.location.reload()`); releasing before springs back.
  *
+ * Because the binding effect depends on the element STATE set by the callback
+ * ref, it re-runs when the container mounts (null → node) or unmounts
+ * (node → null). This matters when the container only appears after an initial
+ * render that did not include it (e.g. an auth gate), where a plain RefObject
+ * would leave the effect bound to a null element forever.
+ *
  * Inert on non-touch devices and during SSR: no listeners are bound and the
  * returned state stays idle, so desktop sees no visual change.
  */
-export function usePullToRefresh(
-    scrollRef: RefObject<HTMLElement | null>
-): PullToRefresh {
+export function usePullToRefresh(): PullToRefresh {
+    const [el, setEl] = useState<HTMLElement | null>(null);
+    const setRef = useCallback((node: HTMLElement | null) => setEl(node), []);
+
     const [offset, setOffset] = useState(0);
     const [progress, setProgress] = useState(0);
     const [state, setState] = useState<PullState>("idle");
@@ -57,7 +68,6 @@ export function usePullToRefresh(
     const triggeredRef = useRef(false);
 
     useEffect(() => {
-        const el = scrollRef.current;
         if (!el || !isTouchDevice()) return;
 
         const reduce = prefersReducedMotion();
@@ -157,7 +167,7 @@ export function usePullToRefresh(
             el.removeEventListener("touchend", onTouchEnd);
             el.removeEventListener("touchcancel", onTouchEnd);
         };
-    }, [scrollRef]);
+    }, [el]);
 
-    return { offset, progress, state, animated };
+    return { offset, progress, state, animated, ref: setRef };
 }
