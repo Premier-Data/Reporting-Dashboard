@@ -40,6 +40,9 @@ export interface Env {
   // (the scheduled job and the /api/push/:id endpoint). Defaults to the AHP
   // production host. No auth is required on its write endpoints.
   TT_BASE_URL?: string;
+  // KV namespace holding the most recent TT pushes, so the production dashboard
+  // can render a live push-activity feed (via /api/push-log) from any device.
+  PUSH_LOG?: KVNamespace;
 }
 
 // Default grades the /live endpoint searches to resolve a game's teams.
@@ -722,6 +725,78 @@ async function ttPost(
 // Resolve, fetch the summary for, and push ONE fixture's score + team list to
 // TT. `shortId` is the PlayHQ spectator id (short or full). Returns a small
 // result record for logging / the manual-trigger response.
+// A single push-log entry, as stored in KV and returned by /api/push-log.
+type PushLogEntry = {
+  ts: string; // ISO timestamp
+  id: string; // short PlayHQ fixture id
+  match: string; // "Home vs Away"
+  score: string; // "G.B (T) - G.B (T)"
+  endpoint: string; // the TT base URL pushed to
+  scoreReply: string; // TT's reply to /PlayHQScoreUpdate (e.g. "ok")
+  teamReply: string; // TT's reply to /PlayHQTeamUpdate
+  ok: boolean; // true when the score push was accepted ("ok")
+};
+
+const PUSH_LOG_KEY = "recent";
+const PUSH_LOG_MAX = 100;
+
+// Append push results to the KV ring buffer (newest first, capped). Best
+// effort — a KV failure must never break the push itself.
+async function recordPushLog(
+  env: Env,
+  base: string,
+  results: Array<Record<string, unknown>>
+): Promise<void> {
+  if (!env.PUSH_LOG) return;
+  try {
+    const prevRaw = await env.PUSH_LOG.get(PUSH_LOG_KEY);
+    const prev: PushLogEntry[] = prevRaw ? JSON.parse(prevRaw) : [];
+    const now = new Date().toISOString();
+    const entries: PushLogEntry[] = results.map((r) => {
+      const score = r.scorePush as { body?: string } | undefined;
+      const team = r.teamPush as { body?: string } | undefined;
+      const scoreReply = (score?.body ?? r.error ?? "no reply") as string;
+      return {
+        ts: now,
+        id: String(r.id ?? ""),
+        match: String(r.match ?? ""),
+        score: String(r.score ?? ""),
+        endpoint: base,
+        scoreReply,
+        teamReply: (team?.body ?? "-") as string,
+        ok: /ok/i.test(scoreReply),
+      };
+    });
+    const merged = [...entries, ...prev].slice(0, PUSH_LOG_MAX);
+    await env.PUSH_LOG.put(PUSH_LOG_KEY, JSON.stringify(merged));
+  } catch (e) {
+    console.log("push-log write failed:", e instanceof Error ? e.message : "error");
+  }
+}
+
+// Print one readable line (or two) per fixture push, so `wrangler tail` reads
+// like a live activity console. Shows the match, score sent, and TT's reply for
+// each endpoint, with a ✓ / ✗ based on whether TT answered "ok".
+function logPushResult(r: Record<string, unknown>, base: string): void {
+  const ts = new Date().toISOString();
+  if (r.error) {
+    console.log(`[${ts}] ✗ ${r.id} — ${String(r.error)}`);
+    return;
+  }
+  const score = r.scorePush as { status: number; body: string } | undefined;
+  const team = r.teamPush as { status: number; body: string } | undefined;
+  const okScore = /ok/i.test(score?.body ?? "");
+  const okTeam = /ok/i.test(team?.body ?? "");
+  console.log(
+    `[${ts}] ${okScore ? "✓" : "✗"} SCORE ${r.match} | ${r.score} ` +
+      `-> POST ${base}/PlayHQScoreUpdate => ${score?.body ?? "no reply"}`
+  );
+  console.log(
+    `[${ts}] ${okTeam ? "✓" : "·"} TEAM  ${r.match} ` +
+      `-> POST ${base}/PlayHQTeamUpdate => ${team?.body ?? "no reply"}`
+  );
+}
+
 async function pushFixtureToTT(
   shortId: string,
   env: Env
@@ -749,6 +824,9 @@ async function pushFixtureToTT(
     id: shortId,
     fullId,
     status: summary.status ?? null,
+    // Human-readable match + score for the live push console.
+    match: `${live.home.name ?? "?"} vs ${live.away.name ?? "?"}`,
+    score: `${live.home.goals ?? 0}.${live.home.behinds ?? 0} (${live.home.total ?? 0}) - ${live.away.goals ?? 0}.${live.away.behinds ?? 0} (${live.away.total ?? 0})`,
     scorePush: score,
     teamPush: team,
   };
@@ -1117,16 +1195,37 @@ export default {
       const pid = decodeURIComponent(pushMatch[1]);
       if (!ID_RE.test(pid)) return json({ error: "invalid_fixture_id" }, 400, cors);
       const result = await pushFixtureToTT(pid, env);
+      const pushBase = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
+      await recordPushLog(env, pushBase, [result]);
       return json(result, 200, cors);
     }
 
     // /api/push — push ALL currently-live fixtures to TT on demand (same set
-    // the cron would push). Useful to trigger a sweep manually.
+    // the cron would push). Useful to trigger a sweep manually. Also records to
+    // the push log so the manual sweep shows up in the dashboard feed.
     if (url.pathname === "/api/push") {
+      const pushBase = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
       const ids = await liveFixtureIds(env);
       const results = [];
       for (const id of ids) results.push(await pushFixtureToTT(id, env));
+      await recordPushLog(env, pushBase, results);
       return json({ count: results.length, results }, 200, cors);
+    }
+
+    // /api/push-log — the most recent TT pushes (newest first), so the
+    // production dashboard can render a live push-activity feed from any
+    // device. Read-only; no cache so it's always current.
+    if (url.pathname === "/api/push-log") {
+      let entries: unknown[] = [];
+      if (env.PUSH_LOG) {
+        try {
+          const raw = await env.PUSH_LOG.get(PUSH_LOG_KEY);
+          entries = raw ? JSON.parse(raw) : [];
+        } catch {
+          entries = [];
+        }
+      }
+      return json({ count: entries.length, entries }, 200, cors);
     }
 
     const m = url.pathname.match(
@@ -1228,13 +1327,21 @@ export default {
     ctx: ExecutionContext
   ): Promise<void> {
     const task = (async () => {
+      const base = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
       const ids = await liveFixtureIds(env);
+      const ts = () => new Date().toISOString();
+      if (ids.length === 0) {
+        console.log(`[${ts()}] TT push: no live fixtures to send`);
+        return;
+      }
+      console.log(`[${ts()}] TT push: ${ids.length} live fixture(s) -> ${base}`);
+      const results: Array<Record<string, unknown>> = [];
       for (const id of ids) {
         const r = await pushFixtureToTT(id, env);
-        // Log so `wrangler tail` shows what was pushed and TT's reply.
-        console.log("TT push", JSON.stringify(r));
+        logPushResult(r, base);
+        results.push(r);
       }
-      if (ids.length === 0) console.log("TT push: no live fixtures");
+      await recordPushLog(env, base, results);
     })();
     ctx.waitUntil(task);
   },

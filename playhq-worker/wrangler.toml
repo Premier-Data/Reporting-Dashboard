@@ -9,6 +9,14 @@ compatibility_date = "2025-07-18"
 [triggers]
 crons = ["* * * * *"]
 
+# ── Push log (KV) ───────────────────────────────────────────────────────────
+# Stores the most recent TT pushes so the production dashboard can show a live
+# "push activity" feed from any device (phone, another computer) via the
+# /api/push-log endpoint.
+[[kv_namespaces]]
+binding = "PUSH_LOG"
+id = "fc2e9841b73f45b9a86160f2ad969b0b"
+
 # ── Config (safe to commit; no secrets here) ────────────────────────────────
 [vars]
 # Browser origins allowed to call this worker. List your dashboard origin(s)

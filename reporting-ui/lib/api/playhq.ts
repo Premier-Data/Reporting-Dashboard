@@ -225,6 +225,31 @@ export async function getScorers(
   return (await res.json()) as NormalisedLive;
 }
 
+// One entry in the TT push-activity log (what the Worker POSTed to the TT/JADE
+// production endpoint, and TT's reply). Rendered by the /push-log page so the
+// pushes can be watched live from any device.
+export type PushLogEntry = {
+  ts: string; // ISO timestamp of the push
+  id: string; // short PlayHQ fixture id
+  match: string; // "Home vs Away"
+  score: string; // "G.B (T) - G.B (T)"
+  endpoint: string; // the TT base URL pushed to
+  scoreReply: string; // TT's reply to /PlayHQScoreUpdate (e.g. "ok")
+  teamReply: string; // TT's reply to /PlayHQTeamUpdate
+  ok: boolean; // true when the score push was accepted
+};
+
+/** Recent TT pushes (newest first), via the Worker's KV-backed log. */
+export async function getPushLog(signal?: AbortSignal): Promise<PushLogEntry[]> {
+  const res = await fetch(`${WORKER_BASE}/api/push-log`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) throw new Error(`Failed loading push log (HTTP ${res.status})`);
+  const body = (await res.json()) as { entries?: PushLogEntry[] };
+  return Array.isArray(body.entries) ? body.entries : [];
+}
+
 // A REST game is "not yet finalised" when its status is empty/null — in AFL
 // that means it's either about to start or currently in play. The REST feed
 // carries no live score for these, so they're the ones to enrich from the
