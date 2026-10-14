@@ -57,6 +57,33 @@ const DEFAULT_GRADE_IDS = [
 const PLAYHQ_URL = "https://spectator.playhq.com/graphql";
 const PLAYHQ_REST = "https://api.playhq.com/v1";
 
+// Pretty competition labels keyed by the grade SLUG in a game's PlayHQ url
+// (the path segment before "/game-centre/"). Any comp not listed here still
+// shows a readable prettified slug, so this scales to 20+ comps without edits —
+// add an entry only when you want a nicer name than the auto-prettified slug.
+const COMPETITION_LABELS: Record<string, string> = {
+  "2026-27-tio-ntfl-men-premier-league": "NTFL Men's Premier",
+  "2026-27-tio-ntfl-women-premier-league": "NTFL Women's Premier",
+  "premier-eastland-senior-men": "EFNL Premier Men",
+};
+
+// Prettify a grade slug: "2026-27-tio-ntfl-men-premier-league" -> a title-cased
+// label. Strips a leading season token like "2026-27" / "2026".
+function prettifySlug(slug: string): string {
+  const cleaned = slug.replace(/^\d{4}(-\d{2,4})?-/, "").replace(/-/g, " ");
+  return cleaned.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Resolve a human competition label from a game's PlayHQ url. Returns the
+// mapped label when known, else a prettified slug, else "".
+function competitionLabel(url: string | null | undefined): string {
+  if (!url) return "";
+  const m = String(url).match(/\/org\/[^/]+\/[^/]+\/([^/]+)\/game-centre\//);
+  const slug = m?.[1];
+  if (!slug) return "";
+  return COMPETITION_LABELS[slug] ?? prettifySlug(slug);
+}
+
 // Confirmed PlayHQ fixture UUID -> TT (JADE) fixtureUid map. Built by matching
 // the live grade feed against TT's fixtures list (date + teams). TT resolves
 // the mapping internally when we push by PlayHQ id; this table is for DISPLAY
@@ -856,7 +883,7 @@ type PushLogEntry = {
   id: string; // short PlayHQ fixture id
   playhqId: string; // full PlayHQ fixture UUID (what we push to TT)
   ttId: number | null; // confirmed TT (JADE) fixtureUid, or null if not mapped
-  grade: string; // "Men's" | "Women's" | ""
+  competition: string; // "NTFL Men's Premier" etc.
   round: string; // "Round 2" etc.
   match: string; // "Home vs Away" (grade suffix stripped)
   score: string; // "G.B (T) - G.B (T)"
@@ -890,7 +917,7 @@ async function recordPushLog(
         id: String(r.id ?? ""),
         playhqId: String(r.fullId ?? ""),
         ttId: (r.ttId as number | null) ?? null,
-        grade: String(r.grade ?? ""),
+        competition: String(r.competition ?? ""),
         round: String(r.round ?? ""),
         match: String(r.match ?? ""),
         score: String(r.score ?? ""),
@@ -955,14 +982,9 @@ async function pushFixtureToTT(
     ? await ttPost(env, "/PlayHQTeamUpdate", ttTeamBody(fullId, lists))
     : { status: 0, body: "no_appearances" };
 
-  // Grade (Men's / Women's) from the team-name suffix PlayHQ appends
-  // ("… Men Premier" / "… Women Premier"); round from the grade feed record.
-  const rawNames = `${live.home.name ?? ""} ${live.away.name ?? ""}`;
-  const grade = /\bwomen\b/i.test(rawNames)
-    ? "Women's"
-    : /\bmen\b/i.test(rawNames)
-      ? "Men's"
-      : "";
+  // Competition name from the game's PlayHQ url (scales to any comp); round
+  // from the grade feed record; match with the grade suffix stripped.
+  const competition = competitionLabel(full.url as string | undefined);
   const roundObj = (full.round ?? {}) as Record<string, unknown>;
   const round = (roundObj.name as string) ?? "";
   const stripGrade = (n: string | null) =>
@@ -973,7 +995,7 @@ async function pushFixtureToTT(
     fullId,
     ttId: ttFixtureUidFor(fullId),
     status: summary.status ?? null,
-    grade, // "Men's" | "Women's" | ""
+    competition, // "NTFL Men's Premier" etc.
     round, // "Round 2" etc.
     // Human-readable match (grade suffix stripped from each team name).
     match: `${stripGrade(live.home.name)} vs ${stripGrade(live.away.name)}`,
