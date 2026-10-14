@@ -31,6 +31,7 @@ import {
   Info,
   Pencil,
   Plus,
+  Settings,
 } from "lucide-react";
 import {
   saveAccuracyCheck,
@@ -75,6 +76,7 @@ import {
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
+import ManageMastersDialog from "./ManageMastersDialog";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -992,6 +994,12 @@ function AccuracyCompareInner() {
   const canEditMaster =
     (user?.role === "admin" || user?.role === "super_admin") && !masterIsJson;
 
+  // Only admins/super admins may MANAGE saved masters (rename / delete /
+  // replace) from the "reuse a saved master" area. Mirrors the gates above.
+  // Non-admins never see or trigger these controls.
+  const canManageMasters =
+    user?.role === "admin" || user?.role === "super_admin";
+
   // Which master instance is being edited (by id), or "new" to add one.
   const [editingMaster, setEditingMaster] = useState<Instance | "new" | null>(
     null
@@ -1425,6 +1433,15 @@ function AccuracyCompareInner() {
   // file names are loaded up front; the chosen master's XML is fetched on
   // demand (see getSavedMasterXml) to keep this list fast.
   const [savedMasters, setSavedMasters] = useState<SavedMaster[]>([]);
+  // Whether the admin-only "Manage saved masters" dialog is open.
+  const [manageMastersOpen, setManageMastersOpen] = useState(false);
+  // Re-fetch the saved-master list. Shared by the initial load effect and the
+  // post-mutation refresh after a rename/delete/replace in the dialog.
+  const refreshSavedMasters = async () => {
+    const m = await getSavedMasters();
+    setSavedMasters(m);
+    return m;
+  };
   const [loadingSavedMaster, setLoadingSavedMaster] = useState(false);
 
   // Analyst allocation + save
@@ -2447,11 +2464,23 @@ function AccuracyCompareInner() {
             />
             {savedMasters.length > 0 && (
               <div className="mt-2">
-                <label className="mb-1 block text-xs font-medium text-slate-500">
-                  {loadingSavedMaster
-                    ? "Loading master…"
-                    : "...or reuse a saved master"}
-                </label>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <label className="block text-xs font-medium text-slate-500">
+                    {loadingSavedMaster
+                      ? "Loading master…"
+                      : "...or reuse a saved master"}
+                  </label>
+                  {canManageMasters && (
+                    <button
+                      type="button"
+                      onClick={() => setManageMastersOpen(true)}
+                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <Settings className="h-3.5 w-3.5" />
+                      Manage
+                    </button>
+                  )}
+                </div>
                 <select
                   value=""
                   disabled={loadingSavedMaster}
@@ -2488,6 +2517,41 @@ function AccuracyCompareInner() {
                   ))}
                 </select>
               </div>
+            )}
+            {canManageMasters && manageMastersOpen && (
+              <ManageMastersDialog
+                masters={savedMasters}
+                isAdmin={canManageMasters}
+                username={user?.username ?? null}
+                onClose={() => setManageMastersOpen(false)}
+                onChanged={async (change) => {
+                  // Keep the in-view master consistent if it was the one
+                  // changed, mirroring the override/saveCorrectedMaster
+                  // handlers, then refresh the dropdown list.
+                  if (change.type === "rename") {
+                    setMaster((cur) =>
+                      cur && cur.name === change.oldName
+                        ? { ...cur, name: change.newName }
+                        : cur
+                    );
+                  } else if (change.type === "replace") {
+                    setMaster((cur) =>
+                      cur && cur.name === change.name
+                        ? {
+                            ...cur,
+                            instances: parseInstances(change.raw),
+                            raw: change.raw,
+                          }
+                        : cur
+                    );
+                  } else if (change.type === "delete") {
+                    setMaster((cur) =>
+                      cur && cur.name === change.name ? null : cur
+                    );
+                  }
+                  await refreshSavedMasters();
+                }}
+              />
             )}
             <div className="mt-2">
               <label className="mb-1 block text-xs font-medium text-slate-500">

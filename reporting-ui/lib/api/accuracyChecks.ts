@@ -430,6 +430,206 @@ export async function getMasterCheckSiblings(
     return { count: data?.length ?? 0, analysts };
 }
 
+// ---- Manage saved masters (rename / delete) -----------------------
+//
+// A "saved master" is a DERIVED concept: the set of accuracy_checks rows
+// sharing the same file_name_master. The dropdown (getSavedMasters) groups
+// those rows by the NORMALIZED key `file_name_master.trim().toLowerCase()`, so
+// a single entry can fold in rows whose stored name differs only by case or
+// surrounding whitespace. These management mutations therefore resolve a master
+// to the SAME normalized group and act by the resulting row-id list — never by
+// a bare `.eq` on the raw stored string — so the dropdown's grouping and the
+// mutations' targeting always agree.
+//
+// The three equality/validation helpers below are kept CHARACTER-IDENTICAL to
+// `app/accuracy-compare/master-manage-logic.ts` (which carries their unit
+// tests). They are inlined here rather than imported because this `lib/` module
+// must not depend on `app/`; the logic module remains the single contract.
+
+/** Trim only, no case-fold (what gets persisted). */
+function normalizeMasterName(name: string): string {
+    return name.trim();
+}
+
+/** Non-empty-after-trim validation for a master display name. */
+function isValidMasterName(name: string): boolean {
+    return name.trim().length > 0;
+}
+
+/** The ONE grouping rule: case-insensitive + trim equality. */
+function sameMasterName(a: string, b: string): boolean {
+    return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+export interface RenameMasterResult {
+    /** How many active rows were renamed. */
+    updated: number;
+}
+
+export interface DeleteMasterResult {
+    /** 1 when the single attached check was soft-deleted, 0 when none remained. */
+    deleted: number;
+}
+
+/**
+ * INTERNAL. Resolve the active (deleted_at IS NULL) rows that belong to the
+ * SAME master group as `fileName` under trim + case-insensitive equality, and
+ * return their ids.
+ *
+ * The `.ilike("file_name_master", fileName.trim())` is a deliberately loose
+ * SERVER-SIDE prefilter: it is case-insensitive but NOT whitespace-insensitive,
+ * and `_`/`%` in a filename are ILIKE wildcards that may over-match. The JS
+ * `sameMasterName` filter afterwards narrows the result to exact normalized
+ * equality, so the resolved id set is always correct regardless of what the
+ * prefilter returned.
+ */
+async function resolveActiveGroupIds(fileName: string): Promise<number[]> {
+    const key = normalizeMasterName(fileName);
+    const { data, error } = await supabase
+        .from("accuracy_checks")
+        .select("id, file_name_master")
+        .ilike("file_name_master", key)
+        .is("deleted_at", null);
+    if (error) {
+        console.error("Failed resolving master group:", error);
+        throw new Error(error.message || "Failed resolving master group");
+    }
+    return (data ?? [])
+        .filter((r) =>
+            sameMasterName(
+                ((r as { file_name_master: string | null }).file_name_master ?? ""),
+                fileName
+            )
+        )
+        .map((r) => (r as { id: number }).id);
+}
+
+/**
+ * Normalized active count for the deletable predicate and the advisory UI
+ * count shown in the Manage dialog. Counts rows in the normalized group (NOT an
+ * exact-string match), so it can never report 1 while case/space-variant
+ * siblings the dropdown folded in survive.
+ */
+export async function countActiveGroupSiblings(
+    fileName: string
+): Promise<number> {
+    return (await resolveActiveGroupIds(fileName)).length;
+}
+
+/**
+ * Rename a saved master's display filename across EVERY active check in its
+ * normalized group (including case/whitespace variants the dropdown folded
+ * together), so they all regroup under the new name with no stray variant left
+ * behind. Soft-deleted rows are intentionally untouched.
+ *
+ * Rejects an empty-after-trim name (pre-DB, no write) and a collision with a
+ * DIFFERENT existing active master (membership defined by row id, so a pure
+ * case/whitespace self-rename of the same group is allowed). Returns how many
+ * rows were renamed.
+ *
+ * The collision guard is BEST-EFFORT: it is a client-side read (resolve group +
+ * collision query) followed by a separate client-side update — a TOCTOU window.
+ * There is no DB uniqueness constraint on file_name_master and no server
+ * transaction (both out of scope), so concurrent renames/inserts can still
+ * produce a duplicate name, which the next getSavedMasters() refresh surfaces
+ * as two dropdown entries for the admin to re-rename. Running the guard against
+ * a fresh query here narrows the race window; it does not eliminate it.
+ */
+export async function renameMaster(
+    oldFileName: string,
+    newFileName: string
+): Promise<RenameMasterResult> {
+    const next = normalizeMasterName(newFileName);
+    if (!isValidMasterName(next)) {
+        throw new Error("Master name cannot be empty.");
+    }
+
+    const groupIds = await resolveActiveGroupIds(oldFileName);
+    if (groupIds.length === 0) {
+        // Nothing active under the old name — nothing to rename.
+        return { updated: 0 };
+    }
+
+    // Collision check by id-set membership. Skip it for a pure
+    // case/whitespace self-rename (the whole group already matches `next`, so
+    // there can be no outside row by definition).
+    if (!sameMasterName(next, oldFileName)) {
+        const { data: collisionRows, error: collisionError } = await supabase
+            .from("accuracy_checks")
+            .select("id, file_name_master")
+            .is("deleted_at", null)
+            .ilike("file_name_master", next);
+        if (collisionError) {
+            console.error("Failed checking master name collision:", collisionError);
+            throw new Error(
+                collisionError.message || "Failed to rename master."
+            );
+        }
+        const groupIdSet = new Set(groupIds);
+        const collides = (collisionRows ?? []).some((r) => {
+            const row = r as { id: number; file_name_master: string | null };
+            return (
+                sameMasterName(row.file_name_master ?? "", next) &&
+                !groupIdSet.has(row.id)
+            );
+        });
+        if (collides) {
+            throw new Error(
+                `A master named "${next}" already exists. Choose a different name.`
+            );
+        }
+    }
+
+    const { data: updatedRows, error } = await supabase
+        .from("accuracy_checks")
+        .update({ file_name_master: next })
+        .in("id", groupIds)
+        .select("id");
+    if (error) {
+        console.error("Failed renaming master:", error);
+        throw new Error(error.message || "Failed to rename master.");
+    }
+    return { updated: updatedRows?.length ?? 0 };
+}
+
+/**
+ * Delete a saved master. Allowed ONLY when exactly one active check is in its
+ * normalized group — in which case that single check IS the master and is
+ * soft-deleted (set deleted_at/deleted_by), recoverable from "Deleted checks".
+ *
+ * Re-resolves the group and re-checks the predicate here (not trusting a
+ * possibly-stale UI count): 0 rows → no-op `{ deleted: 0 }`; >1 rows → THROW
+ * (the caller must Replace instead; this is the authoritative data-safety
+ * guard that prevents orphaning or destroying another analyst's graded
+ * accuracy); exactly 1 → soft-delete that single row by id.
+ */
+export async function deleteMaster(
+    fileName: string,
+    deletedBy?: string | null
+): Promise<DeleteMasterResult> {
+    const ids = await resolveActiveGroupIds(fileName);
+    if (ids.length === 0) {
+        return { deleted: 0 };
+    }
+    if (ids.length > 1) {
+        throw new Error(
+            `Cannot delete: ${ids.length} accuracy checks are attached to this master. Replace it instead.`
+        );
+    }
+    const { error } = await supabase
+        .from("accuracy_checks")
+        .update({
+            deleted_at: new Date().toISOString(),
+            deleted_by: deletedBy ?? null,
+        })
+        .eq("id", ids[0]);
+    if (error) {
+        console.error("Failed deleting master:", error);
+        throw new Error(error.message || "Failed to delete master.");
+    }
+    return { deleted: 1 };
+}
+
 // ---- Master consistency diagnostic --------------------------------
 
 // A per-stat count difference of this check's master vs the reference master.
