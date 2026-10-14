@@ -23,6 +23,7 @@ import { useRouter } from "next/navigation";
 import {
   getGradeGames,
   getLiveScore,
+  getScorers,
   restStatusUnknown,
   sides,
   goalsBehinds,
@@ -797,11 +798,17 @@ export default function LiveScoresPage() {
         while (!cancelled && cursor < needed.length) {
           const g = needed[cursor++];
           try {
-            // Goal kickers + quarter scores come from the PlayHQ spectator feed
-            // (same source as the live score + totals), so the overlay also
-            // carries the real score. The feed can be incomplete for some
-            // fixtures, but it's the live, authoritative PlayHQ source.
-            const data = await getLiveScore(g.id);
+            // Goal kickers + quarter scores from the official REST game summary
+            // (complete — matches the PlayHQ game-centre). Fall back to the
+            // spectator /live feed if the summary isn't available. The scoreline
+            // still reads the REST scoreTotal, so this overlay only adds the
+            // kickers + quarter breakdown.
+            let data: NormalisedLive;
+            try {
+              data = await getScorers(g.id);
+            } catch {
+              data = await getLiveScore(g.id);
+            }
             if (cancelled) return;
             if (
               data.home.scorers.length > 0 ||

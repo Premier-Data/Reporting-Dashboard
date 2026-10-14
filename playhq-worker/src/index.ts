@@ -177,6 +177,20 @@ async function resolveGameTeams(
   env: Env,
   ctx: ExecutionContext
 ): Promise<GameTeams> {
+  const match = await resolveFullGame(gameId, env);
+  if (!match) return null;
+  const lite = toFixtureLite(match);
+  void ctx; // reserved; no async write needed here
+  return { home: lite.home, away: lite.away };
+}
+
+// Find a game's FULL raw record (and thus its full UUID id) from the known
+// grades' REST feeds, given either the full UUID or the short leading segment
+// (the spectator id). Uses the per-grade edge cache. Returns null if unknown.
+async function resolveFullGame(
+  gameId: string,
+  env: Env
+): Promise<Record<string, unknown> | null> {
   if (!env.PHQ_API_KEY) return null;
   const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
     .split(",")
@@ -186,7 +200,6 @@ async function resolveGameTeams(
 
   for (const gradeId of gradeIds) {
     if (!UUID_RE.test(gradeId)) continue;
-    // Prefer the cached raw games for this grade; fall back to a fresh fetch.
     let games: Array<Record<string, unknown>> | null = null;
     const key = new Request(`https://playhq-cache/grade-games/${gradeId}`);
     const hit = await cache.match(key);
@@ -209,11 +222,7 @@ async function resolveGameTeams(
       const full = String(g.id ?? "");
       return full === gameId || full.split("-")[0] === gameId;
     });
-    if (match) {
-      const lite = toFixtureLite(match);
-      void ctx; // reserved; no async write needed here
-      return { home: lite.home, away: lite.away };
-    }
+    if (match) return match;
   }
   return null;
 }
@@ -417,6 +426,155 @@ async function fetchGradeGames(gradeId: string, env: Env): Promise<unknown[]> {
   return all;
 }
 
+// Fetch a game's SUMMARY from the official REST API. This carries per-player
+// `appearances[]` (complete goal kickers) and per-quarter `periods[]`, unlike
+// the spectator feed which only attributes some goals. Requires the API key.
+async function fetchGameSummary(
+  fullGameId: string,
+  env: Env
+): Promise<Record<string, unknown>> {
+  if (!env.PHQ_API_KEY) throw new UpstreamError("api_key_not_configured", 500);
+  const u = `${PLAYHQ_REST}/games/${fullGameId}/summary`;
+  const upstream = await fetch(u, {
+    method: "GET",
+    headers: {
+      "x-api-key": env.PHQ_API_KEY,
+      "x-phq-tenant": env.PHQ_TENANT ?? "afl",
+      Accept: "application/json",
+    },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
+  if (upstream.status === 401 || upstream.status === 403)
+    throw new UpstreamError("forbidden", upstream.status);
+  if (upstream.status === 404) throw new UpstreamError("not_found", 404);
+  if (!upstream.ok) throw new UpstreamError("upstream_error", 502);
+  const body = (await upstream.json()) as { data?: Record<string, unknown> };
+  if (!body.data) throw new UpstreamError("not_found", 404);
+  return body.data;
+}
+
+// Build a normalised scorers + periods payload (home/away) from a REST game
+// summary. Goal kickers come from appearances[].scoreSubTotal (6_POINT_SCORE =
+// goals*6, 1_POINT_SCORE = behinds); quarter scores from periods[]. Team sides
+// are keyed by the summary's competitors[].isHomeTeam.
+function summaryToScorersPeriods(
+  id: string,
+  summary: Record<string, unknown>
+): NormalisedLive {
+  const comps = Array.isArray(summary.competitors)
+    ? (summary.competitors as Array<Record<string, unknown>>)
+    : [];
+  const homeComp = comps.find((c) => c.isHomeTeam === true);
+  const awayComp = comps.find((c) => c.isHomeTeam === false);
+  const homeId = homeComp ? String(homeComp.id) : null;
+  const awayId = awayComp ? String(awayComp.id) : null;
+
+  const subVal = (
+    sub: Array<{ type?: string; value?: number }> | undefined,
+    type: string
+  ): number => {
+    if (!Array.isArray(sub)) return 0;
+    const hit = sub.find((s) => s?.type === type);
+    return typeof hit?.value === "number" ? hit.value : 0;
+  };
+
+  // Per-side goal kickers from appearances.
+  const appearances = Array.isArray(summary.appearances)
+    ? (summary.appearances as Array<Record<string, unknown>>)
+    : [];
+  const scorersFor = (teamId: string | null): Scorer[] => {
+    if (!teamId) return [];
+    const out: Scorer[] = [];
+    for (const a of appearances) {
+      if (String(a.teamID) !== teamId) continue;
+      const sub = a.scoreSubTotal as Array<{ type?: string; value?: number }>;
+      const goals = Math.floor(subVal(sub, "6_POINT_SCORE") / 6);
+      const behinds = subVal(sub, "1_POINT_SCORE");
+      if (goals > 0 || behinds > 0) {
+        const name = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim();
+        out.push({
+          name,
+          number: a.playerNumber != null ? String(a.playerNumber) : null,
+          goals,
+          behinds,
+        });
+      }
+    }
+    out.sort((x, y) => y.goals - x.goals || y.behinds - x.behinds);
+    return out;
+  };
+
+  // Per-side quarter scores from periods[].
+  const periods = Array.isArray(summary.periods)
+    ? (summary.periods as Array<Record<string, unknown>>)
+    : [];
+  const PERIOD_LABEL: Record<string, { period: string; label: string }> = {
+    FIRST_QTR: { period: "Q1", label: "First Quarter" },
+    SECOND_QTR: { period: "Q2", label: "Second Quarter" },
+    THIRD_QTR: { period: "Q3", label: "Third Quarter" },
+    FOURTH_QTR: { period: "Q4", label: "Fourth Quarter" },
+  };
+  const periodsFor = (teamId: string | null): PeriodScore[] => {
+    if (!teamId) return [];
+    const out: PeriodScore[] = [];
+    for (const p of periods) {
+      const label = PERIOD_LABEL[String(p.name)] ?? { period: String(p.name), label: String(p.name) };
+      const pc = Array.isArray(p.competitors)
+        ? (p.competitors as Array<Record<string, unknown>>)
+        : [];
+      const mine = pc.find((c) => String(c.id) === teamId);
+      if (!mine) continue;
+      const sub = mine.scoreSubtotals as Array<{ type?: string; value?: number }>;
+      const goals = subVal(sub, "6_POINT_SCORE");
+      const behinds = subVal(sub, "1_POINT_SCORE");
+      out.push({
+        period: label.period,
+        label: label.label,
+        goals,
+        behinds,
+        total: typeof mine.scoreTotals === "number" ? mine.scoreTotals : goals * 6 + behinds,
+      });
+    }
+    return out;
+  };
+
+  const sideTotals = (comp: Record<string, unknown> | undefined) => {
+    const sub = comp?.scoreSubTotal as Array<{ type?: string; value?: number }>;
+    return {
+      total: typeof comp?.scoreTotal === "number" ? comp.scoreTotal : null,
+      goals: subVal(sub, "TOTAL_GOALS"),
+      behinds: subVal(sub, "TOTAL_BEHINDS"),
+    };
+  };
+  const h = sideTotals(homeComp);
+  const a = sideTotals(awayComp);
+
+  return {
+    id,
+    status: (summary.status as string) ?? null,
+    clock: { period: null, time: null, status: null },
+    home: {
+      id: homeId,
+      name: (homeComp?.name as string) ?? null,
+      total: h.total,
+      goals: h.goals,
+      behinds: h.behinds,
+      scorers: scorersFor(homeId),
+      periods: periodsFor(homeId),
+    },
+    away: {
+      id: awayId,
+      name: (awayComp?.name as string) ?? null,
+      total: a.total,
+      goals: a.goals,
+      behinds: a.behinds,
+      scorers: scorersFor(awayId),
+      periods: periodsFor(awayId),
+    },
+  };
+}
+
 // One side of a fixture — the PlayHQ competitor (team) id plus its name.
 type FixtureTeam = { id: string | null; name: string | null };
 
@@ -603,6 +761,60 @@ export default {
     // /api/fixtures/:id/live-scores  (raw spectator payload)
     // /api/fixtures/:id/live         (compact normalised live score)
     // /api/fixtures/:id/status       (just id/status/updatedAt)
+    // /api/fixtures/:id/scorers — COMPLETE goal kickers + quarter scores from
+    // the official REST game summary (appearances + periods). Unlike /live
+    // (spectator feed, often partial), this matches the PlayHQ game-centre.
+    const scorersMatch = url.pathname.match(/^\/api\/fixtures\/([^/]+)\/scorers$/);
+    if (scorersMatch) {
+      const sid = decodeURIComponent(scorersMatch[1]);
+      if (!ID_RE.test(sid)) return json({ error: "invalid_fixture_id" }, 400, cors);
+      const scorersCacheKey = new Request(`https://playhq-cache/scorers/${sid}`);
+      const scorersHit = await cache.match(scorersCacheKey);
+      if (scorersHit) {
+        return new Response(await scorersHit.text(), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Cache": "HIT", ...cors },
+        });
+      }
+      try {
+        const full = await resolveFullGame(sid, env);
+        if (!full) return json({ error: "not_found" }, 404, cors);
+        const summary = await fetchGameSummary(String(full.id), env);
+        const payload = summaryToScorersPeriods(sid, summary);
+        const bodyText = JSON.stringify(payload);
+        const sTtl = Math.max(0, Number(env.LIVE_TTL_SECONDS ?? "15") || 15);
+        if (sTtl > 0) {
+          ctx.waitUntil(
+            cache.put(
+              scorersCacheKey,
+              new Response(bodyText, {
+                headers: {
+                  "Content-Type": "application/json",
+                  "Cache-Control": `public, max-age=${sTtl}`,
+                },
+              })
+            )
+          );
+        }
+        return new Response(bodyText, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "MISS",
+            "Cache-Control": `public, max-age=${sTtl}`,
+            ...cors,
+          },
+        });
+      } catch (err) {
+        if (err instanceof UpstreamError) {
+          const extra: HeadersInit =
+            err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+          return json({ error: err.message }, err.status, extra);
+        }
+        return json({ error: "unable_to_retrieve_scorers" }, 502, cors);
+      }
+    }
+
     const m = url.pathname.match(
       /^\/api\/fixtures\/([^/]+)\/(live-scores|live|status|teamlists)$/
     );

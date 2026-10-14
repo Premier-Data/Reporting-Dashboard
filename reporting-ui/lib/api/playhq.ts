@@ -207,6 +207,24 @@ export async function getTeamLists(
   return (await res.json()) as TeamLists;
 }
 
+/**
+ * COMPLETE goal kickers + quarter scores for a fixture, from the official REST
+ * game summary (via the Worker). Unlike getLiveScore (spectator feed, which
+ * only attributes some goals to named players), this matches the PlayHQ
+ * game-centre. Shares the NormalisedLive shape so the UI renders it the same.
+ */
+export async function getScorers(
+  gameId: string,
+  signal?: AbortSignal
+): Promise<NormalisedLive> {
+  const res = await fetch(`${WORKER_BASE}/api/fixtures/${gameId}/scorers`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) throw new Error(`Failed loading scorers (HTTP ${res.status})`);
+  return (await res.json()) as NormalisedLive;
+}
+
 // A REST game is "not yet finalised" when its status is empty/null — in AFL
 // that means it's either about to start or currently in play. The REST feed
 // carries no live score for these, so they're the ones to enrich from the
