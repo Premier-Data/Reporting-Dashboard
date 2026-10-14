@@ -61,17 +61,36 @@ function Crest({
   logoUrl?: string | null;
 }) {
   const logo = safeImageUrl(logoUrl) || clubLogo(name);
-  const dim = { width: size, height: size };
+  // Lock the badge box on every axis so flex can neither grow nor shrink it,
+  // and clip overflow so a logo can never bleed into the score/name beside it.
+  const box = {
+    width: size,
+    height: size,
+    minWidth: size,
+    minHeight: size,
+    maxWidth: size,
+    maxHeight: size,
+  };
   if (logo) {
-    // eslint-disable-next-line @next/next/no-img-element
     return (
-      <img src={logo} alt="" style={dim} className="shrink-0 rounded-full object-contain" />
+      <span
+        className="flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-white/10"
+        style={box}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={logo}
+          alt={`${name ?? ""} logo`}
+          className="h-full w-full rounded-full object-contain"
+        />
+      </span>
     );
   }
   return (
     <span
       className="flex shrink-0 items-center justify-center rounded-full font-bold text-white"
-      style={{ ...dim, background: clubBadgeColor(name), fontSize: Math.round(size * 0.38) }}
+      style={{ ...box, background: clubBadgeColor(name), fontSize: Math.round(size * 0.4) }}
+      aria-hidden="true"
     >
       {clubInitials(name)}
     </span>
@@ -527,42 +546,55 @@ function MatchStatsInner() {
         {/* Scoreboard header — always visible */}
         {game && (
           <div className="border-b border-white/10 px-4 pb-4 pt-4">
-            <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-              <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={home?.name} size={52} logoUrl={teamLogos.home} />
-                <span className="text-xs font-medium leading-tight text-slate-300">
+            <div className="grid grid-cols-[1fr_auto_1fr] items-start gap-2 md:gap-3">
+              {/* Home block: crest + score on one row pushed LEFT, name truncated below */}
+              <div className="flex min-w-0 flex-col items-start gap-2">
+                <div className="flex items-center gap-2">
+                  <Crest name={home?.name} size={52} logoUrl={teamLogos.home} />
+                  <div className="flex flex-col items-start">
+                    <span className="text-3xl font-extrabold leading-none tabular-nums">
+                      {homeScore ?? "-"}
+                    </span>
+                    <span className="mt-1 text-[11px] tabular-nums text-slate-400">
+                      {goalsBehinds(home)}
+                    </span>
+                  </div>
+                </div>
+                <span
+                  className="block w-full truncate text-left text-xs font-medium text-slate-300"
+                  title={home?.name ?? "Home"}
+                >
                   {home?.name ?? "Home"}
                 </span>
               </div>
-              <div className="flex items-center gap-3">
-                <div className="flex flex-col items-center">
-                  <span className="text-3xl font-extrabold tabular-nums">
-                    {homeScore ?? "-"}
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    {goalsBehinds(home)}
-                  </span>
-                </div>
-                <div className="flex flex-col items-center">
-                  <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
-                    FT
-                  </span>
-                  <span className="mt-1 text-[11px] text-slate-400">
-                    {game.venue?.name ?? ""}
-                  </span>
-                </div>
-                <div className="flex flex-col items-center">
-                  <span className="text-3xl font-extrabold tabular-nums">
-                    {awayScore ?? "-"}
-                  </span>
-                  <span className="text-[11px] text-slate-400">
-                    {goalsBehinds(away)}
-                  </span>
-                </div>
+
+              {/* Centre: fixed-width clamped column — FT pill + venue (venue truncates) */}
+              <div className="flex w-[108px] min-w-[108px] max-w-[108px] flex-col items-center px-1 text-center md:w-[128px] md:min-w-[128px] md:max-w-[128px]">
+                <span className="rounded-full bg-sky-600 px-3 py-0.5 text-xs font-bold">
+                  FT
+                </span>
+                <span className="mt-1 block w-full min-w-0 truncate text-[11px] text-slate-400" title={game.venue?.name ?? ""}>
+                  {game.venue?.name ?? ""}
+                </span>
               </div>
-              <div className="flex flex-col items-center gap-1.5 text-center">
-                <Crest name={away?.name} size={52} logoUrl={teamLogos.away} />
-                <span className="text-xs font-medium leading-tight text-slate-300">
+
+              {/* Away block: mirror of home (crest + score pushed RIGHT via flex-row-reverse) */}
+              <div className="flex min-w-0 flex-col items-end gap-2">
+                <div className="flex flex-row-reverse items-center gap-2">
+                  <Crest name={away?.name} size={52} logoUrl={teamLogos.away} />
+                  <div className="flex flex-col items-end">
+                    <span className="text-3xl font-extrabold leading-none tabular-nums">
+                      {awayScore ?? "-"}
+                    </span>
+                    <span className="mt-1 text-[11px] tabular-nums text-slate-400">
+                      {goalsBehinds(away)}
+                    </span>
+                  </div>
+                </div>
+                <span
+                  className="block w-full truncate text-right text-xs font-medium text-slate-300"
+                  title={away?.name ?? "Away"}
+                >
                   {away?.name ?? "Away"}
                 </span>
               </div>
