@@ -1,0 +1,27 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "NIT",
+      "title": ".ilike prefilter does not escape ILIKE wildcards % and _ common in filenames",
+      "where": "resolveActiveGroupIds / deleteMaster / renameMaster steps",
+      "problem": "The server prefilter .ilike(\"file_name_master\", fileName.trim()) treats _ and % in the filename as ILIKE wildcards (e.g. game_1.xml also matches game-1.xml). This over-matches but is corrected by the JS sameMasterName exact normalized-equality filter, so the resolved id set is still correct; it only over-fetches a few candidate rows.",
+      "fix": "Make the design wording precise: the .ilike is a deliberately loose prefilter whose over-matches are discarded by sameMasterName (trim+lowercase exact equality), so the resolved id set is always correct. Optionally escape _/% or use per-candidate .eq. No functional change required."
+    },
+    {
+      "severity": "NIT",
+      "title": "Dropdown key/value and the raw-string Replace target could be stated explicitly",
+      "where": "UX design / Replace section vs app/accuracy-compare/page.tsx dropdown",
+      "problem": "The dropdown renders <option key/value={m.fileName}> using the raw stored string. Duplicate normalized names are prevented by getSavedMasters dedup, so no React key warning arises, and Replace forwards that raw string to propagateMasterCorrection (the exact-string subset). This is correct and the exact-match limitation is already acknowledged, but the link between the dropdown value and the propagate target is implicit.",
+      "fix": "State that value={m.fileName} (raw string) is what the Replace handler forwards to propagateMasterCorrection, intentionally the exact-string subset until a rename consolidates the group. No change required."
+    },
+    {
+      "severity": "NIT",
+      "title": "Replace empty-master guard located at 'the call site' but not pinned to a function",
+      "where": "Error handling table / Input validation (Replace)",
+      "problem": "propagateMasterCorrection has no empty-master guard of its own (confirmed: it would run compareInstances([], ...) and overwrite every sibling's xml_master with the empty feed). The design correctly places the instancesFromRaw(newXml).length > 0 guard at 'the call site', but that phrase is loose and an implementer could assume the data layer guards it.",
+      "fix": "Name the location: the Replace handler in app/accuracy-compare/page.tsx checks instancesFromRaw(newXml).length > 0 before calling propagateMasterCorrection, because propagateMasterCorrection has no empty-master guard."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\master-manage\\reporting-ui\\.agents\\tasks\\master-manage\\design-review.md"
+}
