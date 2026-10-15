@@ -1,5 +1,18 @@
 {
   "verdict": "APPROVED",
-  "findings": [],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\ptr-bind-fix\\reporting-ui\\.agents\\tasks\\review-doc.md"
+  "findings": [
+    {
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "label": "Plan/impl drift on computeStoredPlayerAccuracy",
+      "detail": "The plan specified reimplementing computeStoredPlayerAccuracy as a thin wrapper, but the implementation removed it entirely. It was a module-local function with no external callers (zero remaining references in the worktree), so removal is a clean simplification and is recorded in the verification doc. No action required."
+    },
+    {
+      "severity": "non-blocking",
+      "confidence": "possible",
+      "label": "analystWindow single-file null behavior",
+      "detail": "The compare page's analystWindow memo now returns null when either master or analyst is absent, whereas the old code derived a window from whichever single side had instances. This only affects the manual-range input placeholder when exactly one file is loaded (a state with no gradeable comparison, since canonical/grading memos require both). Cosmetic, not a live-view grading regression."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\overlap-scope\\reporting-ui\\.agents\\tasks\\review.md"
 }

@@ -2,6 +2,7 @@ import { supabase } from "@/lib/supabase";
 import {
     parseInstances,
     compareInstances,
+    canonicaliseTeams,
 } from "@/lib/comparison/xml-compare";
 import type {
     ComparisonResult,
@@ -9,6 +10,7 @@ import type {
     TeamBreakdown,
     Instance,
 } from "@/lib/comparison/xml-compare";
+import { scopeToOverlap } from "@/lib/comparison/overlap-window";
 import {
     jsonEventsToInstances,
     playerNumberMapFromReport,
@@ -122,33 +124,56 @@ export interface SaveAccuracyCheckInput {
 }
 
 /**
- * Parse a check's master + analyst XML and precompute Player Accuracy for all
- * scopes, for storage in `player_accuracy`. Returns null when XML is missing or
- * unparsable (parseInstances needs the browser DOMParser).
+ * The SINGLE source of truth for every stored accuracy field. Deterministically
+ * grades a check OVERLAP-SCOPED (the section the analyst coded), the SAME way
+ * the compare page's live Overlap view does, regardless of any Range selected
+ * at save time:
+ *
+ *   1. Canonicalise the FULL master/analyst sets with the SAME arguments the
+ *      compare page uses (incl. the master file name), so the Home/Away mapping
+ *      is derived from the whole file — not a subset that could flip it.
+ *   2. Scope the already-canonical sets to the overlap window (shared helper).
+ *   3. Grade over the scoped sets. compareInstances / computePlayerAccuracyByScope
+ *      re-canonicalise, but hit canonicaliseTeams' idempotency guard (inputs are
+ *      Home/Away-only) and pass through unchanged — so the stored both/home/away
+ *      split matches the live Overlap view, not just the headline figure.
+ *
+ * Pure given (xml, tolerance, fileName). Returns null ONLY when ungradeable
+ * (the source is unparsable or the master parses empty). Grading is client-side
+ * (DOMParser), so in the real save flow this is effectively unreachable; a null
+ * result is handled by each caller as an explicit "not graded yet" marker
+ * (null columns) that the backfill later reconciles — never a silent fall back
+ * to a Range-dependent, unknown-scope value.
  */
-function computeStoredPlayerAccuracy(
+function gradeOverlapScoped(
     xmlMaster: string | null | undefined,
     xmlAnalyst: string | null | undefined,
     tolerance: number | null | undefined,
     fileNameMaster: string | null | undefined
-): StoredPlayerAccuracy | null {
-    if (!xmlMaster || !xmlAnalyst) return null;
-    try {
-        // Either side may be a JSON feed (not XML) now, so resolve via the
-        // format-aware helper rather than parseInstances directly.
-        const master = instancesFromRaw(xmlMaster);
-        const analyst = instancesFromRaw(xmlAnalyst);
-        if (master.length === 0) return null;
-        return computePlayerAccuracyByScope(
-            master,
-            analyst,
-            tolerance ?? 3,
-            fileNameMaster ?? null
-        );
-    } catch (err) {
-        console.error("Failed precomputing player_accuracy:", err);
-        return null;
-    }
+): { result: ComparisonResult; playerAccuracy: StoredPlayerAccuracy } | null {
+    const masterRaw = instancesFromRaw(xmlMaster);
+    const analystRaw = instancesFromRaw(xmlAnalyst);
+    if (masterRaw.length === 0) return null;
+    const tol = tolerance ?? 3;
+    const name = fileNameMaster ?? null;
+
+    // 1. Canonicalise the FULL sets, exactly like the page's `canonical`.
+    const canon = canonicaliseTeams(masterRaw, analystRaw, tol, name);
+
+    // 2. Scope the ALREADY-canonical sets by mid.
+    const scoped = scopeToOverlap(canon.master, canon.analyst);
+
+    // 3. Grade over the scoped sets. Both calls re-canonicalise, hit the
+    //    idempotency guard (inputs are Home/Away-only), and pass through — so
+    //    the labels are the full-set labels, matching the live view.
+    const result = compareInstances(scoped.master, scoped.analyst, tol, name);
+    const playerAccuracy = computePlayerAccuracyByScope(
+        scoped.master,
+        scoped.analyst,
+        tol,
+        name
+    );
+    return { result, playerAccuracy };
 }
 
 /**
@@ -158,7 +183,27 @@ function computeStoredPlayerAccuracy(
 export async function saveAccuracyCheck(
     input: SaveAccuracyCheckInput
 ): Promise<AccuracyCheck> {
-    const s = input.result.summary;
+    // Grade OVERLAP-SCOPED from the raw source, NOT from input.result (which
+    // reflects whatever Range the compare page happened to show). This is the
+    // single derivation shared by update/propagate/backfill, so the stored
+    // number always matches the live Overlap view.
+    const graded = gradeOverlapScoped(
+        input.xmlMaster,
+        input.xmlAnalyst,
+        input.tolerance,
+        input.fileNameMaster
+    );
+    if (!graded) {
+        // Ungradeable (unparsable / empty master). Do NOT fall back to the
+        // Range-dependent input.result — that would store an unknown-scope row
+        // and break the "always overlap" invariant. Store null accuracy columns
+        // (an explicit "not graded yet" marker, same shape backfill fills) and
+        // keep the raw XML so the next backfill reconciles it in the browser.
+        console.warn(
+            "saveAccuracyCheck: source ungradeable; saving row without accuracy (reconciled by backfill)."
+        );
+    }
+    const s = graded?.result.summary;
 
     const row = {
         analyst_name: input.analystName.trim(),
@@ -168,33 +213,28 @@ export async function saveAccuracyCheck(
         file_name_analyst: input.fileNameAnalyst ?? null,
         tolerance: input.tolerance ?? null,
 
-        accuracy: s.accuracy,
-        master_total: s.masterTotal,
-        analyst_total: s.analystTotal,
-        exact: s.exact,
-        wrong_stat: s.wrongStat,
-        wrong_player: s.wrongPlayer,
-        wrong_team: s.wrongTeam,
-        missed: s.missed,
-        extra: s.extra,
-        avg_time_drift: s.avgTimeDrift,
+        accuracy: s?.accuracy ?? null,
+        master_total: s?.masterTotal ?? null,
+        analyst_total: s?.analystTotal ?? null,
+        exact: s?.exact ?? null,
+        wrong_stat: s?.wrongStat ?? null,
+        wrong_player: s?.wrongPlayer ?? null,
+        wrong_team: s?.wrongTeam ?? null,
+        missed: s?.missed ?? null,
+        extra: s?.extra ?? null,
+        avg_time_drift: s?.avgTimeDrift ?? null,
 
-        category_breakdown: input.result.byCategory ?? null,
-        team_breakdown: input.result.byTeam ?? null,
+        category_breakdown: graded?.result.byCategory ?? null,
+        team_breakdown: graded?.result.byTeam ?? null,
 
         xml_master: input.xmlMaster ?? null,
         xml_analyst: input.xmlAnalyst ?? null,
         video_url: input.videoUrl?.trim() || null,
         sport: input.sport ?? null,
 
-        // Precompute Player Accuracy (all scopes) so the fixture table reads a
-        // small stored field instead of re-parsing this check's XML.
-        player_accuracy: computeStoredPlayerAccuracy(
-            input.xmlMaster,
-            input.xmlAnalyst,
-            input.tolerance,
-            input.fileNameMaster
-        ),
+        // Overlap-scoped Player Accuracy (all scopes) from the same grade, so
+        // the fixture table reads a small stored field instead of re-parsing.
+        player_accuracy: graded?.playerAccuracy ?? null,
     };
 
     const { data, error } = await supabase
@@ -244,34 +284,66 @@ export interface UpdateAccuracyCheckInput {
 export async function updateAccuracyCheck(
     input: UpdateAccuracyCheckInput
 ): Promise<AccuracyCheck> {
-    const s = input.result.summary;
+    // Grade OVERLAP-SCOPED from the (edited) master vs the analyst, NOT from
+    // input.result. The sole caller (handleUpdateCheck on the compare page)
+    // always passes xmlAnalyst/fileNameMaster/tolerance, so this normally
+    // produces a real overlap-scoped grade.
+    let graded = gradeOverlapScoped(
+        input.xmlMaster,
+        input.xmlAnalyst,
+        input.tolerance,
+        input.fileNameMaster
+    );
+    // Defensive: if a FUTURE caller omits xmlAnalyst entirely (partial update),
+    // recover the analyst side from the stored row so we never blank a
+    // previously-good row. (A null — but provided — analyst XML is a genuine
+    // ungradeable row and is NOT recovered here.)
+    if (!graded && input.xmlAnalyst === undefined) {
+        const { data: cur } = await supabase
+            .from("accuracy_checks")
+            .select("xml_analyst, file_name_master, tolerance")
+            .eq("id", input.id)
+            .single();
+        if (cur) {
+            const c = cur as {
+                xml_analyst: string | null;
+                file_name_master: string | null;
+                tolerance: number | null;
+            };
+            graded = gradeOverlapScoped(
+                input.xmlMaster,
+                c.xml_analyst,
+                input.tolerance ?? c.tolerance,
+                input.fileNameMaster ?? c.file_name_master
+            );
+        }
+    }
+    if (!graded) {
+        console.warn(
+            "updateAccuracyCheck: source ungradeable; writing null accuracy (reconciled by backfill)."
+        );
+    }
+    const s = graded?.result.summary;
 
     const row: Record<string, unknown> = {
-        accuracy: s.accuracy,
-        master_total: s.masterTotal,
-        analyst_total: s.analystTotal,
-        exact: s.exact,
-        wrong_stat: s.wrongStat,
-        wrong_player: s.wrongPlayer,
-        wrong_team: s.wrongTeam,
-        missed: s.missed,
-        extra: s.extra,
-        avg_time_drift: s.avgTimeDrift,
+        accuracy: s?.accuracy ?? null,
+        master_total: s?.masterTotal ?? null,
+        analyst_total: s?.analystTotal ?? null,
+        exact: s?.exact ?? null,
+        wrong_stat: s?.wrongStat ?? null,
+        wrong_player: s?.wrongPlayer ?? null,
+        wrong_team: s?.wrongTeam ?? null,
+        missed: s?.missed ?? null,
+        extra: s?.extra ?? null,
+        avg_time_drift: s?.avgTimeDrift ?? null,
 
-        category_breakdown: input.result.byCategory ?? null,
-        team_breakdown: input.result.byTeam ?? null,
+        category_breakdown: graded?.result.byCategory ?? null,
+        team_breakdown: graded?.result.byTeam ?? null,
 
         xml_master: input.xmlMaster,
 
-        // Recompute stored player accuracy from the (possibly edited) master
-        // vs the analyst XML (prefer the passed analyst XML, else master-only
-        // won't compute — the compare page always passes both).
-        player_accuracy: computeStoredPlayerAccuracy(
-            input.xmlMaster,
-            input.xmlAnalyst,
-            input.tolerance,
-            input.fileNameMaster
-        ),
+        // Overlap-scoped Player Accuracy from the same grade.
+        player_accuracy: graded?.playerAccuracy ?? null,
     };
 
     // Only overwrite these when explicitly provided.
@@ -342,7 +414,6 @@ export async function propagateMasterCorrection(
         throw new Error(error.message || "Failed loading checks for master");
     }
 
-    const master = instancesFromRaw(xmlMaster);
     const analysts = new Set<string>();
     let updated = 0;
 
@@ -353,43 +424,41 @@ export async function propagateMasterCorrection(
         xml_analyst: string | null;
         file_name_master: string | null;
     }[]) {
-        const analystInstances = instancesFromRaw(row.xml_analyst);
-        const tol = row.tolerance ?? 3;
-        // Recompute against this check's own analyst, using the corrected
-        // master. (compareInstances canonicalises teams internally.)
-        const result = compareInstances(
-            master,
-            analystInstances,
-            tol,
+        // Re-grade this check against the corrected master, OVERLAP-SCOPED the
+        // same deterministic way as save/update/backfill — so a later master
+        // correction can never silently rewrite siblings back to full-game scope.
+        const graded = gradeOverlapScoped(
+            xmlMaster,
+            row.xml_analyst,
+            row.tolerance,
             fileNameMaster
         );
-        const s = result.summary;
-
-        // Precompute Player Accuracy (all scopes) from the corrected master.
-        const playerAccuracy = computePlayerAccuracyByScope(
-            master,
-            analystInstances,
-            tol,
-            fileNameMaster
-        );
+        if (!graded) {
+            // Ungradeable row: write null accuracy columns (reconciled by
+            // backfill) and continue rather than aborting the whole propagation.
+            console.warn(
+                `propagateMasterCorrection: check ${row.id} ungradeable; writing null accuracy.`
+            );
+        }
+        const s = graded?.result.summary;
 
         const { error: upErr } = await supabase
             .from("accuracy_checks")
             .update({
-                accuracy: s.accuracy,
-                master_total: s.masterTotal,
-                analyst_total: s.analystTotal,
-                exact: s.exact,
-                wrong_stat: s.wrongStat,
-                wrong_player: s.wrongPlayer,
-                wrong_team: s.wrongTeam,
-                missed: s.missed,
-                extra: s.extra,
-                avg_time_drift: s.avgTimeDrift,
-                category_breakdown: result.byCategory ?? null,
-                team_breakdown: result.byTeam ?? null,
+                accuracy: s?.accuracy ?? null,
+                master_total: s?.masterTotal ?? null,
+                analyst_total: s?.analystTotal ?? null,
+                exact: s?.exact ?? null,
+                wrong_stat: s?.wrongStat ?? null,
+                wrong_player: s?.wrongPlayer ?? null,
+                wrong_team: s?.wrongTeam ?? null,
+                missed: s?.missed ?? null,
+                extra: s?.extra ?? null,
+                avg_time_drift: s?.avgTimeDrift ?? null,
+                category_breakdown: graded?.result.byCategory ?? null,
+                team_breakdown: graded?.result.byTeam ?? null,
                 xml_master: xmlMaster,
-                player_accuracy: playerAccuracy,
+                player_accuracy: graded?.playerAccuracy ?? null,
             })
             .eq("id", row.id);
 
@@ -1230,30 +1299,53 @@ export async function backfillPlayerAccuracy(
             .eq("id", row.id)
             .single();
 
-        if (!xmlErr && xmlRow) {
-            const pa = computeStoredPlayerAccuracy(
-                (xmlRow as AccuracyCheckXml).xml_master,
-                (xmlRow as AccuracyCheckXml).xml_analyst,
-                row.tolerance,
-                row.file_name_master
-            );
-            if (pa) {
-                const { error: upErr } = await supabase
-                    .from("accuracy_checks")
-                    .update({ player_accuracy: pa })
-                    .eq("id", row.id);
-                if (!upErr) {
-                    updated += 1;
-                } else {
-                    skipped += 1;
-                    console.error(`Backfill update failed ${row.id}:`, upErr);
-                }
-            } else {
-                skipped += 1;
-            }
-        } else {
+        // PRESERVED fetch guard: a per-row fetch error is skipped, never fatal.
+        if (xmlErr || !xmlRow) {
             skipped += 1;
             if (xmlErr) console.error(`Backfill XML fetch failed ${row.id}:`, xmlErr);
+            onProgress?.({ done: i + 1, total: rows.length });
+            continue;
+        }
+
+        // Re-grade OVERLAP-SCOPED (deterministic, idempotent) and write the
+        // FULL column set so a backfilled row is never half-converted (overlap
+        // player_accuracy alongside stale full-game accuracy/exact/master_total).
+        const graded = gradeOverlapScoped(
+            (xmlRow as AccuracyCheckXml).xml_master,
+            (xmlRow as AccuracyCheckXml).xml_analyst,
+            row.tolerance,
+            row.file_name_master
+        );
+        if (!graded) {
+            skipped += 1; // null grade -> leave row untouched, never partial-write
+            onProgress?.({ done: i + 1, total: rows.length });
+            continue;
+        }
+
+        const s = graded.result.summary;
+        const { error: upErr } = await supabase
+            .from("accuracy_checks")
+            .update({
+                accuracy: s.accuracy,
+                master_total: s.masterTotal,
+                analyst_total: s.analystTotal,
+                exact: s.exact,
+                wrong_stat: s.wrongStat,
+                wrong_player: s.wrongPlayer,
+                wrong_team: s.wrongTeam,
+                missed: s.missed,
+                extra: s.extra,
+                avg_time_drift: s.avgTimeDrift,
+                category_breakdown: graded.result.byCategory ?? null,
+                team_breakdown: graded.result.byTeam ?? null,
+                player_accuracy: graded.playerAccuracy,
+            })
+            .eq("id", row.id);
+        if (!upErr) {
+            updated += 1;
+        } else {
+            skipped += 1;
+            console.error(`Backfill update failed ${row.id}:`, upErr);
         }
 
         onProgress?.({ done: i + 1, total: rows.length });

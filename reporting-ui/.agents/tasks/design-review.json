@@ -3,22 +3,25 @@
   "findings": [
     {
       "severity": "NIT",
-      "location": "Design: The permission predicate (canFlagRow, ~line 960)",
-      "problem": "canFlagRow's empty-slot branch repeats `loadedCheckId != null`, which canFlag already encodes. This is correct (the empty-slot arm needs its own check-loaded guard) but could be mistaken for redundancy and 'simplified' away.",
-      "fix": "Keep the `loadedCheckId != null` conjunct in the empty-slot branch: `canFlag || (!!user && loadedCheckId != null && isEmptySlotStatus(status))`. Do not remove it."
+      "title": "Caller name wrong in design prose",
+      "where": "design.md path 1b and v3 resolution log",
+      "problem": "Design calls the sole caller of updateAccuracyCheck 'handleUpdate'; the actual function in app/accuracy-compare/page.tsx is 'handleUpdateCheck'. The call-graph conclusion (one caller, passes xmlAnalyst/fileNameMaster/tolerance) is correct; only the name is wrong.",
+      "fix": "Replace 'handleUpdate' with 'handleUpdateCheck' in the two places it appears."
     },
     {
       "severity": "NIT",
-      "location": "Design: Wiring point 3 — hint text (~line 3464)",
-      "problem": "The broadened hint shows 'right-click a missed/extra instance to flag it' to any logged-in non-allocated viewer even when the loaded check has no missed/extra rows.",
-      "fix": "Optional: gate the phrase on `videoRows.some(r => r.status === 'missed' || r.status === 'extra')`. Permission logic is unaffected either way."
+      "title": "Update fallback trigger condition vs. what the real caller passes",
+      "where": "design.md path 1b updateAccuracyCheck fallback",
+      "problem": "Fallback fires on 'input.xmlAnalyst === undefined', but the verified sole caller passes 'analyst?.raw ?? null' (null, never undefined) when no analyst is loaded, so a null analyst would skip the stored-row fallback and go straight to the null-grade marker. This is the correct behaviour (handleUpdateCheck guards on !gradedAnalyst), but the prose describes the fallback as covering a 'partial update omitting xmlAnalyst', which a null (not undefined) value would not trigger.",
+      "fix": "Keep '=== undefined' and add one sentence that a null analyst XML is treated as a genuine ungradeable row (null-grade marker), not a partial update; or widen to 'input.xmlAnalyst == null' if any missing analyst should recover from the stored row. The clarifying sentence is preferred since current behaviour is already correct."
     },
     {
       "severity": "NIT",
-      "location": "Design: Wiring point 2 — openFlagMenu internal guard (~line 1320)",
-      "problem": "Confirmation only: the admin-resolve path on an already-flagged fully-populated row relies on allowResolve staying true while allowFlag (canFlagRow) is false.",
-      "fix": "No change. Verified the new guard keeps `allowResolve = canResolveDispute && isFlagged` so admins keep resolve access on full rows."
+      "title": "computePlayerAccuracyByScope home/away split happens inside the helper after idempotency pass-through",
+      "where": "design.md 'Overlap-scoped stored player_accuracy AND summary' section",
+      "problem": "computePlayerAccuracyByScope canonicalises once over the sets it is handed, then filters home/away internally on the already-canonical instances. The design asserts label parity at the 'both' level but does not explicitly state that the home/away sub-scope filtering runs inside the helper on the idempotency-preserved full-set labels. Correct as designed, just implicit.",
+      "fix": "Add one line noting computePlayerAccuracyByScope does its own home/away split internally on the preserved labels, so stored home/away match the live view's home/away and not merely both."
     }
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\reporting-ui\\.agents\\tasks\\design-review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\overlap-scope\\reporting-ui\\.agents\\tasks\\design-review.md"
 }

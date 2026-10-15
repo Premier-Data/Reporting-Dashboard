@@ -1,84 +1,84 @@
-# Mobile pull-to-refresh (hard reload) via touch gesture on the app `<main>`
+# Overlap-scoped saved accuracy % with shared window helper
 
-Adds a touch-only pull-to-refresh gesture to the authenticated app shell. A `usePullToRefresh` hook binds touch listeners to the existing `<main className="flex-1 overflow-auto">` scroll container through a ref, drives a small overlay indicator, and triggers `window.location.reload()` once when the user drags past a resisted threshold from the very top. The pull math (resistance, clamp, threshold, progress) is extracted into a pure `computePull` function with unit tests; the DOM/touch plumbing and the presentational indicator stay thin around it. The gesture is inert on non-touch devices and SSR, so desktop is visually unchanged.
+Every stored accuracy figure on a saved check (`accuracy`, `exact`, `master_total`, the breakdowns, and the whole `player_accuracy` JSON that feeds analyst profiles and leaderboards) is now derived OVERLAP-SCOPED through a single shared pure function, so the saved number matches what the compare page shows in Overlap mode regardless of which Range was on screen at save time. A new `lib/comparison/overlap-window.ts` holds the one definition of the overlap window; all three recompute paths in `lib/api/accuracyChecks.ts` (save/update, `propagateMasterCorrection`, `backfillPlayerAccuracy`/`recomputeAllPlayerAccuracy`) and the compare page's live `analystWindow` route through it. The approach canonicalises the FULL master/analyst sets first (same arguments the live view uses, including the master file name), then filters by the overlap window, so the stored Home/Away split provably matches the live labels, not just the headline. The catch/catches "same stat" requirement needed no code change in this diff — the rule already lives in `baseAction`/the synonym map on `main` and is inherited unchanged.
 
-Watch for: nothing blocking. The hook correctly registers `touchmove` non-passive and only calls `preventDefault` while actively pulling at `scrollTop === 0` (confirmed). The one deliberate deviation from a literal reading of the plan is that content does not translate with the finger — only the indicator moves — which the plan called out as an intentional safety choice to avoid touching page layout (confirmed, acceptable). The actual on-device gesture could not be exercised here; the verification relies on a reasoned state-machine walkthrough plus pure-math tests, which is the correct ceiling for a touch gesture in this environment (confirmed).
+Watch for: (confirmed) `computeStoredPlayerAccuracy` was fully removed rather than kept as the "thin wrapper" the plan described — this is cleaner, not a defect, since it had no external callers. (possible) The compare page's `analystWindow` null-guard tightened from "at least one file has instances" to "both file objects present"; this only changes a manual-range placeholder in a single-file-loaded state where no comparison is possible, so it is cosmetic and does not touch live-view grading.
 
 **Verdict**: APPROVED
 
 ## High-level view
 
-The gesture is a hook, not a wrapper. `usePullToRefresh(mainRef)` attaches listeners to the pre-existing `<main>` element rather than nesting a new scroll container, so `<main>` keeps its class and remains the single app-wide scroll container. This is the lowest-risk way to satisfy the "main must remain the scroll container" constraint.
+The window math is now one pure module. `deriveOverlapWindow` returns `[min,max]` of the `.mid` values of whichever side has fewer instances, with master pushed first and a strict `<` tie-break so a tie keeps master — reproducing the compare page's prior inline `reduce` exactly. The live page's `analystWindow` and the API's `gradeOverlapScoped` both call it, so there is a single definition of "overlap" and the saved number is provably the same window the Overlap view shows.
 
-Gating is handled on three axes and all three hold: touch-only (bound only when `'ontouchstart' in window || maxTouchPoints > 0`, no mouse handlers anywhere), top-only (arms only at `scrollTop === 0`), and direction (engages only on a downward move that is more vertical than horizontal). Until all engage conditions are met the handler returns without `preventDefault`, so normal scrolling and horizontal/upward gestures are never intercepted.
+The label-correctness argument hinges on ordering: canonicalise the FULL sets (with the master file name) first, THEN scope by `.mid`. Scoping first and canonicalising the subset could resolve Home/Away from window-local team frequencies and flip the split — the earlier (v1) bug this revision fixes. Because the scoped inputs are already Home/Away-only, the downstream `compareInstances` and `computePlayerAccuracyByScope` re-canonicalisations hit `canonicaliseTeams`' idempotency guard and pass through unchanged, so the stored both/home/away split equals the live labels. That guard and the empty-team early-return both exist in the (unchanged) `xml-compare.ts`.
 
-Hooks are declared unconditionally at the top of `AppShell` and consumed only in the authenticated return. The `isPublic`, loading, and no-access early returns render no indicator and attach no ref, so the gesture never wires into the login or guard branches. This respects the Rules of Hooks while keeping the feature scoped to the authenticated shell.
+All four write paths call the same `gradeOverlapScoped(xmlMaster, xmlAnalyst, tolerance, fileNameMaster)` and persist an identical column set, so summary and `player_accuracy` can no longer disagree and the three recompute paths are mutually consistent, deterministic, and idempotent. A null grade (unparsable/empty master) is handled uniformly: write null accuracy columns plus a `console.warn`, never a fall-back to the range-dependent `input.result`, so the "always overlap" invariant can't be silently broken; the row is reconciled by a later backfill.
 
-The reload is a one-shot. A `triggered` ref latches on threshold-crossed release and every handler early-returns on it, so `window.location.reload()` fires at most once and the spinner stays locked until the browser replaces the page. Below threshold, release springs back to idle with no reload.
-
-Known gaps: the live touch gesture was not exercised (no emulator/Playwright here), and content does not follow the finger (indicator-only animation, a deliberate scope choice). Neither is blocking.
+The compare page's live Range selector (`rangeMode`, `effectiveRange`, `inRange`, `canonical`, every live grading memo) is untouched — the only edit repoints the auto-window memo at the shared helper. Core matching in `xml-compare.ts` is not altered; the diff reuses `compareInstances`/`canonicaliseTeams` on filtered inputs only. The pure test suite encodes the synthetic-window and label-parity assertions.
 
 <details>
-<summary>Issues (1)</summary>
+<summary>Issues (2)</summary>
 
-1. **Reduced-motion read is not reactive** (non-blocking) — `prefersReducedMotion()` is sampled only when the effect runs (`[scrollRef]`), so toggling the OS setting mid-session isn't reflected until remount. Optional: subscribe to the media query if live updates matter; otherwise leave as-is.
-
-Informational, not actionable: the on-device gesture was validated by reasoning rather than execution (no emulator available), and indicator-only animation is a deliberate deviation from "translate content down" documented in the plan.
+1. **Plan/impl drift on `computeStoredPlayerAccuracy`** — the plan said reimplement it as a thin wrapper; the implementation removed it entirely. Non-blocking: there were no external callers (it was a module-local function), removal is cleaner, and the verification doc records the decision. No action required.
+2. **`analystWindow` single-file null behavior** — the memo now returns null when either `master` or `analyst` is absent, whereas the old code derived a window from whichever single side had instances. Only affects the manual-range input placeholder when exactly one file is loaded (a state with no gradeable comparison). Cosmetic; leave as is unless the placeholder hint matters.
 
 </details>
 
 <details>
 <summary>Details</summary>
 
-### Gesture lives on the existing `<main>`, which stays the scroll container
+### One pure window, shared by the live view and all stored paths
 
-`AppShell` declares `const mainRef = useRef<HTMLElement>(null)` and `const pull = usePullToRefresh(mainRef)` at the top with the other hooks, then attaches `ref={mainRef}` to the unchanged `<main className="flex-1 overflow-auto">{children}</main>`. The class is untouched and `{children}` still renders directly inside, so `<main>` remains the one scroll container — the hook adds listeners, not DOM nesting. The only structural edit is adding `relative` to the enclosing `<div className="flex min-w-0 flex-1 flex-col overflow-hidden">` so the absolutely-positioned indicator anchors to the main column rather than the viewport. That `relative` is confined to the authenticated branch and does not alter overflow or scroll behavior.
+`deriveOverlapWindow` pushes `master` as the first candidate and reduces with strict `b.arr.length < a.arr.length`, so a length tie keeps master — identical to the page's old `[master, analyst].reduce((a,b)=> b.instances.length < a.instances.length ? b : a)`. `inOverlap` is inclusive on both ends, matching the old `inRange`. The window reads only `.mid`/`.length` and never `.team`, so applying it before or after `canonicaliseTeams` selects the identical rows. The parity test reproduces the page's prior inline math as an oracle and asserts equality for several fixtures, which is the concrete "saved == what I see in Overlap mode" proof for window selection and bounds.
 
-The indicator is rendered as a sibling before `<main>` inside the main column, `absolute inset-x-0 top-0` with `pointer-events-none`, so it overlays without participating in layout or intercepting touches destined for the scroll area.
+The compare page edit is the whole of the live-view change: the `analystWindow` memo now calls `deriveOverlapWindow(master.instances, analyst.instances)` and returns `{start, end}`. The dropped `source` field was dead (only `.start`/`.end` are read, in `effectiveRange` and the manual-range placeholders). `effectiveRange` still honours full/manual/auto exactly as before.
 
-### Touch-only, inert on non-touch and SSR
+### Canonicalise-full-then-scope keeps the stored labels equal to the live labels
 
-Listeners bind inside a `useEffect` only when `scrollRef.current` exists and `isTouchDevice()` returns true (`'ontouchstart' in window || navigator.maxTouchPoints > 0`), and `isTouchDevice` returns false when `window` is undefined. There are no mouse/pointer handlers anywhere in the hook. On desktop/SSR the effect returns early: no listeners, state stays `idle`, `offset` stays 0, and the indicator renders with `opacity: 0` and `aria-hidden`, so there is no desktop visual change.
+`gradeOverlapScoped` canonicalises the full sets with `canonicaliseTeams(masterRaw, analystRaw, tol, name)` — the same argument list the page's `canonical` memo uses, master file name included — then `scopeToOverlap`s the already-canonical sets, then grades. The downstream `compareInstances` and `computePlayerAccuracyByScope` re-canonicalise, but their inputs are already Home/Away-only, so they hit the idempotency guard (`isCanon(master) && isCanon(analyst)`) and pass through, preserving the full-set labels. Both the guard and the `mTeams.length === 0 || aTeams.length === 0` early return are present in the unchanged `xml-compare.ts`, so the two-leg label-preservation the design relies on holds. The item-7 fixture builds a case where team frequency order differs inside the window versus across the full game and asserts the full-then-scope split equals the live full-then-filter split, guarding against regressing to the v1 scope-first ordering.
 
-### Engage conditions and the non-passive `preventDefault`
+### Four paths, one derivation, consistent writes
 
-`touchmove` is registered `{ passive: false }` while `touchstart`/`touchend`/`touchcancel` stay passive — only `touchmove` needs to suppress native scroll. Before engaging, the move handler requires all of: still at top (`el.scrollTop === 0`), downward beyond a 6px slop (`deltaY > DIRECTION_SLOP`), and vertical dominance (`|deltaY| > |deltaX|`). If any fail it returns without `preventDefault`, leaving native scrolling, upward drags, and horizontal swipes intact. `preventDefault` (guarded by `e.cancelable`) is called only after engagement and only while still at the top; if the container has scrolled since engaging, it resets and bails without preventing default so scroll resumes. This matches the requirement that `preventDefault` fire only while actively pulling at `scrollTop === 0`.
+```
+                      gradeOverlapScoped(xmlMaster, xmlAnalyst, tol, name)
+                                      |
+         canonicaliseTeams(FULL) -> scopeToOverlap -> deriveOverlapWindow
+                                      |
+             compareInstances + computePlayerAccuracyByScope (scoped)
+                                      |
+      summary + category/team breakdown + player_accuracy  (one column set)
+         ^save        ^update        ^propagate(per row)      ^backfill(per row)
+```
 
-Arming is also top-gated at `touchstart`: if `el.scrollTop > 0` it clears the pulling flag and records nothing, so a pull can only ever begin from the very top.
+Save grades from the raw source rather than `input.result.summary`, so the stored value no longer reflects the on-screen Range. Update calls the same helper and, only when a future caller omits `xmlAnalyst` entirely (`=== undefined`) AND the grade is null, re-fetches the stored `xml_analyst`/`file_name_master`/`tolerance` to avoid blanking a previously-good row; the sole current caller (`handleUpdateCheck`) always passes the analyst XML, so this branch is defensive. All conditional `if (input.X !== undefined) row.Y = ...` metadata writes are preserved verbatim, as is `xml_master: input.xmlMaster`. Propagate grades each sibling against the corrected master through the same helper and persists `xml_master: xmlMaster`, so a master correction can no longer silently rewrite siblings back to full-game scope. Backfill grades each row from stored XML and writes the full column set in one update, so a row is either fully overlap-scoped or untouched — never a mix of overlap `player_accuracy` with stale full-game summary. Because the function is pure in `(xml, tolerance, fileName)`, re-running backfill yields identical values (idempotent), and `recomputeAllPlayerAccuracy` is just `backfill(force=true)`.
 
-### Threshold, resistance, and the pure math
+### Failure modes: fail to null, never fail to full-game
 
-`computePull(rawDeltaY, 70, 110)` returns a reset result for non-positive drags, otherwise `offset = min(rawDeltaY * 0.5, maxOffset)`, `crossed = offset >= threshold`, and `progress = min(offset / threshold, 1)`. Resistance (0.5) is a module constant inside the math file and is asserted by a test, so the feel can't silently drift. The tests cover upward drag, zero drag, below-threshold resistance (100→50, not crossed), the pinned RESISTANCE value, exact threshold crossing (140→70, crossed, progress 1), past-threshold (200→100), and the max-offset clamp (1000→110) — meaningful boundary cases, not placeholder assertions. The hook consumes the result to set `offset`/`progress` and records `crossed` for the release decision.
+A null grade is reachable only when the source is unparsable or the master parses empty. Every path treats null the same way: write null accuracy columns, `console.warn`, and (for the bulk paths) skip-and-continue — none falls back to the range-dependent `input.result`, which is what preserves the "always overlap" invariant. Backfill keeps the preserved per-row fetch guard first (`if (xmlErr || !xmlRow) { skipped; continue }`), so a per-row fetch error is counted and skipped rather than aborting the whole run; the three skip branches (fetch error, null grade, update error) all increment `skipped`, call `onProgress`, and continue, and only the Supabase update error path retains the existing contract. Propagate likewise warns-and-continues on a null row while still throwing on a Supabase update error.
 
-### One-shot reload and spring-back
+### Scope discipline and the removed helper
 
-On release while engaged: if `crossed`, the hook sets `triggered = true`, enters `refreshing`, locks the indicator to the threshold position, and calls `window.location.reload()`. Every handler early-returns when `triggered` is set, so even a stray late event can't fire a second reload — the gesture triggers the reload exactly once, and the spinner remains until navigation replaces the page. If not crossed, `reset()` returns to idle and animates the offset back to 0 with no reload. A release that never engaged (a tap or aborted pull) also just resets.
+Core matching is untouched: `xml-compare.ts` and `player-accuracy.ts` show no diff against `main`, and the API layer reuses `compareInstances`/`canonicaliseTeams`/`computePlayerAccuracyByScope` on filtered inputs only. The now-unused `const master = instancesFromRaw(xmlMaster)` in propagate was removed, keeping `instancesFromRaw` otherwise referenced. `computeStoredPlayerAccuracy` was removed entirely (zero remaining references in the worktree) rather than kept as the plan's "thin wrapper"; since it was never exported this is a clean simplification, and the verification doc records it.
 
-### Reduced motion and the indicator
+### catch/catches already in the base
 
-`prefersReducedMotion()` is read once per effect run; when set, `animated` is false, which drops the 200ms transform/opacity transition on the indicator (snap instead of ease) while preserving the gesture behavior and the arrow/spinner visuals. During an active drag `animated` is also forced false so the indicator tracks the finger instantly rather than lagging through the easing. The indicator flips the arrow 180° at `progress >= 1` and swaps to a spinning `Loader2` while refreshing, both from `lucide-react` (already a dependency). It sets `role="status"` when visible and `aria-hidden` at rest.
-
-One minor note, non-blocking: `prefersReducedMotion()` is evaluated only when the effect runs (deps `[scrollRef]`), so a user toggling the OS reduced-motion setting mid-session wouldn't be reflected until remount. This is a cosmetic edge (easing on a transient spring-back) and well within acceptable bounds for this feature.
-
-### Scope and the Next.js repo rule
-
-`git diff main --name-only` confirms the only tracked modification is `components/auth/AppShell.tsx`; the new `components/pwa/` and `lib/pwa/` files are untracked additions. No changes to `app/layout.tsx`, `globals.css`, `Sidebar`, `TopBar`, `ChatWidget`, routing, auth, or data fetching. No npm dependency was added (`lucide-react` was already present). All three new client files and the edited shell carry `'use client'` at the top before imports. The plan and verification note record that the authors read `node_modules/next/dist/docs/.../use-client.md` and reasoned through the Next 16 breaking changes, concluding (correctly) that none touch a pure client-side DOM/touch feature calling `window.location.reload()`. The AGENTS.md rule was honored.
+The diff makes no change to `xml-compare.ts`. `git show main:...xml-compare.ts` confirms `.replace(/\bcatches\b/g, "catch")` in `baseAction` and the `catch`/`catches`/`claims`/`saves` cross-synonym map are already on `main`, so the overlap-scoped stored path inherits the "treat catch and catches as the same exact stat" behaviour through `compareInstances` → `sameBaseAction` with no API-layer change. `cross-exact.test.ts` (unchanged) already asserts master `Catch` vs analyst `Catches` and the reverse score exact, alongside no-regression cases (short vs long passes stay non-exact), so there is no risk of this normalisation merging unrelated stats.
 
 ### Verification evidence
 
-The coder's note records `tsc --noEmit` exit 0, `vitest --run` 18/18 passing (including the 7 new math cases), and `next build` exit 0 with 35/35 static pages. The evidence is internally consistent and complete; per the task I did not re-run the suites. The one build warning (multiple-lockfile workspace-root inference) is pre-existing and unrelated. The on-device touch gesture was validated by state-machine reasoning rather than execution, which is the correct ceiling given no touch emulator is available here — not grounds for rejection.
+`tsc --noEmit` is clean (exit 0) over the whole project per the verification doc. The vitest "No test suite found" symptom is the documented worktree artifact: the worktree's `node_modules` is a junction pointing outside the Turbopack root, which breaks both vitest discovery (all eight test files report it, including known-good pre-existing ones) and the Turbopack build in the worktree. The coder reproduced a clean `npm run build` and 7/7 passing `overlap-window.test.ts` by copying the files into the main tree (real `node_modules`) and then restored it, leaving no residual change. Given tsc is clean and the artifact signature is as documented, that symptom is not a real failure, so no spot-check run was warranted.
 
 </details>
 
 <details>
-<summary>Files changed</summary>
+<summary>File map</summary>
 
-- `components/auth/AppShell.tsx` — declares the ref/hook unconditionally, attaches `ref` to the unchanged `<main>`, adds `relative` to the main column, renders the indicator as a sibling. Authenticated branch only.
-- `components/pwa/usePullToRefresh.ts` (new) — touch-only gesture state machine; binds non-passive `touchmove`; one-shot reload; inert on non-touch/SSR.
-- `components/pwa/PullToRefreshIndicator.tsx` (new) — presentational overlay, arrow→spinner, reduced-motion aware, no layout impact.
-- `lib/pwa/pull-to-refresh-math.ts` (new) — pure `computePull` (resistance/clamp/threshold/progress).
-- `lib/pwa/pull-to-refresh-math.test.ts` (new) — 7 boundary-case unit tests.
+- `lib/comparison/overlap-window.ts` (new) — pure shared window helper: `deriveOverlapWindow`, `inOverlap`, `scopeToOverlap`; no DOM/Supabase.
+- `lib/comparison/overlap-window.test.ts` (new) — 7 pure-logic tests: window selection/tie-break, inclusive bounds, empty-side, page-parity oracle, synthetic `[1200,1800]` grading effect, full-then-scope label parity.
+- `lib/api/accuracyChecks.ts` — adds `gradeOverlapScoped`; reroutes save/update/propagate/backfill through it; removes `computeStoredPlayerAccuracy` and the unused propagate master parse.
+- `app/accuracy-compare/page.tsx` — `analystWindow` memo repointed at `deriveOverlapWindow`; `source` field dropped; no other live-view change.
+- `lib/comparison/xml-compare.ts`, `player-accuracy.ts`, `cross-exact.test.ts` — unchanged vs `main` (catch/catches already present on base).
 
-Full diff: `git diff main` from the worktree root. New files are untracked; read them directly.
+Full diff: `git diff main` in `c:\Users\AndyDin\reporting-dashboard\.worktrees\overlap-scope` (plus the two untracked new files under `reporting-ui/lib/comparison/`).
 
 </details>
