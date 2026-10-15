@@ -1,187 +1,178 @@
-# Design review: Merge / move checks between saved masters
+# Design review — client-side meta/list caching (Supabase egress)
 
-Reviewed fresh against the actual sources in the worktree
-(`c:\Users\AndyDin\reporting-dashboard\.worktrees\merge-masters\reporting-ui`).
-Every claim the design makes about existing code was checked against the real
-files, not taken on the design's word.
+Reviewed: `.agents/tasks/design.md` (the revision that answers the prior
+review in its §7).
+Reviewer stance: fresh read, no prior context assumed. The dominant correctness
+risk is CACHE STALENESS — a mutation that writes `accuracy_checks` or
+`accuracy_disputes` but has no matching invalidation would silently serve stale
+data. I re-derived the invalidation matrix directly from source rather than
+trusting the design.
 
-Verdict: **CHANGES_REQUESTED** (1 MEDIUM, 0 HIGH; plus NITs).
+## Verdict
 
----
+APPROVED — zero HIGH, zero MEDIUM findings. Three NITs below do not block.
 
-## Verified assumptions (checked against source)
+The invalidation matrix is **complete and correct against source**. Every write
+site in both files is enumerated and wired to the caches it can make stale,
+including the subtle cross-table coupling (`accuracy_checks.deleted_at` filters
+`getAllDisputes` / `getOpenDisputeCounts`). The placement rule (invalidate after
+a committed write and before any later step that can throw, using `finally`
+where needed) correctly closes the committed-write-then-throw hole for
+`mergeMasters`, `propagateMasterCorrection`, and `backfillPlayerAccuracy`.
 
-1. **`gradeOverlapScoped` is overlap-scoped and module-private.** Confirmed in
-   `lib/api/accuracyChecks.ts`: it is `function gradeOverlapScoped(...)` with NO
-   `export`, canonicalises the full sets, calls `scopeToOverlap(canon.master,
-   canon.analyst)`, then grades the scoped sets. `scopeToOverlap`
-   (`lib/comparison/overlap-window.ts`) derives the window via
-   `deriveOverlapWindow`. So the design's core claim — the propagate/merge
-   re-grade is overlap-scoped and there is no full-game recompute path — is
-   TRUE, and co-locating `mergeMasters` in the same module to reuse the private
-   grader is correct.
+## Independent write-site enumeration (the staleness check)
 
-2. **`propagateMasterCorrection` throws on the first per-row update error.**
-   Confirmed: `if (upErr) { console.error(...); throw new Error(...) }`. The
-   design's justification for inlining a resilient loop (rather than delegating)
-   is accurate.
+I grepped `\.(insert|update|delete)\(` in both files and classified every hit.
 
-3. **`propagateMasterCorrection`'s column write object.** The 14-column update
-   object quoted in the design's Step 4 is byte-for-byte identical to the real
-   one in `propagateMasterCorrection` (`accuracy … player_accuracy`,
-   `xml_master` set to the master XML). Verified.
+### `accuracy_checks` — 12 write sites, all covered
 
-4. **`resolveActiveGroupIds` targets the normalized active group by id.**
-   Confirmed: `.ilike` loose prefilter + JS `sameMasterName` narrowing,
-   `deleted_at IS NULL`, returns ids. The design's "never a bare `.eq`" and
-   "soft-deleted source rows are left behind" claims hold.
+| Line | Function | Write | Caches design clears | Correct? |
+|---|---|---|---|---|
+| 242 | `saveAccuracyCheck` | INSERT active row | M | ✅ new active row; not deleted; no disputes |
+| 369 | `updateAccuracyCheck` | UPDATE one row | M | ✅ meta/analyst change only |
+| 447 | `propagateMasterCorrection` | UPDATE many (loop THROWS per row) | M (via `finally`) | ✅ mid-loop throw still clears |
+| 654 | `renameMaster` | UPDATE `file_name_master` | M | ✅ meta column |
+| 690 | `deleteMaster` | soft-delete one row | M, D, GD, OC | ✅ cross-table (hides its disputes) |
+| 794 | `mergeMasters` Step 3 | UPDATE source ids name+XML | M (right after guard) | ✅ before Step-4 throw |
+| 852 | `mergeMasters` Step 4 | UPDATE re-grade (resilient) | M (covered by Step-3 clear) | ✅ one clear suffices |
+| 1152 | `fixStaleMasterTotals` | UPDATE `master_total` | M | ✅ leaderboard column |
+| 1517 | `backfillPlayerAccuracy` | UPDATE many (resilient) | M (unconditional return) | ✅ not gated on `updated` |
+| 1570 | `deleteAccuracyCheck` | soft-delete | M, D, GD, OC | ✅ cross-table |
+| 1589 | `restoreAccuracyCheck` | restore | M, D, GD, OC | ✅ cross-table |
+| 1605 | `purgeAccuracyCheck` | hard DELETE (CASCADE) | M, D, GD, OC | ✅ CASCADE drops disputes |
 
-5. **`renameMaster` forbids the collision `mergeMasters` must allow.** Confirmed:
-   it throws `A master named "…" already exists.` when an active row OUTSIDE the
-   group matches the target name, and updates by `.in("id", groupIds)`. The
-   design's "reuse mechanics, bypass the guard, do NOT call renameMaster"
-   framing is correct.
+`recomputeAllPlayerAccuracy` is a thin wrapper over `backfillPlayerAccuracy`
+(confirmed at source) so wiring inside backfill covers it — no separate site.
 
-6. **`normalizeMasterName` is trim-only (no case-fold); `sameMasterName` is
-   `trim().toLowerCase()`.** Confirmed in BOTH `master-manage-logic.ts` and the
-   inlined copies in `accuracyChecks.ts`. This is the lynchpin of the design's
-   Step-4 fix (use `resolveActiveGroupIds(destName)`, not a bare `.eq`), and the
-   reasoning is sound: a bare `.eq(destName)` would miss case/whitespace variant
-   dest rows.
+### `accuracy_disputes` — 5 write sites, all covered
 
-7. **`getSavedMasters` / `getSavedMasterXml` shapes.** Confirmed: `SavedMaster =
-   { checkId, fileName, videoUrl }`, de-duped by normalized name, most-recent
-   (`created_at desc`) wins, only non-null `xml_master` rows listed.
-   `getSavedMasterXml(checkId)` returns the row's `xml_master` or `null` on
-   error/missing. Design's Step 2 guard semantics are accurate.
+| Line | Function | Write | Caches cleared | Correct? |
+|---|---|---|---|---|
+| 108 | `createDispute` (update/restore branch) | UPDATE patch | GD, OC | ✅ reason/category/restore |
+| 122 | `createDispute` (insert branch) | INSERT open | GD, OC | ✅ new open dispute |
+| 249 | `resolveDispute` | UPDATE status | GD, OC | ✅ leaves open set |
+| 271 | `deleteDispute` | soft-delete | GD, OC | ✅ both filter deleted_at |
+| 287 | `restoreDispute` | restore | GD, OC | ✅ re-enters GD/OC |
 
-8. **Dialog patterns.** Confirmed `RowState`, `freshRow`, `patchRow`, the mount
-   effect that fills `count` via `countActiveGroupSiblings`, and
-   `handleReplaceFile`'s message-composition template
-   (`` `Replaced. Re-graded ${res.updated}…${res.analysts.join(", ")}` ``). The
-   `onChanged` prop union is exactly `rename | delete | replace`; the page
-   consumer branches on `change.type` and always calls `refreshSavedMasters()`.
-   The design's wiring plan (add a `merge` arm mirroring `delete`) is mechanical
-   and consistent.
+The `createDispute` empty-patch early return performs no write and correctly
+gets no invalidation. The three-branch split is spelled out in the matrix and in
+completeness item 5.
 
-9. **Admin gating.** Confirmed: dialog takes `isAdmin`, derives
-   `masterAffordance(count, isAdmin)`, and `aff.canManage === isAdmin`. The
-   feature being gated behind `aff.canManage` matches the existing controls.
+### Reads correctly left uncached / uninvalidated
 
-10. **`master-manage-logic.ts` currently has no `validMergeDestinations` /
-    `canMergeInto`.** Confirmed — they are new, as the design states, and the
-    helpers they compose (`sameMasterName`, `isValidMasterName`) exist and
-    behave as described.
-
-## Unverified / wrong assumptions
-
-None. Every existing-code claim in the design was verifiable and correct. The
-design is unusually well grounded in the actual sources.
-
----
+`getDisputesForCheck`, `getAccuracyCheckById`, `getSavedMasterXml`,
+`getSavedMasters`, `getMasterCheckSiblings`, `countActiveGroupSiblings`,
+`resolveActiveGroupIds`, `diagnoseMasterConsistency`, `getAccuracyChecksXml`,
+`getAllAccuracyChecks` — all read-only or single-row / XML-blob fetches, out of
+the task's list. Confirmed none performs a write.
 
 ## Findings
 
-### 1. [MEDIUM] Confirm copy understates the blast radius — the whole destination group is re-graded and re-tagged, not just "the moved checks"
+### 1. NIT — `getDisputesForCheck` staleness is not surfaced to the two cached dispute views
+**Where:** Background ("`getDisputesForCheck` … NOT cached") and §2.
+**Problem:** This is correctly NOT cached, so no staleness bug exists. But note
+for the implementer: the `accuracy-checks` page calls `getDisputesForCheck` for
+the expanded panel AND `getOpenDisputeCounts` (OC, cached) for badges. After a
+mutation these two can momentarily disagree on screen because only OC is cached.
+This is behavior-preserving (OC's invalidation already fires on every dispute
+write) and not a correctness regression; just worth a one-line note so a future
+reader does not mistake the panel/badge timing for a cache bug.
+**Fix (doc-only):** add a sentence to the `getDisputesForCheck` skip rationale:
+"its per-check panel is always a fresh fetch, so panel and (cached) badge counts
+reconcile on the next OC invalidation — no extra wiring needed."
 
-**Where:** §4 "Interaction flow" step 3 (confirm copy), both the `count == null`
-and numeric variants.
+### 2. NIT — `mergeMasters` "one clear suffices" depends on no read between Step 3 and return
+**Where:** §2 Wiring mechanics, `mergeMasters` bullet.
+**Problem:** The claim that clearing M once after Step 3 covers the Step-4
+re-grades is correct ONLY because nothing reads M between Step 3 and the
+function returning. That is true today (Step 4 is a tight server loop with no
+`getAccuracyChecksMeta` call), but the reasoning is load-bearing and currently
+only implied.
+**Fix (doc-only):** state the invariant explicitly: "No `get…Meta()` runs
+between Step 3 and return, so a single post-Step-3 clear is sufficient; if a
+future edit adds a meta read inside Step 4, re-clear after the loop."
 
-**Problem.** The confirm text tells the admin: *"This re-grades the moved checks
-against `<dest>`."* But the normative Step 4 (and its side-effect note) re-grade
-the ENTIRE destination group and overwrite `xml_master` on every destination row
-with `destXml` — including the destination's pre-existing checks. The design
-explicitly and intentionally does this ("single source of truth" consolidation),
-and even notes that if a destination row previously held a *different*
-`xml_master` (e.g. a prior partial replace) it is silently overwritten and
-re-graded. For a destructive, bulk, admin-gated operation, the confirm dialog is
-the one place the operator consents to the blast radius — and it currently
-describes a strictly smaller operation than what runs. In the common
-identical-duplicate case this is invisible, but the design itself admits the
-non-identical case exists, and that is exactly the case where an operator would
-want to know their existing destination scores are about to be recomputed.
+### 3. NIT — `fixStaleMasterTotals` placement wording vs. its actual control flow
+**Where:** §2 Wiring mechanics, single-write bullet (parenthetical on
+`fixStaleMasterTotals`).
+**Problem:** The function loops over ids and `continue`s on per-row error (never
+throws out of the loop), so "place the invalidate immediately AFTER that write's
+`if (error) throw` guard" does not literally apply — there is no throwing guard;
+each row's update error is swallowed with `continue`. The design's parenthetical
+does acknowledge "a single clear after the loop is fine," which is the correct
+instruction, but the lead-in rule and the exception read as mildly contradictory.
+**Fix (doc-only):** move `fixStaleMasterTotals` out of the "single-write,
+clear-after-throw-guard" bullet and group it with the resilient-loop shapes:
+"clear M once on the normal return, unconditionally — like `backfillPlayerAccuracy`."
 
-**Concrete fix.** Make the confirm copy state the real scope. For the numeric
-variant:
+## Verified assumptions (checked against source)
 
-> **Move all checks for `<source>` into `<dest>`**
-> Move N check(s) for "`<source>`" into "`<dest>`". "`<source>`" will be
-> removed, and **all checks under "`<dest>`" will be re-graded against the
-> "`<dest>`" master**. This can't be undone from here.
+1. **Write-site enumeration is exhaustive.** Grepped both files; all 12
+   `accuracy_checks` and 5 `accuracy_disputes` write sites map onto a matrix
+   row. No un-enumerated write exists.
+2. **Cross-table coupling is real and fully wired.** `getAllDisputes` and
+   `getOpenDisputeCounts` both use `accuracy_checks!inner(deleted_at)` +
+   `.is("accuracy_checks.deleted_at", null)`, so a check's soft-delete / restore
+   / purge changes their result without writing a dispute row. The four check
+   mutations that change deleted-ness (`deleteMaster`, `deleteAccuracyCheck`,
+   `restoreAccuracyCheck`, `purgeAccuracyCheck`) are exactly the four the design
+   clears GD+OC on. Correct and complete.
+3. **`purgeAccuracyCheck` CASCADE.** Hard `.delete()` on `accuracy_checks`; the
+   design relies on ON DELETE CASCADE removing child disputes, matching the
+   `purgeAccuracyCheck` doc comment in source. GD/OC clear is required and present.
+4. **`createDispute` has exactly three branches** (restore/patch UPDATE, INSERT,
+   empty-patch no-write return) — matches the matrix's three rows precisely.
+5. **`recomputeAllPlayerAccuracy` is a wrapper** over `backfillPlayerAccuracy`
+   (`return backfillPlayerAccuracy(onProgress, true)`), so one clear inside
+   backfill covers both — verified.
+6. **`propagateMasterCorrection` THROWS mid-loop** (`if (upErr) throw`), so the
+   `finally`-based clear is genuinely required to avoid a committed-rows-then-throw
+   stale cache. `mergeMasters` Step 4 is resilient (`continue`), confirming the
+   asymmetric handling the design describes.
+7. **Per-analyst fetch keying is moot but correctly specified for the future.**
+   `getAccuracyChecksForAnalyst` uses `.ilike("analyst_name", analystName.trim())`;
+   the proposed future key `name.trim().toLowerCase()` matches that folding. The
+   fetch has ZERO callers (grep: only its own definition and doc mentions), so
+   dropping it from scope is correct and removes needless invalidation wiring.
+8. **Single-row / XML / blob fetches are NOT cached.** `getAccuracyCheckById`,
+   `getSavedMasterXml`, `getAccuracyChecksXml`, `getSavedMasters` confirmed out
+   of scope in source and design.
+9. **Failed fetch does not poison.** The `createCache`/inline pattern assigns
+   `cache = fetch().catch(e => { cache = null; throw e; })`, resetting to `null`
+   and rethrowing — matches `clubConfig`/`fixtureMap`. Keyed variant does
+   `map.delete(key)`. Correct no-poison behavior.
+10. **Pull-to-refresh / hard reload re-fetches.** `components/pwa/usePullToRefresh.ts`
+    calls `window.location.reload()` on trigger, tearing down module state so all
+    caches re-init to null/empty. The cache can never block a deliberate refresh.
+    Verified in source.
+11. **Exported signatures unchanged.** The pattern wraps existing bodies as inner
+    `fetch…` and keeps the public function returning the cached promise; the four
+    cached getters keep their exact return types. New exports are only the
+    `invalidate…` functions. No caller signature changes.
+12. **Shared-array-reference invariant holds for current callers.** Grepped
+    `app/accuracy-checks/page.tsx` and `app/disputes/page.tsx`: every `.sort()`
+    runs on a copy (`[...checks].sort`, `[...scoped].sort`, `[...rows].sort`) or
+    a freshly built array (`result`, `Array.from(...)`, mapped arrays). No
+    in-place sort/splice on a cached fetch result. The documented "copy before
+    mutating" rule for future callers is adequate.
+13. **Vitest + co-located test convention exists.** `package.json` has
+    `"test": "vitest --run"` and `vitest@^3.2.7`; `lib/comparison/overlap-window.test.ts`
+    confirms the co-located `*.test.ts` convention the new `cache.test.ts` follows.
+14. **No import cycle.** `disputes.ts` imports only `@/lib/supabase`; the new
+    `accuracyChecks → disputes` invalidation import is one-directional. Confirmed.
 
-(and the analogous `count == null` variant). This also makes the success copy's
-two distinct numbers — `moved` (N) vs `regraded` (whole group) — intelligible,
-since the confirm now primes the admin that more rows re-grade than move.
+## Unverified / wrong assumptions
 
----
-
-### 2. [NIT] `canMergeInto` is specified against the typed source name, but §4 passes `mergeDest` which can be `null`
-
-**Where:** §3 `canMergeInto(sourceFileName: string, destFileName: string)` vs §4
-step 3 "`disabled unless canMergeInto(m.fileName, mergeDest)`", where
-`RowState.mergeDest` is typed `string | null`.
-
-**Problem.** `canMergeInto` takes `destFileName: string`, but the UI holds
-`mergeDest: string | null`. Passing a `null` into a `string` param either fails
-typecheck or, if coerced, `isValidMasterName(null as any)` throws on
-`.trim()`. The design never says how the Move button behaves while
-`mergeDest === null` (before a destination is picked) beyond "disabled unless
-canMergeInto".
-
-**Concrete fix.** Specify the button guard explicitly:
-`disabled={row.busy || !row.mergeDest || !canMergeInto(m.fileName, row.mergeDest)}`,
-so `canMergeInto` is only ever called with a non-null string. No signature
-change needed.
-
----
-
-### 3. [NIT] Success copy claims "Source removed." unconditionally, but a per-row failure path can leave the source emptied yet report a partial re-grade
-
-**Where:** §4 step 3 success copy:
-`` `Moved ${res.moved} … re-graded ${res.regraded} … Source removed.` ``
-
-**Problem.** `mergeMasters` moves the source rows in Step 3 (so the source IS
-emptied) and then collects per-row re-grade failures in Step 4 without throwing.
-If some destination-group rows fail to re-grade, `res.regraded < group size`,
-yet the copy still says "Source removed." with no hint that some rows did not
-re-grade. The source genuinely is removed, so "Source removed" is not wrong, but
-the operator gets no signal that a subset silently failed and awaits a
-backfill/retry.
-
-**Concrete fix.** When `res.regraded` is less than the destination group size,
-append a note, e.g. append `" Some checks could not be re-graded and will
-reconcile on the next backfill."` The design would need `mergeMasters` to also
-return the attempted-group total (or a `failed` count) so the UI can detect the
-shortfall — a small addition to `MergeMastersResult`
-(`failed: number` or `attempted: number`). Minimal and keeps the operator
-honestly informed.
-
----
-
-## Focus-question coverage
-
-- **Overlap-scoped re-grade reuses the same path, no full-game recompute:**
-  CONFIRMED by source (finding set, Verified #1). ✔
-- **Mutation ordering race-conscious (name + XML in one update, then re-grade):**
-  Step 3 sets `file_name_master` AND `xml_master` in a single `.update`, Step 4
-  re-grades. The forbidden "dest name but source XML" window cannot occur. ✔
-- **Targets by ACTIVE id-list via `resolveActiveGroupIds`, allows the collision
-  renameMaster forbids:** Steps 1, 2, 4 all use `resolveActiveGroupIds`; §2
-  states no collision guard, deliberately. ✔
-- **source===destination / empty source / missing destination XML guarded:**
-  Step 0 self-merge throw, Step 1 empty-source no-op, Step 2 null-XML +
-  empty-dest throws, all pre-write. ✔
-- **Same-analyst checks preserved (not deduped):** §2 and Edge Cases confirm
-  move-by-id, no `analyst_name` inspection. ✔
-- **Admin-gated, explicit confirm, idempotent, resilient:** gating via
-  `aff.canManage`; confirm step present (but see Finding 1 on its wording);
-  idempotent empty-source re-run; Step 4 collects/skips per-row failures. ✔
-- **Scope respected (no schema change, no engine/overlap/disputes edits):** §5
-  no schema change; only `accuracyChecks.ts`, `master-manage-logic.ts`
-  (+ test), `ManageMastersDialog.tsx`, and the additive `page.tsx` `onChanged`
-  arm (called out, mechanical). No comparison-engine or overlap-window edits. ✔
-
-The design is sound and faithfully grounded in the real code. The one blocking
-item is a user-facing honesty gap in the confirm dialog for a destructive bulk
-operation (Finding 1); the two NITs tighten the UI contract and the failure
-reporting.
+1. **Cross-tab staleness is accepted by design, not eliminated.** §3 Q2 decides
+   NO TTL and documents that another admin's already-open tab keeps stale caches
+   until it reloads or mutates — identical to the shipping `clubConfig`/`fixtureMap`
+   caches. This is an explicit, justified decision matching the existing pattern,
+   not a gap. Flagged here only so the acceptance owner is aware it is a conscious
+   trade-off (the Realtime `subscribeToAccuracyCheck` path is named as the future
+   fix if sub-reload cross-tab freshness is ever required).
+2. **"Mutation-then-refetch always shows fresh data" assumes the UI refetches
+   after awaiting the mutation.** §4 relies on consumers calling the list fetch
+   AFTER the mutation resolves. The two live pages do follow this (e.g.
+   `resolveDispute` then `getOpenDisputeCounts`), so the assumption holds today;
+   it is a convention future callers must keep, not a property the cache enforces.
+   Not a current defect.

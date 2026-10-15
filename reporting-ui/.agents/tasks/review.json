@@ -1,5 +1,16 @@
 {
   "verdict": "APPROVED",
-  "findings": [],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\egress-opt\\reporting-ui\\.agents\\tasks/review-doc.md"
+  "findings": [
+    {
+      "severity": "non-blocking",
+      "label": "Shared cached array on admin path",
+      "detail": "On a cache hit, the admin branch of both pages assigns the shared cached array instance to component state (setAllChecks(data) / setChecks(c)) rather than a fresh fetch result. Safe today because consumers only filter/map, but a future in-place sort/mutation would corrupt the cache for the next reader. Suggest a 'treat as read-only' comment on the fetch helpers."
+    },
+    {
+      "severity": "informational",
+      "label": "createKeyedCache is dead-but-tested",
+      "detail": "The keyed cache (normalized-key, invalidate-clears-all) is implemented with 5 passing unit tests but wired to no production fetch; getAccuracyChecksForAnalyst and getAllAccuracyChecks are themselves callerless dead code. Not a defect; the keyed path ships unused."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\meta-cache\\reporting-ui/.agents/tasks/2026-10-15-154808-review.md"
 }

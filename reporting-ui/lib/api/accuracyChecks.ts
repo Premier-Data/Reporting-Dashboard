@@ -19,6 +19,27 @@ import {
     computePlayerAccuracyByScope,
     type StoredPlayerAccuracy,
 } from "@/lib/comparison/player-accuracy";
+import { createCache } from "@/lib/api/cache";
+// Cross-table invalidation (one-directional: accuracyChecks → disputes, no
+// cycle — disputes.ts imports only @/lib/supabase and @/lib/api/cache). The
+// two dispute list fetches are filtered by the parent check's deleted_at, so a
+// check's soft-delete / restore / master-delete / purge changes which disputes
+// they return and must clear these.
+import {
+    invalidateAllDisputesCache,
+    invalidateOpenDisputeCountsCache,
+} from "@/lib/api/disputes";
+
+// ── Module-level caches for the two meta/list fetches ───────────────────────
+//
+// getAccuracyChecksMeta (active) and getDeletedAccuracyChecksMeta (soft-deleted)
+// back revisited views that otherwise re-page the whole table on every mount.
+// Cache the Promise so concurrent callers share one request; every check
+// mutation invalidates the caches it can make stale (see the invalidation
+// matrix in .agents/tasks/invalidation-matrix.md). The fetch bodies are the
+// hoisted `fetch*` function declarations below.
+const metaCached = createCache(fetchAccuracyChecksMeta);
+const deletedMetaCached = createCache(fetchDeletedAccuracyChecksMeta);
 
 /**
  * Turn a stored raw source string into instances, regardless of whether it's
@@ -248,6 +269,9 @@ export async function saveAccuracyCheck(
         throw new Error(error.message || "Failed saving accuracy check");
     }
 
+    // New active check appears in the meta list.
+    invalidateAccuracyChecksMetaCache();
+
     return data as AccuracyCheck;
 }
 
@@ -376,6 +400,9 @@ export async function updateAccuracyCheck(
         throw new Error(error.message || "Failed updating accuracy check");
     }
 
+    // Summary/analyst/label of an active row changed → meta list is stale.
+    invalidateAccuracyChecksMetaCache();
+
     return data as AccuracyCheck;
 }
 
@@ -417,57 +444,66 @@ export async function propagateMasterCorrection(
     const analysts = new Set<string>();
     let updated = 0;
 
-    for (const row of (data ?? []) as {
-        id: number;
-        analyst_name: string;
-        tolerance: number | null;
-        xml_analyst: string | null;
-        file_name_master: string | null;
-    }[]) {
-        // Re-grade this check against the corrected master, OVERLAP-SCOPED the
-        // same deterministic way as save/update/backfill — so a later master
-        // correction can never silently rewrite siblings back to full-game scope.
-        const graded = gradeOverlapScoped(
-            xmlMaster,
-            row.xml_analyst,
-            row.tolerance,
-            fileNameMaster
-        );
-        if (!graded) {
-            // Ungradeable row: write null accuracy columns (reconciled by
-            // backfill) and continue rather than aborting the whole propagation.
-            console.warn(
-                `propagateMasterCorrection: check ${row.id} ungradeable; writing null accuracy.`
+    // The per-row loop THROWS on any upErr, so it can commit several rows and
+    // then throw mid-way. Clear M in a `finally` so a mid-loop throw after
+    // committing rows still clears the (now-stale) meta cache.
+    try {
+        for (const row of (data ?? []) as {
+            id: number;
+            analyst_name: string;
+            tolerance: number | null;
+            xml_analyst: string | null;
+            file_name_master: string | null;
+        }[]) {
+            // Re-grade this check against the corrected master, OVERLAP-SCOPED the
+            // same deterministic way as save/update/backfill — so a later master
+            // correction can never silently rewrite siblings back to full-game scope.
+            const graded = gradeOverlapScoped(
+                xmlMaster,
+                row.xml_analyst,
+                row.tolerance,
+                fileNameMaster
             );
-        }
-        const s = graded?.result.summary;
+            if (!graded) {
+                // Ungradeable row: write null accuracy columns (reconciled by
+                // backfill) and continue rather than aborting the whole propagation.
+                console.warn(
+                    `propagateMasterCorrection: check ${row.id} ungradeable; writing null accuracy.`
+                );
+            }
+            const s = graded?.result.summary;
 
-        const { error: upErr } = await supabase
-            .from("accuracy_checks")
-            .update({
-                accuracy: s?.accuracy ?? null,
-                master_total: s?.masterTotal ?? null,
-                analyst_total: s?.analystTotal ?? null,
-                exact: s?.exact ?? null,
-                wrong_stat: s?.wrongStat ?? null,
-                wrong_player: s?.wrongPlayer ?? null,
-                wrong_team: s?.wrongTeam ?? null,
-                missed: s?.missed ?? null,
-                extra: s?.extra ?? null,
-                avg_time_drift: s?.avgTimeDrift ?? null,
-                category_breakdown: graded?.result.byCategory ?? null,
-                team_breakdown: graded?.result.byTeam ?? null,
-                xml_master: xmlMaster,
-                player_accuracy: graded?.playerAccuracy ?? null,
-            })
-            .eq("id", row.id);
+            const { error: upErr } = await supabase
+                .from("accuracy_checks")
+                .update({
+                    accuracy: s?.accuracy ?? null,
+                    master_total: s?.masterTotal ?? null,
+                    analyst_total: s?.analystTotal ?? null,
+                    exact: s?.exact ?? null,
+                    wrong_stat: s?.wrongStat ?? null,
+                    wrong_player: s?.wrongPlayer ?? null,
+                    wrong_team: s?.wrongTeam ?? null,
+                    missed: s?.missed ?? null,
+                    extra: s?.extra ?? null,
+                    avg_time_drift: s?.avgTimeDrift ?? null,
+                    category_breakdown: graded?.result.byCategory ?? null,
+                    team_breakdown: graded?.result.byTeam ?? null,
+                    xml_master: xmlMaster,
+                    player_accuracy: graded?.playerAccuracy ?? null,
+                })
+                .eq("id", row.id);
 
-        if (upErr) {
-            console.error(`Failed updating check ${row.id}:`, upErr);
-            throw new Error(upErr.message || "Failed propagating master");
+            if (upErr) {
+                console.error(`Failed updating check ${row.id}:`, upErr);
+                throw new Error(upErr.message || "Failed propagating master");
+            }
+            updated += 1;
+            if (row.analyst_name) analysts.add(row.analyst_name);
         }
-        updated += 1;
-        if (row.analyst_name) analysts.add(row.analyst_name);
+    } finally {
+        // Mass summary change across the group → meta list is stale on every
+        // path that committed any row (including a mid-loop throw).
+        invalidateAccuracyChecksMetaCache();
     }
 
     return { updated, analysts: Array.from(analysts) };
@@ -658,6 +694,8 @@ export async function renameMaster(
         console.error("Failed renaming master:", error);
         throw new Error(error.message || "Failed to rename master.");
     }
+    // file_name_master is a meta column shown in lists → meta list is stale.
+    invalidateAccuracyChecksMetaCache();
     return { updated: updatedRows?.length ?? 0 };
 }
 
@@ -696,6 +734,12 @@ export async function deleteMaster(
         console.error("Failed deleting master:", error);
         throw new Error(error.message || "Failed to delete master.");
     }
+    // Row leaves active (M) and enters deleted (D); its disputes drop out of
+    // GD/OC (both inner-join accuracy_checks.deleted_at IS NULL — cross-table).
+    invalidateAccuracyChecksMetaCache();
+    invalidateDeletedAccuracyChecksMetaCache();
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
     return { deleted: 1 };
 }
 
@@ -798,6 +842,11 @@ export async function mergeMasters(
         console.error("mergeMasters: failed re-tagging source rows:", error);
         throw new Error(error.message || "Failed to move checks.");
     }
+    // The source rows are now committed under the destination name/XML. Clear M
+    // HERE (not at function end) so a Step-4 loadErr throw can never leave the
+    // meta list stale; nothing reads M between here and return, so one clear
+    // covers the moved rows AND the subsequent Step-4 re-grades.
+    invalidateAccuracyChecksMetaCache();
     const moved = movedRows?.length ?? 0;
 
     // Step 4 — re-grade the WHOLE destination group, overlap-scoped, resilient.
@@ -1157,6 +1206,11 @@ export async function fixStaleMasterTotals(
         }
         fixed += 1;
     }
+    // master_total is a meta/leaderboard column. The loop never throws out
+    // (per-row errors are `continue`d), so clear M once on the normal return,
+    // unconditionally — any committed update makes M stale and a zero-fix run
+    // clearing it merely forces a harmless re-fetch.
+    invalidateAccuracyChecksMetaCache();
     return { fixed };
 }
 
@@ -1362,7 +1416,16 @@ const ACCURACY_CHECK_META_COLUMNS =
  * Much lighter over the wire; use when the caller only needs the summary
  * fields (accuracy, breakdowns, sport, labels) and never re-parses XML.
  */
-export async function getAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
+export function getAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
+    return metaCached.get();
+}
+
+/** Reset the cached active-checks meta list so the next read re-fetches. */
+export function invalidateAccuracyChecksMetaCache(): void {
+    metaCached.invalidate();
+}
+
+async function fetchAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
     const rows: AccuracyCheckMeta[] = [];
     const pageSize = 1000;
     let from = 0;
@@ -1540,6 +1603,11 @@ export async function backfillPlayerAccuracy(
         onProgress?.({ done: i + 1, total: rows.length });
     }
 
+    // The loop always returns normally (per-row errors are counted, never
+    // thrown). Clear M on this unconditional return — NOT gated on `updated` —
+    // so any committed row update is reflected and a zero-update run clearing M
+    // is harmless. recomputeAllPlayerAccuracy inherits this (thin wrapper).
+    invalidateAccuracyChecksMetaCache();
     return { updated, skipped };
 }
 
@@ -1577,6 +1645,12 @@ export async function deleteAccuracyCheck(
         console.error("Failed deleting accuracy check:", error);
         throw new Error(error.message || "Failed deleting accuracy check");
     }
+    // Row leaves active (M), enters deleted (D), and its disputes drop out of
+    // GD/OC (cross-table inner-join on accuracy_checks.deleted_at).
+    invalidateAccuracyChecksMetaCache();
+    invalidateDeletedAccuracyChecksMetaCache();
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /**
@@ -1593,6 +1667,12 @@ export async function restoreAccuracyCheck(id: number): Promise<void> {
         console.error("Failed restoring accuracy check:", error);
         throw new Error(error.message || "Failed restoring accuracy check");
     }
+    // Row re-enters active (M), leaves deleted (D); its disputes re-appear in
+    // GD/OC (cross-table inner-join on accuracy_checks.deleted_at).
+    invalidateAccuracyChecksMetaCache();
+    invalidateDeletedAccuracyChecksMetaCache();
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /**
@@ -1609,15 +1689,28 @@ export async function purgeAccuracyCheck(id: number): Promise<void> {
         console.error("Failed purging accuracy check:", error);
         throw new Error(error.message || "Failed purging accuracy check");
     }
+    // Row removed from the deleted view (D); CASCADE removes its dispute rows
+    // (GD/OC). Clearing M too is harmless and keeps the rule uniform.
+    invalidateAccuracyChecksMetaCache();
+    invalidateDeletedAccuracyChecksMetaCache();
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /**
  * All soft-deleted checks (metadata only, newest-deleted first) for the
  * "Deleted checks" review view.
  */
-export async function getDeletedAccuracyChecksMeta(): Promise<
-    AccuracyCheckMeta[]
-> {
+export function getDeletedAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
+    return deletedMetaCached.get();
+}
+
+/** Reset the cached deleted-checks meta list so the next read re-fetches. */
+export function invalidateDeletedAccuracyChecksMetaCache(): void {
+    deletedMetaCached.invalidate();
+}
+
+async function fetchDeletedAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
     const { data, error } = await supabase
         .from("accuracy_checks")
         .select(ACCURACY_CHECK_META_COLUMNS)
