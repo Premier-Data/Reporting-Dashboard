@@ -1286,14 +1286,16 @@ export async function getAccuracyCheckById(
 
 /**
  * All accuracy checks where this analyst was the one being graded,
- * newest first.
+ * newest first. Blob-free: like getAccuracyChecksMeta, this projects away
+ * xml_master/xml_analyst (via ACCURACY_CHECK_META_COLUMNS) so it never pulls
+ * the heavy raw-XML columns over the wire.
  */
 export async function getAccuracyChecksForAnalyst(
     analystName: string
-): Promise<AccuracyCheck[]> {
+): Promise<AccuracyCheckMeta[]> {
     const { data, error } = await supabase
         .from("accuracy_checks")
-        .select("*")
+        .select(ACCURACY_CHECK_META_COLUMNS)
         .is("deleted_at", null)
         .ilike("analyst_name", analystName.trim())
         .order("created_at", { ascending: true });
@@ -1303,21 +1305,24 @@ export async function getAccuracyChecksForAnalyst(
         throw new Error(error.message || "Failed loading accuracy checks");
     }
 
-    return (data ?? []) as AccuracyCheck[];
+    return (data ?? []) as unknown as AccuracyCheckMeta[];
 }
 
 /**
  * Every saved accuracy check (used to build leaderboards / summaries).
+ * Blob-free: like getAccuracyChecksMeta, this projects away
+ * xml_master/xml_analyst (via ACCURACY_CHECK_META_COLUMNS) so it never pulls
+ * the heavy raw-XML columns over the wire.
  */
-export async function getAllAccuracyChecks(): Promise<AccuracyCheck[]> {
-    const rows: AccuracyCheck[] = [];
+export async function getAllAccuracyChecks(): Promise<AccuracyCheckMeta[]> {
+    const rows: AccuracyCheckMeta[] = [];
     const pageSize = 1000;
     let from = 0;
 
     while (true) {
         const { data, error } = await supabase
             .from("accuracy_checks")
-            .select("*")
+            .select(ACCURACY_CHECK_META_COLUMNS)
             .is("deleted_at", null)
             .order("created_at", { ascending: false })
             .range(from, from + pageSize - 1);
@@ -1328,7 +1333,7 @@ export async function getAllAccuracyChecks(): Promise<AccuracyCheck[]> {
         }
 
         if (!data || data.length === 0) break;
-        rows.push(...(data as AccuracyCheck[]));
+        rows.push(...(data as unknown as AccuracyCheckMeta[]));
         from += pageSize;
         if (data.length < pageSize) break;
     }
@@ -1698,7 +1703,7 @@ export function summariseByAnalyst(
 
     return Array.from(map.entries())
         .map(([analystName, list]) => {
-            // Newest first (getAllAccuracyChecks returns desc), so [0] is latest.
+            // Newest first (list fetch returns desc), so [0] is latest.
             const sorted = [...list].sort(
                 (a, b) =>
                     new Date(b.created_at).getTime() -
