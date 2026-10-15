@@ -26,6 +26,7 @@ import {
     type DisputeCategory,
 } from "@/lib/api/disputes";
 import {
+    instancesFromRaw,
     getAccuracyChecksMeta,
     getAccuracyCheckById,
     propagateMasterCorrection,
@@ -838,6 +839,10 @@ function DisputeReviewModal({
     const [masterInstances, setMasterInstances] = useState<Instance[]>([]);
     const [analystInstances, setAnalystInstances] = useState<Instance[]>([]);
     const [fileNameMaster, setFileNameMaster] = useState<string | null>(null);
+    // A JSON-sourced master is viewable but NOT editable in place: the edit /
+    // save flow serializes to SportsCode XML, which a JSON feed can't round-
+    // trip through. Mirrors the accuracy-compare gate (masterIsJson).
+    const [masterIsJson, setMasterIsJson] = useState(false);
     const tol = check?.tolerance ?? 3;
 
     // Editing state.
@@ -856,11 +861,15 @@ function DisputeReviewModal({
                 if (!c || cancelled) return;
                 setCheck(c);
                 setFileNameMaster(c.file_name_master);
-                setMasterInstances(
-                    c.xml_master ? parseInstances(c.xml_master) : []
-                );
-                setAnalystInstances(
-                    c.xml_analyst ? parseInstances(c.xml_analyst) : []
+                // Use the JSON-aware adapter (not parseInstances directly):
+                // a check's master/analyst source can be SportsCode XML OR a
+                // JSON event feed (e.g. Touch/soccer). parseInstances is XML-
+                // only and silently returns [] for JSON, which blanked the
+                // timeline and the master-edit panel for JSON-sourced checks.
+                setMasterInstances(instancesFromRaw(c.xml_master));
+                setAnalystInstances(instancesFromRaw(c.xml_analyst));
+                setMasterIsJson(
+                    !!c.xml_master && c.xml_master.trimStart().startsWith("{")
                 );
                 setDirty(false);
                 setSaveMsg(null);
@@ -1108,7 +1117,7 @@ function DisputeReviewModal({
 
                     {/* Timelines */}
                     <div className="flex min-h-0 flex-col border-t border-slate-700 lg:border-l lg:border-t-0">
-                        {canResolve && (
+                        {canResolve && !masterIsJson && (
                             <div className="flex flex-wrap items-center gap-2 border-b border-slate-700 bg-slate-800/60 px-3 py-2">
                                 <span className="text-[11px] font-semibold text-amber-300">
                                     Master editing
@@ -1138,6 +1147,16 @@ function DisputeReviewModal({
                                         {saveMsg}
                                     </span>
                                 )}
+                            </div>
+                        )}
+                        {canResolve && masterIsJson && (
+                            <div className="border-b border-slate-700 bg-slate-800/60 px-3 py-2 text-[11px] text-slate-400">
+                                <span className="font-semibold text-amber-300">
+                                    Master editing unavailable
+                                </span>{" "}
+                                — this check&apos;s master is a JSON feed, which
+                                can&apos;t be corrected in place. Resolve the
+                                dispute using the buttons below.
                             </div>
                         )}
                         <div className="grid grid-cols-[124px_1fr_1fr] border-b border-slate-700 bg-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1207,7 +1226,9 @@ function DisputeReviewModal({
                                                 onSeek={seekTo}
                                                 active={mActive}
                                                 onEdit={
-                                                    canResolve && row.master
+                                                    canResolve &&
+                                                    !masterIsJson &&
+                                                    row.master
                                                         ? () =>
                                                               openEdit(
                                                                   row.master!
