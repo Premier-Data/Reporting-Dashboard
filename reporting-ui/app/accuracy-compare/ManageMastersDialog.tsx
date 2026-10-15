@@ -11,12 +11,13 @@
 // the rest of this data layer).
 
 import { useEffect, useState } from "react";
-import { X, Pencil, Trash2, Check, Upload } from "lucide-react";
+import { X, Pencil, Trash2, Check, Upload, GitMerge } from "lucide-react";
 import {
   renameMaster,
   deleteMaster,
   countActiveGroupSiblings,
   propagateMasterCorrection,
+  mergeMasters,
   instancesFromRaw,
   type SavedMaster,
 } from "@/lib/api/accuracyChecks";
@@ -26,6 +27,8 @@ import {
   isValidMasterName,
   normalizeMasterName,
   sameMasterName,
+  validMergeDestinations,
+  canMergeInto,
 } from "./master-manage-logic";
 
 type RowState = {
@@ -37,6 +40,12 @@ type RowState = {
   message: string | null;
   /** Replace sub-UI is open for this row (count > 1 masters). */
   replacing: boolean;
+  /** The merge destination-picker sub-UI is open for this row. */
+  merging: boolean;
+  /** Selected merge destination fileName (null until picked). */
+  mergeDest: string | null;
+  /** The merge confirm step is showing. */
+  mergeConfirm: boolean;
 };
 
 const freshRow = (name: string): RowState => ({
@@ -46,6 +55,9 @@ const freshRow = (name: string): RowState => ({
   busy: false,
   message: null,
   replacing: false,
+  merging: false,
+  mergeDest: null,
+  mergeConfirm: false,
 });
 
 export default function ManageMastersDialog({
@@ -71,6 +83,7 @@ export default function ManageMastersDialog({
       | { type: "rename"; oldName: string; newName: string }
       | { type: "delete"; name: string }
       | { type: "replace"; name: string; raw: string }
+      | { type: "merge"; source: string; dest: string }
   ) => void | Promise<void>;
 }) {
   // Per-master UI state, keyed by the master's exact fileName.
@@ -238,6 +251,46 @@ export default function ManageMastersDialog({
     }
   };
 
+  const confirmMerge = async (m: SavedMaster) => {
+    const row = rows[m.fileName];
+    const destName = row?.mergeDest;
+    if (!destName || !canMergeInto(m.fileName, destName)) return;
+    const dest = masters.find((x) => sameMasterName(x.fileName, destName));
+    if (!dest) return;
+    patchRow(m.fileName, { busy: true, message: null });
+    try {
+      const res = await mergeMasters(m.fileName, dest.fileName, dest.checkId);
+      let message: string;
+      if (res.moved === 0) {
+        message = "Nothing to move — source was already empty.";
+      } else {
+        const regradedTotal = res.regraded + res.failed;
+        message =
+          `Moved ${res.moved} check${res.moved === 1 ? "" : "s"} into ` +
+          `"${dest.fileName}"; re-graded ${res.regraded}` +
+          `${res.analysts.length ? ` (${res.analysts.join(", ")})` : ""}. ` +
+          `Source removed.` +
+          (res.regraded < regradedTotal
+            ? " Some checks could not be re-graded and will reconcile on the next backfill."
+            : "");
+      }
+      patchRow(m.fileName, {
+        busy: false,
+        merging: false,
+        mergeConfirm: false,
+        mergeDest: null,
+        message,
+      });
+      await onChanged({ type: "merge", source: m.fileName, dest: dest.fileName });
+    } catch (err) {
+      patchRow(m.fileName, {
+        busy: false,
+        message:
+          err instanceof Error ? err.message : "Failed to merge masters.",
+      });
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
       <div className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-xl bg-white shadow-xl">
@@ -357,9 +410,121 @@ export default function ManageMastersDialog({
                                 Replace
                               </button>
                             ) : null)}
+                          {aff.canManage && (
+                            <button
+                              onClick={() =>
+                                patchRow(m.fileName, {
+                                  merging: !row.merging,
+                                  message: null,
+                                  mergeConfirm: false,
+                                  mergeDest: null,
+                                })
+                              }
+                              disabled={row.busy}
+                              className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-40"
+                              aria-label="Move checks into another master"
+                              title="Move checks into another master"
+                            >
+                              <GitMerge className="h-4 w-4" />
+                            </button>
+                          )}
                         </div>
                       )}
                     </div>
+
+                    {row.merging && aff.canManage && (() => {
+                      const dests = validMergeDestinations(masters, m.fileName);
+                      if (dests.length === 0) {
+                        return (
+                          <div className="mt-3 rounded-md bg-slate-50 p-3">
+                            <p className="text-xs text-slate-600">
+                              No other master to move into.
+                            </p>
+                          </div>
+                        );
+                      }
+                      return (
+                        <div className="mt-3 rounded-md bg-slate-50 p-3">
+                          <label className="block text-xs font-medium text-slate-600">
+                            Move all checks for &quot;{m.fileName}&quot; into
+                          </label>
+                          <select
+                            value={row.mergeDest ?? ""}
+                            disabled={row.busy}
+                            onChange={(e) =>
+                              patchRow(m.fileName, {
+                                mergeDest: e.target.value || null,
+                                mergeConfirm: false,
+                              })
+                            }
+                            className="mt-1.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700 focus:border-slate-500 focus:outline-none disabled:opacity-40"
+                          >
+                            <option value="">Select a destination master…</option>
+                            {dests.map((d) => (
+                              <option key={d.fileName} value={d.fileName}>
+                                {d.fileName}
+                              </option>
+                            ))}
+                          </select>
+
+                          {row.mergeConfirm && row.mergeDest ? (
+                            <div className="mt-3">
+                              <p className="text-xs font-medium text-slate-700">
+                                Move all checks for &quot;{m.fileName}&quot; into
+                                &quot;{row.mergeDest}&quot;
+                              </p>
+                              <p className="mt-1 text-xs text-slate-600">
+                                {row.count == null
+                                  ? `Move all checks for "${m.fileName}" into "${row.mergeDest}". "${m.fileName}" will be removed, and all checks under "${row.mergeDest}" will be re-graded against the "${row.mergeDest}" master. This can't be undone from here.`
+                                  : `Move ${row.count} check${
+                                      row.count === 1 ? "" : "s"
+                                    } for "${m.fileName}" into "${row.mergeDest}". "${m.fileName}" will be removed, and all checks under "${row.mergeDest}" will be re-graded against the "${row.mergeDest}" master. This can't be undone from here.`}
+                              </p>
+                              <div className="mt-2 flex items-center gap-2">
+                                <button
+                                  onClick={() => confirmMerge(m)}
+                                  disabled={
+                                    row.busy ||
+                                    !row.mergeDest ||
+                                    !canMergeInto(m.fileName, row.mergeDest)
+                                  }
+                                  className="inline-flex items-center gap-1 rounded-lg bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-40"
+                                >
+                                  <GitMerge className="h-3.5 w-3.5" />
+                                  Move
+                                </button>
+                                <button
+                                  onClick={() =>
+                                    patchRow(m.fileName, { mergeConfirm: false })
+                                  }
+                                  disabled={row.busy}
+                                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-2">
+                              <button
+                                onClick={() =>
+                                  patchRow(m.fileName, { mergeConfirm: true })
+                                }
+                                disabled={
+                                  row.busy ||
+                                  !row.mergeDest ||
+                                  !canMergeInto(m.fileName, row.mergeDest ?? "")
+                                }
+                                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                              >
+                                <GitMerge className="h-3.5 w-3.5" />
+                                Move checks…
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
 
                     {row.replacing && aff.mustReplaceToRemove && (
                       <div className="mt-3 rounded-md bg-slate-50 p-3">

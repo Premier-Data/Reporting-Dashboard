@@ -1,0 +1,20 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "severity": "info",
+      "label": "Shortfall-caveat semantics",
+      "confidence": "possible",
+      "blocking": false,
+      "detail": "Success-message shortfall caveat is driven by res.regraded < res.regraded + res.failed. Correct for this diff because the loop increments exactly one of regraded/failed per loaded row, so the sum equals the loaded group size. Noted only as an invariant to preserve; not a defect."
+    },
+    {
+      "severity": "info",
+      "label": "Non-null-XML guard limitation",
+      "confidence": "likely",
+      "blocking": false,
+      "detail": "Step 2 guards only destXml == null, not unparsable XML; an unparsable destination master would still move the source and write null-accuracy markers across the group, reconciled by backfill. This matches existing propagateMasterCorrection/backfill behavior and the design acknowledges it. Not a new gap introduced by this change."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\merge-masters\\reporting-ui\\.agents\\tasks\\merge-review.md"
+}
