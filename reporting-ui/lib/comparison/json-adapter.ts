@@ -250,6 +250,16 @@ export function jsonEventsToInstances(
       ? opts.mapCategory(ev, stat)
       : defaultMapCategory(ev.statTypeCode, stat);
 
+    // JSON analyst throw-ins are consistently coded ~6s late relative to the
+    // master, so shift this stat's time 6s EARLIER (clamped at 0) before it
+    // flows into start/mid. Scoped to the JSON adapter (analyst feed) and to
+    // throw-ins only — the stat label is already normalised (feed "ThrowIn" ->
+    // "Throw Ins"), so match the normalised "throw in" phrasing.
+    const normStat = stat.trim().toLowerCase().replace(/\s+/g, " ");
+    const isThrowIn =
+      normStat.includes("throw in") || normStat.includes("throw-in");
+    const adjustedStart = isThrowIn ? Math.max(0, start - 6) : start;
+
     const team = (ev.teamName ?? "").trim();
     // Prefer the event's own number; else join playerUid -> number from the
     // participants map (raw S3 events carry no jersey number of their own).
@@ -269,15 +279,15 @@ export function jsonEventsToInstances(
     // same way the XML side does so both align (offsets applied identically).
     // When timeSemantics is "code-time", relativeTime IS already the code time
     // (some feeds provide the true moment), so use it directly as mid.
-    const end = start;
+    const end = adjustedStart;
     const mid =
       opts.timeSemantics === "code-time"
-        ? start
-        : codeTime(stat.trim(), start, end);
+        ? adjustedStart
+        : codeTime(stat.trim(), adjustedStart, end);
 
     instances.push({
       id: String(ev.uid ?? crypto.randomUUID()),
-      start,
+      start: adjustedStart,
       end,
       mid,
       team,

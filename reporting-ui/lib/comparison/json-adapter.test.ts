@@ -115,6 +115,39 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     expect(analyst[0].mid - analyst[0].start).toBe(0);
   });
 
+  it("shifts JSON analyst Throw Ins 6s EARLIER (and nothing else)", () => {
+    // A throw-in event: its stored start/mid must drop by 6s vs its raw
+    // relativeTime. A non-throw-in event at the same time must be unaffected.
+    const throwIn: JsonEvent = {
+      uid: 9001,
+      relativeTime: 36, // 00:36
+      statTypeCode: "ThrowIn",
+      statTypeName: "Throw In",
+      teamName: "Home",
+      playerNumber: 7,
+    };
+    const corner: JsonEvent = {
+      uid: 9002,
+      relativeTime: 36,
+      statTypeCode: "Corner",
+      statTypeName: "Corner",
+      teamName: "Home",
+      playerNumber: 7,
+    };
+
+    const [ti] = jsonEventsToInstances([throwIn], {});
+    expect(ti.stat.toLowerCase()).toContain("throw in");
+    // start is shifted 6s earlier: 36 -> 30 (00:36 -> 00:30).
+    expect(ti.start).toBe(30);
+    // mid tracks the shifted start through codeTime (same offset as before,
+    // now applied to 30), so the net visible time is 6s earlier.
+    expect(ti.mid).toBe(codeTime("Throw Ins", 30, 30));
+
+    // A corner at the same raw time is NOT shifted.
+    const [co] = jsonEventsToInstances([corner], {});
+    expect(co.start).toBe(36);
+  });
+
   it("runs the full comparison and produces sane, self-consistent totals", () => {
     const master = loadMaster();
     const feed = loadFeed();
