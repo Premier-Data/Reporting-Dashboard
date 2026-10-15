@@ -71,3 +71,28 @@ export function masterAffordance(
     mustReplaceToRemove: canManage && activeGroupCount > 1,
   };
 }
+
+/**
+ * Valid merge destinations for a given source master: every saved master
+ * EXCEPT the source itself (by sameMasterName). Pure; drives the picker so the
+ * source can never be selected as its own destination.
+ */
+export function validMergeDestinations<T extends { fileName: string }>(
+  masters: T[],
+  sourceFileName: string
+): T[] {
+  return masters.filter((m) => !sameMasterName(m.fileName, sourceFileName));
+}
+
+/**
+ * Guard: a merge is allowed only when source and destination are DIFFERENT
+ * masters (normalized) and both names are valid. Mirrors the data layer's
+ * Step-0 self-merge guard so the Move button can be disabled before any call.
+ */
+export function canMergeInto(sourceFileName: string, destFileName: string): boolean {
+  return (
+    isValidMasterName(sourceFileName) &&
+    isValidMasterName(destFileName) &&
+    !sameMasterName(sourceFileName, destFileName)
+  );
+}

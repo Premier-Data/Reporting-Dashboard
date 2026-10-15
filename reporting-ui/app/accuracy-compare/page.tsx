@@ -2545,6 +2545,13 @@ function AccuracyCompareInner() {
                     setMaster((cur) =>
                       cur && cur.name === change.name ? null : cur
                     );
+                  } else if (change.type === "merge") {
+                    // The source master no longer exists; if it was in view,
+                    // drop it (mirrors the delete branch). The admin can
+                    // re-pick the destination from the dropdown.
+                    setMaster((cur) =>
+                      cur && cur.name === change.source ? null : cur
+                    );
                   }
                   await refreshSavedMasters();
                 }}

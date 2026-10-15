@@ -699,6 +699,190 @@ export async function deleteMaster(
     return { deleted: 1 };
 }
 
+export interface MergeMastersResult {
+    /** Active source rows re-tagged onto the destination. */
+    moved: number;
+    /** Active destination-group rows successfully re-graded (incl. the moved ones). */
+    regraded: number;
+    /**
+     * Destination-group rows whose per-row re-grade update FAILED and was
+     * skipped (resilient loop). `regraded + failed` is the group size the loop
+     * attempted; a non-zero `failed` means some rows will reconcile on the next
+     * backfill. The source is still genuinely removed regardless.
+     */
+    failed: number;
+    /** Distinct analyst names across the re-graded destination group. */
+    analysts: string[];
+}
+
+/**
+ * Merge a saved master (the SOURCE) into another (the DESTINATION): move every
+ * active check attached to the source onto the destination name, then re-grade
+ * the WHOLE destination group — overlap-scoped — against the destination
+ * master's XML. After this the source name has no active checks and disappears
+ * from the dropdown; all its checks live under the destination, graded against
+ * the destination master.
+ *
+ * The real use case is a master accidentally uploaded twice (two dropdown
+ * entries for the same fixture): this consolidates the duplicate under one
+ * master. Same-analyst checks are NOT deduped — if an analyst had a check under
+ * both masters, both survive under the destination.
+ *
+ * INTENTIONAL COLLISION. Unlike `renameMaster`, which THROWS when the target
+ * name already belongs to a different active master, `mergeMasters` DELIBERATELY
+ * moves the source ids onto the existing destination name — merging into an
+ * existing master is the entire point. There is NO collision guard here on
+ * purpose; do NOT "fix" this by adding renameMaster's guard.
+ *
+ * This MUST live in this module because its re-grade loop reuses the
+ * module-private `gradeOverlapScoped` grader, keeping the merge re-grade
+ * byte-identical to `propagateMasterCorrection`.
+ *
+ * Mutation sequence (ordered for the failure guarantee):
+ *   0. Normalize `destName` once; throw if source === dest (self-merge).
+ *   1. Resolve SOURCE group ids; empty → no-op return.
+ *   2. Fetch destination XML (throw on null) and confirm the destination group
+ *      is non-empty (throw on empty) — both BEFORE any write.
+ *   3. ONE update sets the source ids' file_name_master AND xml_master to the
+ *      destination's together, so a moved row never carries the destination
+ *      NAME with the source XML.
+ *   4. Reload the WHOLE destination group by normalized id-list (NOT a bare
+ *      `.eq`, which would miss case/whitespace variants) and re-grade each row
+ *      with the same column object `propagateMasterCorrection` writes, in a
+ *      RESILIENT loop that collects per-row failures instead of throwing.
+ *
+ * The bulk move + re-grade runs against the live Supabase table (no
+ * transaction/mock layer, matching renameMaster/propagateMasterCorrection); the
+ * real execution is an admin in-app action.
+ */
+export async function mergeMasters(
+    sourceFileName: string,
+    destFileName: string,
+    destCheckId: number
+): Promise<MergeMastersResult> {
+    // Step 0 — normalize + self-merge guard (pure, pre-DB).
+    const destName = normalizeMasterName(destFileName);
+    if (sameMasterName(sourceFileName, destFileName)) {
+        throw new Error("Source and destination are the same master.");
+    }
+
+    // Step 1 — resolve the SOURCE group ids. Empty → idempotent no-op (e.g. a
+    // double-click after the first merge already emptied the source).
+    const sourceIds = await resolveActiveGroupIds(sourceFileName);
+    if (sourceIds.length === 0) {
+        return { moved: 0, regraded: 0, failed: 0, analysts: [] };
+    }
+
+    // Step 2 — fetch the DESTINATION XML and confirm the destination is real,
+    // both BEFORE any write.
+    const destXml = await getSavedMasterXml(destCheckId);
+    if (destXml == null) {
+        throw new Error("Destination master has no stored XML.");
+    }
+    const destCheckIds = await resolveActiveGroupIds(destFileName);
+    if (destCheckIds.length === 0) {
+        throw new Error("Destination master has no active checks.");
+    }
+
+    // Step 3 — re-tag the source rows onto the destination. Set file_name_master
+    // AND xml_master together so there is never an intermediate state where a
+    // row carries the destination NAME but the source XML. Targeted by id-list,
+    // never a bare `.eq`; soft-deleted source rows were already excluded by
+    // resolveActiveGroupIds and stay behind under the old name.
+    const { data: movedRows, error } = await supabase
+        .from("accuracy_checks")
+        .update({ file_name_master: destName, xml_master: destXml })
+        .in("id", sourceIds)
+        .select("id");
+    if (error) {
+        console.error("mergeMasters: failed re-tagging source rows:", error);
+        throw new Error(error.message || "Failed to move checks.");
+    }
+    const moved = movedRows?.length ?? 0;
+
+    // Step 4 — re-grade the WHOLE destination group, overlap-scoped, resilient.
+    // Reload by NORMALIZED id-list (NOT a bare `.eq("file_name_master",
+    // destName)`): normalizeMasterName is trim-only, so a bare .eq would miss
+    // destination rows stored under a case/whitespace variant. The moved source
+    // rows are included because Step 3 set their file_name_master to destName.
+    const destGroupIds = await resolveActiveGroupIds(destName);
+    const { data: rows, error: loadErr } = await supabase
+        .from("accuracy_checks")
+        .select("id, analyst_name, tolerance, xml_analyst, file_name_master")
+        .in("id", destGroupIds)
+        .is("deleted_at", null);
+    if (loadErr) {
+        console.error("mergeMasters: failed loading destination group:", loadErr);
+        throw new Error(loadErr.message || "Failed loading destination checks.");
+    }
+
+    const analysts = new Set<string>();
+    let regraded = 0;
+    let failed = 0;
+
+    for (const row of (rows ?? []) as {
+        id: number;
+        analyst_name: string;
+        tolerance: number | null;
+        xml_analyst: string | null;
+        file_name_master: string | null;
+    }[]) {
+        // SAME overlap-scoped grader as save/update/propagate/backfill.
+        const graded = gradeOverlapScoped(
+            destXml,
+            row.xml_analyst,
+            row.tolerance,
+            destName
+        );
+        if (!graded) {
+            // Ungradeable row: write the null-accuracy marker and continue,
+            // exactly as propagateMasterCorrection does — reconciled by a later
+            // backfill.
+            console.warn(
+                `mergeMasters: check ${row.id} ungradeable; writing null accuracy.`
+            );
+        }
+        const s = graded?.result.summary;
+
+        // Column object copied VERBATIM from propagateMasterCorrection so the
+        // two paths cannot drift. xml_master is set to destXml (the whole group
+        // adopts the destination master's XML — single source of truth).
+        const { error: upErr } = await supabase
+            .from("accuracy_checks")
+            .update({
+                accuracy: s?.accuracy ?? null,
+                master_total: s?.masterTotal ?? null,
+                analyst_total: s?.analystTotal ?? null,
+                exact: s?.exact ?? null,
+                wrong_stat: s?.wrongStat ?? null,
+                wrong_player: s?.wrongPlayer ?? null,
+                wrong_team: s?.wrongTeam ?? null,
+                missed: s?.missed ?? null,
+                extra: s?.extra ?? null,
+                avg_time_drift: s?.avgTimeDrift ?? null,
+                category_breakdown: graded?.result.byCategory ?? null,
+                team_breakdown: graded?.result.byTeam ?? null,
+                xml_master: destXml,
+                player_accuracy: graded?.playerAccuracy ?? null,
+            })
+            .eq("id", row.id);
+
+        if (upErr) {
+            // RESILIENT: a per-row failure is logged and SKIPPED, never thrown.
+            // The row keeps the destination name + destination XML from Step 3
+            // (consistent, just with possibly-stale summary numbers) and is
+            // excluded from `regraded` so the summary reports the true total.
+            console.error(`mergeMasters: re-grade failed for check ${row.id}:`, upErr);
+            failed += 1;
+            continue;
+        }
+        regraded += 1;
+        if (row.analyst_name) analysts.add(row.analyst_name);
+    }
+
+    return { moved, regraded, failed, analysts: Array.from(analysts) };
+}
+
 // ---- Master consistency diagnostic --------------------------------
 
 // A per-stat count difference of this check's master vs the reference master.

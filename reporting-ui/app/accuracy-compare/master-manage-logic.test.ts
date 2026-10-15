@@ -5,6 +5,8 @@ import {
   normalizeMasterName,
   sameMasterName,
   masterAffordance,
+  validMergeDestinations,
+  canMergeInto,
 } from "./master-manage-logic";
 
 describe("isMasterDeletable", () => {
@@ -88,5 +90,61 @@ describe("masterAffordance", () => {
       canDelete: false,
       mustReplaceToRemove: false,
     });
+  });
+});
+
+describe("validMergeDestinations", () => {
+  const m = (fileName: string) => ({ fileName });
+
+  it("excludes the source by exact name", () => {
+    const masters = [m("Game A"), m("Game B"), m("Game C")];
+    expect(validMergeDestinations(masters, "Game A")).toEqual([
+      m("Game B"),
+      m("Game C"),
+    ]);
+  });
+
+  it("excludes a case/whitespace variant of the source", () => {
+    const masters = [m(" game a "), m("Game B")];
+    expect(validMergeDestinations(masters, "Game A")).toEqual([m("Game B")]);
+  });
+
+  it("returns all others with order preserved", () => {
+    const masters = [m("Game C"), m("Game A"), m("Game B")];
+    expect(validMergeDestinations(masters, "Game A")).toEqual([
+      m("Game C"),
+      m("Game B"),
+    ]);
+  });
+
+  it("returns empty for empty input", () => {
+    expect(validMergeDestinations([], "Game A")).toEqual([]);
+  });
+
+  it("returns empty when the only master is the source", () => {
+    expect(validMergeDestinations([m("Game A")], "Game A")).toEqual([]);
+    // case/whitespace variant of the sole master is still the source
+    expect(validMergeDestinations([m(" GAME A ")], "Game A")).toEqual([]);
+  });
+});
+
+describe("canMergeInto", () => {
+  it("is true for two distinct non-empty names", () => {
+    expect(canMergeInto("Game A", "Game B")).toBe(true);
+  });
+
+  it("is false when the names are equal", () => {
+    expect(canMergeInto("Game A", "Game A")).toBe(false);
+  });
+
+  it("is false when equal under trim/case-fold", () => {
+    expect(canMergeInto("Game A", " game a ")).toBe(false);
+    expect(canMergeInto(" GAME A ", "game a")).toBe(false);
+  });
+
+  it("is false when either name is empty/whitespace", () => {
+    expect(canMergeInto("", "Game B")).toBe(false);
+    expect(canMergeInto("Game A", "   ")).toBe(false);
+    expect(canMergeInto("   ", "\t")).toBe(false);
   });
 });
