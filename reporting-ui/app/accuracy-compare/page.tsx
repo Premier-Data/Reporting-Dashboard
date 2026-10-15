@@ -41,6 +41,7 @@ import {
   getSavedMasterXml,
   propagateMasterCorrection,
   getMasterCheckSiblings,
+  instancesFromRaw,
   type SavedMaster,
 } from "@/lib/api/accuracyChecks";
 import { getPlatformAnalystNames } from "@/lib/api/analysts";
@@ -986,14 +987,13 @@ function AccuracyCompareInner() {
 
   // Only admins/super admins may EDIT the master (fix a mis-coded player/stat,
   // remove a bad instance, or add one the master missed). Edits recompute the
-  // accuracy live and can be downloaded / saved as a corrected master.
-  // Master editing is admin-only AND requires a real XML master: the edit /
-  // download / propagate flow serializes back to SportsCode XML, which a JSON
-  // feed can't round-trip through. So a JSON-sourced master is read-only —
-  // still fully comparable, just not correctable in place.
-  const masterIsJson = master?.kind === "json";
+  // accuracy live and can be downloaded / saved as a corrected master. Both XML
+  // and JSON masters are editable: edits serialize back to the SAME format the
+  // master was loaded in (XML via serializeInstances, JSON via
+  // serializeInstancesToJson), both of which re-import cleanly and re-grade via
+  // the JSON-aware grader (applyMasterInstances branches on master.kind).
   const canEditMaster =
-    (user?.role === "admin" || user?.role === "super_admin") && !masterIsJson;
+    user?.role === "admin" || user?.role === "super_admin";
 
   // Only admins/super admins may MANAGE saved masters (rename / delete /
   // replace) from the "reuse a saved master" area. Mirrors the gates above.
@@ -1025,6 +1025,14 @@ function AccuracyCompareInner() {
   const applyMasterInstances = (next: Instance[]) => {
     setMaster((cur) => {
       if (!cur) return cur;
+      // Serialize + re-import through the SAME format the master was loaded in,
+      // so edits normalise like a fresh load and `raw` stays that format (XML
+      // or JSON). A JSON master must NOT be re-serialized as XML — that would
+      // lose the feed shape and break re-grading / propagation.
+      if (cur.kind === "json") {
+        const raw = serializeInstancesToJson(next);
+        return { ...cur, instances: instancesFromRaw(raw), raw };
+      }
       const raw = serializeInstances(next);
       return { ...cur, instances: parseInstances(raw), raw };
     });

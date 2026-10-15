@@ -34,6 +34,7 @@ import {
     type AccuracyCheckMeta,
     type AccuracyCheck,
 } from "@/lib/api/accuracyChecks";
+import { serializeInstancesToJson } from "@/lib/comparison/json-adapter";
 import {
     parseInstances,
     compareInstances,
@@ -946,15 +947,23 @@ function DisputeReviewModal({
         setEditing(original);
     };
 
+    // Round-trip edited instances through the SAME format the master is stored
+    // in, so they normalise exactly like a fresh load (mid, playerNumber from
+    // code, etc.). JSON masters re-import via instancesFromRaw(JSON); XML via
+    // parseInstances(XML). Using the wrong format here would silently drop
+    // fields the other serializer doesn't carry.
+    const renormalise = (list: Instance[]): Instance[] =>
+        masterIsJson
+            ? instancesFromRaw(serializeInstancesToJson(list))
+            : parseInstances(serializeInstances(list));
+
     const upsertMaster = (inst: Instance) => {
         setMasterInstances((cur) => {
             const exists = cur.some((i) => i.id === inst.id);
             const next = exists
                 ? cur.map((i) => (i.id === inst.id ? inst : i))
                 : [...cur, inst];
-            // Re-parse from serialized XML so instances normalise exactly like
-            // a fresh load (mid, playerNumber from code, etc.).
-            return parseInstances(serializeInstances(next));
+            return renormalise(next);
         });
         setDirty(true);
         setSaveMsg(null);
@@ -962,9 +971,7 @@ function DisputeReviewModal({
     };
 
     const deleteMaster = (id: string) => {
-        setMasterInstances((cur) =>
-            parseInstances(serializeInstances(cur.filter((i) => i.id !== id)))
-        );
+        setMasterInstances((cur) => renormalise(cur.filter((i) => i.id !== id)));
         setDirty(true);
         setSaveMsg(null);
         setEditing(null);
@@ -1005,10 +1012,18 @@ function DisputeReviewModal({
         setSaving(true);
         setSaveMsg(null);
         try {
-            const xmlMaster = serializeInstances(masterInstances);
+            // Serialize back to the SAME format the master was stored in: a
+            // JSON-feed master round-trips via serializeInstancesToJson (re-
+            // imports cleanly through instancesFromRaw), an XML master via
+            // serializeInstances. propagateMasterCorrection writes this to
+            // xml_master on every sibling and re-grades each with the JSON-
+            // aware grader, so corrections apply across the whole master group.
+            const correctedMaster = masterIsJson
+                ? serializeInstancesToJson(masterInstances)
+                : serializeInstances(masterInstances);
             // Propagate to every check of this master; each is recomputed
-            // against its own analyst XML (the master is the shared source).
-            const res = await propagateMasterCorrection(fileName, xmlMaster);
+            // against its own analyst source (the master is the shared source).
+            const res = await propagateMasterCorrection(fileName, correctedMaster);
             setDirty(false);
             setSaveMsg(
                 `Saved. Master corrected across ${res.updated} check` +
@@ -1117,7 +1132,7 @@ function DisputeReviewModal({
 
                     {/* Timelines */}
                     <div className="flex min-h-0 flex-col border-t border-slate-700 lg:border-l lg:border-t-0">
-                        {canResolve && !masterIsJson && (
+                        {canResolve && (
                             <div className="flex flex-wrap items-center gap-2 border-b border-slate-700 bg-slate-800/60 px-3 py-2">
                                 <span className="text-[11px] font-semibold text-amber-300">
                                     Master editing
@@ -1147,16 +1162,6 @@ function DisputeReviewModal({
                                         {saveMsg}
                                     </span>
                                 )}
-                            </div>
-                        )}
-                        {canResolve && masterIsJson && (
-                            <div className="border-b border-slate-700 bg-slate-800/60 px-3 py-2 text-[11px] text-slate-400">
-                                <span className="font-semibold text-amber-300">
-                                    Master editing unavailable
-                                </span>{" "}
-                                — this check&apos;s master is a JSON feed, which
-                                can&apos;t be corrected in place. Resolve the
-                                dispute using the buttons below.
                             </div>
                         )}
                         <div className="grid grid-cols-[124px_1fr_1fr] border-b border-slate-700 bg-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1226,9 +1231,7 @@ function DisputeReviewModal({
                                                 onSeek={seekTo}
                                                 active={mActive}
                                                 onEdit={
-                                                    canResolve &&
-                                                    !masterIsJson &&
-                                                    row.master
+                                                    canResolve && row.master
                                                         ? () =>
                                                               openEdit(
                                                                   row.master!
