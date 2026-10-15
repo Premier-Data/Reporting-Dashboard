@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { createCache } from "@/lib/api/cache";
 
 // ======================================================================
 // Instance disputes: flag a specific coded instance in a saved accuracy
@@ -70,6 +71,16 @@ export interface NewDispute {
     category?: DisputeCategory | null;
 }
 
+// ── Module-level caches for the two list fetches ────────────────────────────
+//
+// Both back revisited views (global Disputes page / history open-dispute
+// badges) and re-page the whole table on every mount. Cache the Promise so
+// concurrent callers share one request; every dispute mutation invalidates
+// these, and the two check mutations that change a dispute's visibility
+// (soft-delete / restore of a check) invalidate them from accuracyChecks.ts.
+const allDisputesCached = createCache(fetchAllDisputes);
+const openCountsCached = createCache(fetchOpenDisputeCounts);
+
 /** Flag an instance. Upserts so re-flagging the same instance is a no-op. */
 export async function createDispute(input: NewDispute): Promise<Dispute> {
     // Does a dispute already exist for this instance/side?
@@ -113,6 +124,8 @@ export async function createDispute(input: NewDispute): Promise<Dispute> {
             console.error("Failed updating dispute reason:", error);
             throw new Error(error.message || "Failed updating dispute");
         }
+        invalidateAllDisputesCache();
+        invalidateOpenDisputeCountsCache();
         return data as Dispute;
     }
 
@@ -139,6 +152,8 @@ export async function createDispute(input: NewDispute): Promise<Dispute> {
         console.error("Failed creating dispute:", error);
         throw new Error(error.message || "Failed creating dispute");
     }
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
     return data as Dispute;
 }
 
@@ -165,7 +180,16 @@ export async function getDisputesForCheck(
  * Pages through ALL rows (PostgREST caps a single response at ~1000; there are
  * more open disputes than that, so an unpaged select dropped the tail).
  * Excludes soft-deleted disputes and disputes on soft-deleted checks. */
-export async function getAllDisputes(): Promise<Dispute[]> {
+export function getAllDisputes(): Promise<Dispute[]> {
+    return allDisputesCached.get();
+}
+
+/** Reset the cached global dispute list so the next read re-fetches. */
+export function invalidateAllDisputesCache(): void {
+    allDisputesCached.invalidate();
+}
+
+async function fetchAllDisputes(): Promise<Dispute[]> {
     const out: Dispute[] = [];
     const pageSize = 1000;
     let from = 0;
@@ -208,7 +232,16 @@ export async function getAllDisputes(): Promise<Dispute[]> {
  * select silently dropped the tail, so some checks showed no badge. We fetch
  * in pages of 1000 and tally client-side. Excludes soft-deleted disputes and
  * disputes belonging to soft-deleted checks. */
-export async function getOpenDisputeCounts(): Promise<Record<number, number>> {
+export function getOpenDisputeCounts(): Promise<Record<number, number>> {
+    return openCountsCached.get();
+}
+
+/** Reset the cached open-dispute counts so the next read re-fetches. */
+export function invalidateOpenDisputeCountsCache(): void {
+    openCountsCached.invalidate();
+}
+
+async function fetchOpenDisputeCounts(): Promise<Record<number, number>> {
     const counts: Record<number, number> = {};
     const pageSize = 1000;
     let from = 0;
@@ -258,6 +291,8 @@ export async function resolveDispute(
         console.error("Failed resolving dispute:", error);
         throw new Error(error.message || "Failed resolving dispute");
     }
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /** Remove a dispute (e.g. flagged by mistake). Soft delete: marks the row so
@@ -278,6 +313,8 @@ export async function deleteDispute(
         console.error("Failed deleting dispute:", error);
         throw new Error(error.message || "Failed deleting dispute");
     }
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /** Restore a soft-deleted dispute (clears deleted_at/deleted_by). */
@@ -291,6 +328,8 @@ export async function restoreDispute(id: number): Promise<void> {
         console.error("Failed restoring dispute:", error);
         throw new Error(error.message || "Failed restoring dispute");
     }
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
 }
 
 /** Build a set of "instanceId|side" keys for quick flagged-lookups. */

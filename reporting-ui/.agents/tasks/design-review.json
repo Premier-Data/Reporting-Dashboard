@@ -1,30 +1,30 @@
 {
-  "verdict": "CHANGES_REQUESTED",
+  "verdict": "APPROVED",
   "findings": [
     {
       "id": 1,
-      "severity": "MEDIUM",
-      "title": "Confirm copy understates the blast radius — the whole destination group is re-graded and re-tagged, not just the moved checks",
-      "where": "design.md §4 Interaction flow step 3 (confirm copy, both count==null and numeric variants)",
-      "problem": "The confirm dialog tells the admin 'This re-grades the moved checks against <dest>', but Step 4 (and its side-effect note) re-grade the ENTIRE destination group and overwrite xml_master on every destination row with destXml, including the destination's pre-existing checks. The design admits a destination row holding a different xml_master is silently overwritten and re-graded. For a destructive, bulk, admin-gated operation the confirm dialog must describe the real scope the operator is consenting to.",
-      "fix": "Change the confirm copy to state the real scope, e.g. 'Move N check(s) for \"<source>\" into \"<dest>\". \"<source>\" will be removed, and all checks under \"<dest>\" will be re-graded against the \"<dest>\" master. This can't be undone from here.' (and the analogous count==null variant). This also makes the success copy's distinct moved vs regraded numbers intelligible."
+      "severity": "NIT",
+      "title": "getDisputesForCheck panel vs cached OC badge timing worth a note",
+      "where": "Design Background (getDisputesForCheck NOT cached) + §2",
+      "problem": "getDisputesForCheck is correctly uncached (no staleness bug). But the accuracy-checks page shows the uncached per-check panel alongside the cached OC badge counts, so after a mutation they can momentarily differ on screen. Behavior-preserving (OC invalidates on every dispute write), not a correctness regression, but easy to misread as a cache bug.",
+      "fix": "Doc-only: add to the getDisputesForCheck skip rationale that its per-check panel is always a fresh fetch and reconciles with the cached badge counts on the next OC invalidation, so no extra wiring is needed."
     },
     {
       "id": 2,
       "severity": "NIT",
-      "title": "canMergeInto typed for string source/dest but UI passes nullable mergeDest",
-      "where": "design.md §3 canMergeInto(destFileName: string) vs §4 step 3 using RowState.mergeDest (string | null)",
-      "problem": "canMergeInto takes destFileName: string, but the UI holds mergeDest: string | null. Passing null fails typecheck or, if coerced, isValidMasterName throws on .trim(). The Move-button behavior while mergeDest is null is unspecified.",
-      "fix": "Specify the guard explicitly: disabled={row.busy || !row.mergeDest || !canMergeInto(m.fileName, row.mergeDest)}, so canMergeInto is only ever called with a non-null string. No signature change needed."
+      "title": "mergeMasters 'one clear suffices' depends on no meta read between Step 3 and return",
+      "where": "§2 Wiring mechanics, mergeMasters bullet",
+      "problem": "Clearing M once after Step 3 covering the Step-4 re-grades is correct only because nothing reads M between Step 3 and the function returning. True today (Step 4 is a tight server loop with no getAccuracyChecksMeta call), but the invariant is load-bearing and only implied.",
+      "fix": "Doc-only: state explicitly that no get...Meta() runs between Step 3 and return, so a single post-Step-3 clear suffices; if a future edit adds a meta read inside Step 4, re-clear after the loop."
     },
     {
       "id": 3,
       "severity": "NIT",
-      "title": "Success copy says 'Source removed.' unconditionally even when some destination rows silently failed to re-grade",
-      "where": "design.md §4 step 3 success copy",
-      "problem": "Step 3 empties the source, Step 4 collects per-row re-grade failures without throwing. If some rows fail, res.regraded is less than the destination group size, yet the copy still says 'Source removed.' with no hint that a subset failed and awaits backfill/retry.",
-      "fix": "Add a failed/attempted count to MergeMastersResult and, when res.regraded falls short, append a note such as 'Some checks could not be re-graded and will reconcile on the next backfill.'"
+      "title": "fixStaleMasterTotals placement wording contradicts its resilient control flow",
+      "where": "§2 Wiring mechanics, single-write bullet parenthetical on fixStaleMasterTotals",
+      "problem": "fixStaleMasterTotals loops and continues on per-row error (never throws out of the loop), so 'place the invalidate immediately after that write's if (error) throw guard' does not literally apply - there is no throwing guard. The parenthetical does say a single clear after the loop is fine (the correct instruction), but the lead-in rule and the exception read as mildly contradictory.",
+      "fix": "Doc-only: move fixStaleMasterTotals out of the single-write/clear-after-throw-guard bullet and group it with the resilient-loop shapes - clear M once on the unconditional normal return, like backfillPlayerAccuracy."
     }
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\merge-masters\\reporting-ui\\.agents\\tasks\\design-review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\meta-cache\\reporting-ui/.agents/tasks/design-review.md"
 }

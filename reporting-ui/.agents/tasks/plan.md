@@ -1,272 +1,193 @@
-# Implementation Plan — Overlap-scoped saved accuracy %
+# Implementation Plan — client-side cache for meta/list Supabase fetches
 
-Derived from the APPROVED design at `.agents/tasks/design.md` (verdict
-`.agents/tasks/design-review.json` = APPROVED). This plan sequences that design;
-it does not re-decide architecture. The three design-review NITs are folded into
-the relevant items (caller named `handleUpdateCheck` not `handleUpdate`; null —
-not undefined — analyst XML is a genuine ungradeable row; the home/away split
-happens inside `computePlayerAccuracyByScope` on the idempotency-preserved
-labels).
+Follows the approved design (`.agents/tasks/design.md`) and its APPROVED review
+(`.agents/tasks/design-review.md`). All paths are in the worktree
+`c:\Users\AndyDin\reporting-dashboard\.worktrees\meta-cache\reporting-ui`.
+The main tree at `...\reporting-dashboard\reporting-ui` must NOT be touched.
 
-All paths are absolute and all work stays inside
-`c:\Users\AndyDin\reporting-dashboard\.worktrees\overlap-scope\reporting-ui`
-(hereafter `<ui>`). Windows / PowerShell. Run commands with that as the cwd.
-Do NOT commit or push — the orchestrator finalizes git.
+Scope recap (do not exceed it): touch only `lib/api/cache.ts` (new),
+`lib/api/cache.test.ts` (new), `lib/api/accuracyChecks.ts`, and
+`lib/api/disputes.ts`. Exported function signatures stay IDENTICAL — caching is
+added INSIDE the existing functions; only new `invalidate…Cache()` functions are
+added to the module exports. Cache the Promise (not the resolved value) and
+reset the slot to `null` on failure, mirroring `lib/api/fixtureMap.ts` /
+`lib/api/clubConfig.ts`. `getAccuracyChecksForAnalyst`, `getAllAccuracyChecks`,
+`getDisputesForCheck`, and all single-row/XML fetches are NOT cached (design §1,
+§6). Build/test commands are run from the worktree root with `npm` (scripts:
+`"test": "vitest --run"`, `"build": "next build"`, `"lint": "eslint"`; vitest
+`include: ["**/*.test.ts","**/*.test.tsx"]`, jsdom env).
 
-## Verified facts from the codebase (ground truth for this plan)
-
-- Build: `npm run build` (= `next build`). Tests: `npm test` (= `vitest --run`).
-  Lint: `npm run lint` (= `eslint`). Vitest runs under **jsdom**
-  (`<ui>\vitest.config.ts`), so `DOMParser` is available in tests.
-- `<ui>\lib\comparison\xml-compare.ts` already contains: the `canonicaliseTeams`
-  **idempotency guard** (`isCanon` passes already-Home/Away sets through) AND the
-  `mTeams.length === 0 || aTeams.length === 0` early return — BOTH legs the
-  design relies on. `baseAction` already canonicalises `\bcatches\b` → `catch`.
-  `compareInstances(masterRaw, analystRaw, tolerance, masterFileName?)` and
-  `canonicaliseTeams(master, analyst, tolerance, masterFileName?)` are exported;
-  `Instance` has numeric `.mid`.
-- `<ui>\lib\comparison\player-accuracy.ts` exports
-  `computePlayerAccuracyByScope(masterInstances, analystInstances, tolerance,
-  masterFileName?)` which canonicalises once then does the home/away split
-  internally on the preserved labels, and `type StoredPlayerAccuracy`.
-- `<ui>\lib\api\accuracyChecks.ts` has: `instancesFromRaw` (XML or JSON feed),
-  `computeStoredPlayerAccuracy` (null when `!xmlMaster || !xmlAnalyst` or master
-  parses empty), `saveAccuracyCheck` (reads `input.result.summary`),
-  `updateAccuracyCheck` (reads `input.result.summary`; conditional `!== undefined`
-  metadata writes), `propagateMasterCorrection` (full-game
-  `compareInstances` + `computePlayerAccuracyByScope` per row; throws on row
-  update error), and `backfillPlayerAccuracy` (per-row body currently
-  `if (!xmlErr && xmlRow) { pa = computeStoredPlayerAccuracy(...); update {
-  player_accuracy: pa } }`, writing ONLY `player_accuracy`). `AccuracyCheckXml`
-  type exists in this file.
-- `<ui>\app\accuracy-compare\page.tsx`: `analystWindow` useMemo currently inlines
-  `[master, analyst].filter(...).reduce((a,b)=> b.instances.length < a.instances.length ? b : a)`
-  then `Math.min/max` over `.mid`, returning `{start, end, source: smaller.name}`.
-  `source` is NOT read anywhere (only `.start`/`.end` are, in `effectiveRange`
-  and the manual-range placeholders). `handleUpdateCheck` is the SOLE caller of
-  `updateAccuracyCheck` and always passes `xmlAnalyst`, `fileNameMaster`,
-  `tolerance`; `handleOverrideMaster` calls `propagateMasterCorrection`, not
-  update. `rangeMode`/`effectiveRange`/`inRange`/`canonical` and all live grading
-  memos are to stay untouched.
-- catch/catches is DONE: `baseAction` has the rule; `<ui>\lib\comparison\cross-exact.test.ts`
-  already asserts master `Catch` vs analyst `Catches` (and vice versa) = exact,
-  alongside no-regression cases (short vs long passes stay non-exact, etc.).
+The order is dependency-driven: the pure helper and its test land first (item 1,
+2), then each module is wired on top of it (items 3–6), then full verification
+(item 7). Every item leaves the tree buildable.
 
 ---
 
-- [ ] 1. Create the pure shared overlap-window module.
-      Add `lib/comparison/overlap-window.ts` exporting `type OverlapWindow =
-      { start: number; end: number; source: "master" | "analyst" }`,
-      `deriveOverlapWindow(master, analyst): OverlapWindow | null`,
-      `inOverlap(i, w): boolean`, and `scopeToOverlap(master, analyst):
-      { master; analyst; window: OverlapWindow | null }`, exactly per the design
-      ("Shared pure helper" section). No DOM, no Supabase imports — type-only
-      import of `Instance` from `./xml-compare`. `deriveOverlapWindow` pushes
-      master first and selects the fewer-instance set with STRICT `<` (so a tie
-      keeps master, matching the page's reduce), min/max over `.mid`, inclusive
-      bounds; returns null when both sides are empty. `scopeToOverlap` filters
-      both sides by `inOverlap` and returns the window (passes inputs through
-      unchanged with `window: null` when the window can't be derived).
-      Files: `lib/comparison/overlap-window.ts`
-      Verify: `npm run build` succeeds (module compiles / type-checks). Full
-      behavioural assertions land in item 2.
+- [ ] 1. Create the pure, Supabase-free cache helper module.
+      Add `createCache<T>(fetcher)` (single-value: populate-once, dedupe
+      concurrent callers, reset slot to `null` on reject then rethrow) and
+      `createKeyedCache<T>(fetcher, keyFn = s => s)` (one entry per normalized
+      key via a `Map<string, Promise<T>>`, `map.delete(key)` on reject,
+      `invalidate()` = `map.clear()`), both returning `{ get, invalidate }`.
+      Copy the two function bodies VERBATIM from design §5. No imports; no React,
+      no `localStorage`/`IndexedDB`, no TTL. `createKeyedCache` is built now even
+      though no production code wires it yet (future per-analyst adoption).
+      Files: lib/api/cache.ts
+      Verify: `npm run build` from the worktree root compiles (the module is
+      pure TS and will be covered by tests in the next item).
 
-- [ ] 2. Add the pure-logic unit tests for the window helper and the scope/label
-      contracts.
-      Add `lib/comparison/overlap-window.test.ts` (Vitest) covering the design's
-      Testing items 1–7: (1) window = fewer-instance file, with source
-      `"analyst"` / `"master"` on swap; (2) PROPERTY test over randomized length
-      pairs incl. ties — asserts fewer-length selection and tie-keeps-`master`;
-      (3) inclusive bounds via `inOverlap` (mid == start/end kept, just-outside
-      dropped); (4) empty-side behaviour (`deriveOverlapWindow([],a)` /
-      `(m,[])`, and `scopeToOverlap` pass-through with `window: null`); (5)
-      one-time parity: reproduce the page's prior inline
-      `[master,analyst].reduce(...)` + min/max on fixtures and assert equality
-      with `deriveOverlapWindow` (this is the "compare-page-equivalent window
-      matches the shared helper for the same inputs" proof); (6) end-to-end scope
-      effect: synthetic master of 1600 instances spanning mid 0..3600s and an
-      analyst coding only 1200..1800s — assert the derived window is
-      `[1200,1800]`, that `scopeToOverlap` yields only in-window instances, and
-      that `compareInstances` over `scopeToOverlap(canonicaliseTeams(full,…))`
-      gives a materially higher exact/master ratio than over the full sets
-      (player-accuracy / grade over the filtered set differs from full-game);
-      (7) Home/Away label parity: a fixture with a master file name present and
-      two teams whose coded-count order differs within the overlap window vs the
-      full game — assert the canonicalise-FULL-then-scope pipeline produces the
-      SAME home/away split as the live path, and that scoping-first-then-
-      canonicalising would differ (guards against regressing to v1 ordering).
-      Files: `lib/comparison/overlap-window.test.ts`
-      Verify: `npm test` — all new `overlap-window` tests pass and the existing
-      suite (incl. `cross-exact.test.ts`) stays green.
+- [ ] 2. Add the Vitest unit test for the cache helper.
+      Co-located `*.test.ts` (matches `lib/comparison/overlap-window.test.ts`).
+      Drive each helper with a counting/throwing stub `fetcher` — no network.
+      `createCache`: (a) populate once — two sequential `get()`s call fetcher
+      exactly once and resolve to the same value; (b) dedupe concurrent — two
+      `get()`s before the first resolves call fetcher once and resolve to the
+      same instance; (c) `invalidate()` forces a re-fetch (fetcher called twice);
+      (d) error does not poison — a fetcher that rejects once then succeeds:
+      first `get()` rejects, second re-calls and resolves.
+      `createKeyedCache`: (a) key isolation — `get("a")`/`get("b")` call fetcher
+      once per distinct key; (b) normalization collapses keys — with
+      `keyFn = s => s.trim().toLowerCase()`, `"Jane"`, `" jane "`, `"JANE"` call
+      fetcher once; (c) `invalidate()` clears all keys (2 before + 2 after = 4
+      calls); (d) error does not poison a key — first fetch rejects, second
+      re-calls and resolves. Cover all eight cases from design §5.
+      Files: lib/api/cache.test.ts
+      Verify: `npm test` — the new `lib/api/cache.test.ts` suite passes along
+      with the existing suites.
 
-- [ ] 3. Add the single overlap-scoped grading helper in the API layer.
-      In `lib/api/accuracyChecks.ts` add `gradeOverlapScoped(xmlMaster,
-      xmlAnalyst, tolerance, fileNameMaster)` per the design's "Overlap-scoped
-      stored player_accuracy AND summary" section: `instancesFromRaw` both
-      sides → return null when `masterRaw.length === 0` → `tol = tolerance ?? 3`,
-      `name = fileNameMaster ?? null` → canonicalise the FULL sets with
-      `canonicaliseTeams(masterRaw, analystRaw, tol, name)` → `scopeToOverlap`
-      the already-canonical sets → grade with `compareInstances(scoped.master,
-      scoped.analyst, tol, name)` and `computePlayerAccuracyByScope(scoped.master,
-      scoped.analyst, tol, name)`; return `{ result, playerAccuracy }`. Import
-      `canonicaliseTeams` from `@/lib/comparison/xml-compare` and `scopeToOverlap`
-      from `@/lib/comparison/overlap-window`. Reimplement
-      `computeStoredPlayerAccuracy` as a thin wrapper that returns
-      `gradeOverlapScoped(...)?.playerAccuracy ?? null` inside its existing
-      try/catch (keep the `console.error` on throw). Because
-      `computeStoredPlayerAccuracy`'s old guard was `!xmlMaster || !xmlAnalyst`,
-      preserve the "needs analyst XML" behaviour via `gradeOverlapScoped` naturally
-      returning a result even with an empty analyst side — the stored value is now
-      overlap-scoped regardless.
-      Files: `lib/api/accuracyChecks.ts`
-      Verify: `npm run build` succeeds; `npm test` stays green (no path rewired
-      yet — this item only adds the helper and rewraps the existing one).
+- [ ] 3. Wire the two meta caches into `accuracyChecks.ts` and add their
+      invalidators. Rename the current bodies of `getAccuracyChecksMeta` and
+      `getDeletedAccuracyChecksMeta` to inner `fetchAccuracyChecksMeta()` /
+      `fetchDeletedAccuracyChecksMeta()` (verbatim — keep the paging loop and the
+      single select respectively). Add module-scope
+      `const metaCached = createCache(fetchAccuracyChecksMeta)` and
+      `const deletedMetaCached = createCache(fetchDeletedAccuracyChecksMeta)`
+      (import `createCache` from `@/lib/api/cache`). Re-implement the two public
+      functions to `return metaCached.get()` / `deletedMetaCached.get()` with
+      their ORIGINAL exported signatures (`(): Promise<AccuracyCheckMeta[]>`).
+      Export `invalidateAccuracyChecksMetaCache()` and
+      `invalidateDeletedAccuracyChecksMetaCache()` that call the matching
+      `.invalidate()`. Do NOT cache `getAccuracyChecksForAnalyst` or
+      `getAllAccuracyChecks`.
+      Files: lib/api/accuracyChecks.ts
+      Verify: `npm run build` compiles (public signatures unchanged, so all
+      callers still typecheck).
 
-- [ ] 4. Route `saveAccuracyCheck` through the shared derivation.
-      In `lib/api/accuracyChecks.ts`, replace `const s = input.result.summary`
-      and the `computeStoredPlayerAccuracy(...)` call in the row object with a
-      single `const graded = gradeOverlapScoped(input.xmlMaster,
-      input.xmlAnalyst, input.tolerance, input.fileNameMaster)`. Write
-      `accuracy/master_total/analyst_total/exact/wrong_stat/wrong_player/
-      wrong_team/missed/extra/avg_time_drift` from `graded?.result.summary`
-      (`?? null` each), `category_breakdown`/`team_breakdown` from
-      `graded?.result.byCategory/byTeam ?? null`, and `player_accuracy` from
-      `graded?.playerAccuracy ?? null`. Keep `xml_master`/`xml_analyst`/metadata
-      exactly as now. Per design finding #5, do NOT fall back to
-      `input.result.summary` on a null grade — null accuracy columns + null
-      `player_accuracy` (ungraded marker) + `console.warn`; the save is never
-      blocked. The Supabase insert-error path (`throw`) is unchanged.
-      Files: `lib/api/accuracyChecks.ts`
-      Verify: `npm run build` succeeds; `npm test` stays green.
+- [ ] 4. Wire the two dispute caches into `disputes.ts` and add their
+      invalidators. Rename the bodies of `getAllDisputes` and
+      `getOpenDisputeCounts` to inner `fetchAllDisputes()` /
+      `fetchOpenDisputeCounts()` (verbatim — keep the paging loops and the
+      `accuracy_checks!inner(deleted_at)` filters). Add module-scope
+      `const allDisputesCached = createCache(fetchAllDisputes)` and
+      `const openCountsCached = createCache(fetchOpenDisputeCounts)` (import
+      `createCache` from `@/lib/api/cache`). Re-implement the public functions to
+      `return allDisputesCached.get()` / `openCountsCached.get()` with their
+      ORIGINAL signatures (`(): Promise<Dispute[]>` and
+      `(): Promise<Record<number, number>>`). Export
+      `invalidateAllDisputesCache()` and `invalidateOpenDisputeCountsCache()`.
+      `disputes.ts` keeps importing only `@/lib/supabase` plus the new
+      `@/lib/api/cache` — it must NOT import from `accuracyChecks.ts` (one-way
+      dependency, no cycle). Do NOT cache `getDisputesForCheck`.
+      Files: lib/api/disputes.ts
+      Verify: `npm run build` compiles.
 
-- [ ] 5. Route `updateAccuracyCheck` through the shared derivation with the
-      stored-row analyst fallback.
-      In `lib/api/accuracyChecks.ts`, compute
-      `let graded = gradeOverlapScoped(input.xmlMaster, input.xmlAnalyst,
-      input.tolerance, input.fileNameMaster)`; if `!graded && input.xmlAnalyst
-      === undefined`, fetch `xml_analyst, file_name_master, tolerance` for
-      `input.id` and re-grade with the input value where present and the stored
-      value as fallback (per design path 1b). Write the accuracy/breakdown/
-      `player_accuracy` fields from `graded` (same shape as item 4). PRESERVE
-      verbatim every conditional `if (input.X !== undefined) row.Y = ...` write
-      (`master_analyst_name`, `analyst_name`, `match_label`, `file_name_master`,
-      `file_name_analyst`, `tolerance`, `xml_analyst`, `video_url`, `sport`) and
-      the unconditional `xml_master: input.xmlMaster`. Note (design-review NIT):
-      the sole caller is `handleUpdateCheck` which always passes `xmlAnalyst`
-      (`analyst?.raw ?? null`); a NULL analyst XML is a genuine ungradeable row
-      (null-grade marker), NOT a partial update — the `=== undefined` fallback is
-      defensive for a future caller only. The Supabase update-error `throw` is
-      unchanged.
-      Files: `lib/api/accuracyChecks.ts`
-      Verify: `npm run build` succeeds; `npm test` stays green.
+- [ ] 5. Add invalidation calls to every `accuracy_disputes` mutation in
+      `disputes.ts`, per the design §2 dispute matrix. In every case fire BOTH
+      `invalidateAllDisputesCache()` and `invalidateOpenDisputeCountsCache()`
+      immediately AFTER the write's `if (error) throw` guard (so a failed write
+      never clears a still-valid cache):
+      - `createDispute` — insert branch: after the INSERT's error guard.
+      - `createDispute` — update/restore branch: after the UPDATE's error guard.
+      - `createDispute` — empty-patch early return (`Object.keys(patch).length
+        === 0` → `return existingDispute`): NO invalidation (no write).
+      - `resolveDispute`: after its UPDATE error guard.
+      - `deleteDispute`: after its UPDATE (soft-delete) error guard.
+      - `restoreDispute`: after its UPDATE (restore) error guard.
+      These are the 5 write sites from the review table (lines ~108, 122, 249,
+      271, 287) plus the deliberate no-write branch. No check caches are touched
+      here (dispute mutations never change M/D).
+      Files: lib/api/disputes.ts
+      Verify: `npm run build` compiles; `npm test` still passes.
 
-- [ ] 6. Route `propagateMasterCorrection` through the shared derivation.
-      In `lib/api/accuracyChecks.ts`, replace the per-row
-      `compareInstances(master, analystInstances, tol, fileNameMaster)` +
-      `computePlayerAccuracyByScope(master, analystInstances, …)` pair with one
-      `const graded = gradeOverlapScoped(xmlMaster, row.xml_analyst,
-      row.tolerance, fileNameMaster)` per row, and write the full column set
-      (summary + breakdowns + `player_accuracy`) from it, keeping
-      `xml_master: xmlMaster`. On `graded === null` for a row, write null
-      accuracy columns + null `player_accuracy` + `console.warn` and continue
-      (do NOT abort the whole propagation). Keep the existing Supabase
-      update-error behaviour (`throw`). The initial `master` parse via
-      `instancesFromRaw(xmlMaster)` can remain (unused once rerouted) or be
-      removed if lint flags it as unused — remove it to keep lint clean.
-      Files: `lib/api/accuracyChecks.ts`
-      Verify: `npm run build` succeeds; `npm run lint` reports no new errors;
-      `npm test` stays green.
+- [ ] 6. Add invalidation calls to every `accuracy_checks` mutation in
+      `accuracyChecks.ts`, per the design §2 check matrix, including the
+      cross-table dispute clears. First add the one-directional import
+      `import { invalidateAllDisputesCache, invalidateOpenDisputeCountsCache }
+      from "@/lib/api/disputes";` (and use the local meta invalidators from
+      item 3). Then wire each mutation to the EXACT caches below (M = meta,
+      D = deleted meta, GD = all disputes, OC = open counts), following the
+      placement rule — fire after each committed write and before any later step
+      that can throw, using `finally`/unconditional-return where a later step can
+      throw after an earlier commit:
+      - `saveAccuracyCheck` (INSERT): clear M after the insert error guard.
+      - `updateAccuracyCheck` (UPDATE one row): clear M after the update error
+        guard.
+      - `propagateMasterCorrection` (per-row loop that THROWS on `upErr`): wrap
+        the loop in `try { … } finally { invalidateAccuracyChecksMetaCache(); }`
+        so a mid-loop throw after committing rows still clears M. (Only M.)
+      - `renameMaster` (UPDATE `file_name_master`): clear M after the update
+        error guard. (Only M.)
+      - `deleteMaster` (soft-delete one row): after the update error guard clear
+        M, D, GD, OC (cross-table — the row's disputes drop out of GD/OC).
+      - `mergeMasters`: clear M immediately after Step 3's
+        `.update({file_name_master, xml_master})` `if (error) throw` guard (NOT
+        at function end — a Step-4 `loadErr` throw must not leave M stale). One
+        clear suffices because nothing reads M between Step 3 and return. (Only
+        M; merge touches no deleted-ness or disputes.)
+      - `fixStaleMasterTotals` (resilient loop, `continue` on per-row error,
+        never throws out): clear M once on the normal return, unconditionally
+        (like backfill — review NIT #3). (Only M.)
+      - `backfillPlayerAccuracy` (resilient loop, always returns normally): clear
+        M on the unconditional normal `return { updated, skipped }` — do NOT gate
+        on `updated > 0`. This also covers `recomputeAllPlayerAccuracy` (thin
+        wrapper), so add NO separate clear there. (Only M.)
+      - `deleteAccuracyCheck` (soft-delete): after the update error guard clear
+        M, D, GD, OC (cross-table).
+      - `restoreAccuracyCheck` (restore): after the update error guard clear
+        M, D, GD, OC (cross-table).
+      - `purgeAccuracyCheck` (hard DELETE, CASCADE): after the delete error guard
+        clear M, D, GD, OC (CASCADE removes child disputes).
+      This covers all 12 check write sites from the review table. The four
+      cross-table mutations (`deleteMaster`, `deleteAccuracyCheck`,
+      `restoreAccuracyCheck`, `purgeAccuracyCheck`) are exactly the ones that
+      clear GD+OC in addition to the check caches.
+      Files: lib/api/accuracyChecks.ts
+      Verify: `npm run build` compiles with no import cycle (tsc would flag a
+      broken/cyclic import); `npm test` still passes.
 
-- [ ] 7. Rewrite the `backfillPlayerAccuracy` per-row body to write the full
-      overlap-scoped column set with the preserved fetch guard.
-      In `lib/api/accuracyChecks.ts`, change the per-row body from the current
-      `if (!xmlErr && xmlRow) { … update { player_accuracy } }` shape to the
-      design's guard-first form: `if (xmlErr || !xmlRow) { skipped += 1; if
-      (xmlErr) console.error(...); onProgress?.(...); continue; }` → `const graded
-      = gradeOverlapScoped((xmlRow as AccuracyCheckXml).xml_master,
-      (xmlRow as AccuracyCheckXml).xml_analyst, row.tolerance,
-      row.file_name_master)` → `if (!graded) { skipped += 1; onProgress?.(...);
-      continue; }` → a single `update({ accuracy, master_total, analyst_total,
-      exact, wrong_stat, wrong_player, wrong_team, missed, extra, avg_time_drift,
-      category_breakdown, team_breakdown, player_accuracy })` from `graded`,
-      counting `updated` / `skipped` on success / error exactly as now. Keep the
-      list query (`select("id, tolerance, file_name_master")`, `force ? all :
-      .is("player_accuracy", null)`) and the one-row-at-a-time XML fetch
-      unchanged. Each of the three branches (fetch error, null grade, update
-      error) must `skipped += 1`, call `onProgress`, and continue — none throws.
-      `recomputeAllPlayerAccuracy` (force=true wrapper) is unchanged and is the
-      admin-triggered historical backfill (requirement 4); runs in-browser only,
-      not from this environment.
-      Files: `lib/api/accuracyChecks.ts`
-      Verify: `npm run build` succeeds; `npm test` stays green.
+- [ ] 7. Full verification pass and matrix spot-checks.
+      Run the project's real commands and the design §5 placement/cross-module
+      checks:
+      - `npm run build` (Next.js build / tsc) from the worktree root — succeeds,
+        confirming unchanged public signatures typecheck across all callers and
+        the `accuracyChecks → disputes` import adds no cycle.
+      - `npm test` — all suites pass, including the new `lib/api/cache.test.ts`.
+      - `npm run lint` — no new lint errors in the four touched files.
+      - Cross-table wiring check (review Finding #6): confirm `deleteMaster`,
+        `deleteAccuracyCheck`, `restoreAccuracyCheck`, and `purgeAccuracyCheck`
+        each CALL both `invalidateAllDisputesCache` and
+        `invalidateOpenDisputeCountsCache` (not just that the import line exists),
+        and that `disputes.ts` imports only `@/lib/supabase` and `@/lib/api/cache`.
+      - Placement check (review Finding #2): confirm `mergeMasters` clears M
+        right after Step 3's `if (error) throw`; `backfillPlayerAccuracy` clears
+        M on its unconditional return; `propagateMasterCorrection` clears M in a
+        `finally`.
+      Files: none (verification only)
+      Verify: `npm run build`, `npm test`, and `npm run lint` all succeed and the
+      two spot-checks above hold.
 
-- [ ] 8. Repoint the compare page's `analystWindow` at the shared helper
-      (window math only — no live-view behaviour change).
-      In `app/accuracy-compare/page.tsx`, replace the `analystWindow` useMemo body
-      with: `if (!master || !analyst) return null;` then `const w =
-      deriveOverlapWindow(master.instances, analyst.instances); if (!w) return
-      null; return { start: w.start, end: w.end };` and import
-      `deriveOverlapWindow` from `@/lib/comparison/overlap-window`. DROP the
-      `source` field (verified unread). Do NOT touch `rangeMode`,
-      `effectiveRange`, `inRange`, `canonical`, the Range selector UI, or any live
-      grading memo. The manual-range placeholders already read only
-      `analystWindow.start`/`.end`, which are preserved. BEFORE editing, read the
-      relevant Next.js guide under
-      `<ui>\node_modules\next\dist\docs\` for App-Router client-component/useMemo
-      guidance (AGENTS.md requires it; this Next.js has breaking changes).
-      Files: `app/accuracy-compare/page.tsx`
-      Verify: `npm run build` succeeds (page type-checks and compiles under the
-      installed Next.js); `npm test` stays green. Manually confirm the window
-      math equals the shared helper via the parity test from item 2 (no new test
-      needed here — item 2 proves equivalence for the same inputs).
+---
 
-- [ ] 9. Confirm the catch/catches requirement needs no new code and lock it with
-      the existing test.
-      No source change: `baseAction` in `lib/comparison/xml-compare.ts` already
-      canonicalises `\bcatches\b` → `catch`, and the overlap-scoped stored path
-      flows through `compareInstances` → `sameBaseAction`, so it inherits the
-      behaviour automatically (no API-layer change). The behaviour is already
-      covered by `lib/comparison/cross-exact.test.ts` (master `Catch` vs analyst
-      `Catches` and the reverse both score exact), with no-regression cases
-      (short vs long passes stay non-exact; unrelated-stat pairing unchanged) in
-      the same file.
-      Files: none (verification-only item)
-      Verify: `npm test` — the `cross-exact.test.ts` catch/catches case passes
-      along with the no-regression cases, confirming no change was needed.
+## Notes / assumptions
 
-- [ ] 10. Write the verification note.
-      Add `.agents/tasks/verification-note.md` recording: the exact commands run
-      and their outcomes (`npm run build`, `npm test`, `npm run lint`); that the
-      overlap-window helper + canon-then-scope label parity + scoped-vs-full
-      grading contract are covered by the new pure tests; and the
-      INTEGRATION/MANUAL-ONLY caveats from the design — (a) the admin-triggered
-      `recomputeAllPlayerAccuracy` historical backfill cannot run from this
-      environment (needs the browser DOMParser + authenticated Supabase session),
-      (b) until an admin runs it Accuracy History MIXES overlap-scoped-new rows
-      with full-game-old rows (expected; backfill is idempotent and converges),
-      and (c) the `masterTotalMismatches` sibling banner may fire more often
-      under overlap scope — advisory only, flagged as a post-backfill
-      manual-verify item, not changed here. Also note the live compare Range
-      selector is intentionally unchanged (requirement 5).
-      Files: `.agents/tasks/verification-note.md`
-      Verify: file exists and lists real command results and the three caveats;
-      final gate — re-run `npm run build` and `npm test` once more and confirm
-      both pass.
-
-## Dependency order
-
-1 → 2 (tests import the helper). 1 → 3 (helper used by `gradeOverlapScoped`).
-3 → 4,5,6,7 (all four reroute through `gradeOverlapScoped`). 1 → 8 (page imports
-the helper); 8 can run any time after 1 but is grouped after the API rewires so
-the whole feature lands coherently. 9 is verification-only (any time). 10 last
-(records the final state). Every item leaves the tree buildable.
-
-## Explicitly out of scope (do not change)
-
-- `lib/comparison/xml-compare.ts` core matching (`compareInstances`/`codeTime`/
-  stat-preference) beyond reusing it on overlap-filtered inputs — and no edit to
-  the already-landed `baseAction` catch/catches rule.
-- The compare page's live Range selector behaviour (`rangeMode`,
-  `effectiveRange`, `inRange`, `canonical`, live grading memos).
-- Any DB schema / migration (deterministic re-derivation chosen instead).
-- The `masterTotalMismatches` banner heuristic (manual-verify item only).
+- Design §4 shared-array-reference invariant: callers get the same array
+  instance on cache hits. The two live consumers (`app/accuracy-checks/page.tsx`,
+  `app/disputes/page.tsx`) only `map`/`filter`/sort-on-copy, so no defensive
+  `.slice()` is added (matches design, review Finding #5). Do not introduce an
+  in-place sort/splice on a cached result in these modules.
+- No Next.js API surface is added — these are plain JS module caches in the
+  existing `lib/api/*` data layer (design "No new Next.js API" section), so the
+  AGENTS.md Next.js-docs rule imposes no additional reading for this change.
+- The `createKeyedCache` helper is implemented and tested but intentionally NOT
+  wired to any production fetch (`getAccuracyChecksForAnalyst` is dead code —
+  design §1 "Keyed cache (dropped)"); no mutation gets a per-analyst invalidator.
