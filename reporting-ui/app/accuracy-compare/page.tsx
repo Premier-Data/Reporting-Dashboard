@@ -1016,6 +1016,27 @@ function AccuracyCompareInner() {
     setEditingMaster(original);
   };
 
+  // Pre-fill Start/End (seconds) for a NEW master instance — set when "Add
+  // stat" is clicked inside the video review modal, so the editor opens with
+  // the current video time already filled in. Null = no seed (plain Add).
+  const [newMasterSeed, setNewMasterSeed] = useState<{
+    start: number;
+    end: number;
+  } | null>(null);
+
+  // Open the Add-master editor seeded with the video's current time. The coded
+  // window defaults to a few seconds around the current position; the admin
+  // can adjust before saving.
+  const addMasterAtVideoTime = () => {
+    const t = videoRef.current?.currentTime;
+    if (typeof t === "number" && !Number.isNaN(t)) {
+      setNewMasterSeed({ start: Math.max(0, t), end: Math.max(0, t) + 4 });
+    } else {
+      setNewMasterSeed(null);
+    }
+    setEditingMaster("new");
+  };
+
 
 
   // Replace the master's instances and keep the raw XML in sync (so a Save or
@@ -1046,12 +1067,14 @@ function AccuracyCompareInner() {
       : [...master.instances, inst];
     applyMasterInstances(next);
     setEditingMaster(null);
+    setNewMasterSeed(null);
   };
 
   const deleteMasterInstance = (id: string) => {
     if (!master) return;
     applyMasterInstances(master.instances.filter((i) => i.id !== id));
     setEditingMaster(null);
+    setNewMasterSeed(null);
   };
 
 
@@ -3547,6 +3570,8 @@ function AccuracyCompareInner() {
         <MasterEditModal
           instance={editingMaster === "new" ? null : editingMaster}
           isNew={editingMaster === "new"}
+          seedStart={editingMaster === "new" ? newMasterSeed?.start : undefined}
+          seedEnd={editingMaster === "new" ? newMasterSeed?.end : undefined}
           teamOptions={Array.from(
             new Set(master.instances.map((i) => i.team).filter(Boolean))
           )}
@@ -3554,7 +3579,10 @@ function AccuracyCompareInner() {
           playerCatalog={master.instances}
           onSave={upsertMasterInstance}
           onDelete={deleteMasterInstance}
-          onClose={() => setEditingMaster(null)}
+          onClose={() => {
+            setEditingMaster(null);
+            setNewMasterSeed(null);
+          }}
         />
       )}
 
@@ -3611,6 +3639,15 @@ function AccuracyCompareInner() {
                       ))}
                     </select>
                   </label>
+                )}
+                {canEditMaster && (
+                  <button
+                    onClick={addMasterAtVideoTime}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/50 bg-emerald-500/10 px-2.5 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/20"
+                    title="Add a master stat at the current video time"
+                  >
+                    <Plus size={13} /> Add stat
+                  </button>
                 )}
                 <button
                   onClick={() => setVideoOpen(false)}

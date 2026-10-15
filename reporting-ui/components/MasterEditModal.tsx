@@ -20,6 +20,8 @@ import {
 export default function MasterEditModal({
   instance,
   isNew,
+  seedStart,
+  seedEnd,
   teamOptions,
   statCatalog,
   playerCatalog,
@@ -29,6 +31,10 @@ export default function MasterEditModal({
 }: {
   instance: Instance | null;
   isNew: boolean;
+  /** For a NEW instance: pre-fill Start (seconds), e.g. the current video time. */
+  seedStart?: number;
+  /** For a NEW instance: pre-fill End (seconds). */
+  seedEnd?: number;
   teamOptions: string[];
   /** Valid { stat, category } pairs from the loaded files (for the dropdown). */
   statCatalog: { stat: string; category: string }[];
@@ -49,10 +55,18 @@ export default function MasterEditModal({
   // "" = not chosen. Selecting a stat also fixes its category.
   const [stat, setStat] = useState(instance?.stat ?? "");
   const [startStr, setStartStr] = useState(
-    instance ? formatTime(instance.start) : ""
+    instance
+      ? formatTime(instance.start)
+      : seedStart != null
+        ? formatTime(seedStart)
+        : ""
   );
   const [endStr, setEndStr] = useState(
-    instance ? formatTime(instance.end) : ""
+    instance
+      ? formatTime(instance.end)
+      : seedEnd != null
+        ? formatTime(seedEnd)
+        : ""
   );
 
   // Category is derived from the selected stat (no free text).
