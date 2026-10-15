@@ -1,113 +1,233 @@
-# Verification — Mobile pull-to-refresh never binds
+# Verification — Overlap-scoped saved accuracy %
 
-Worktree UI dir: `c:\Users\AndyDin\reporting-dashboard\.worktrees\ptr-bind-fix\reporting-ui`
-Iteration: FIRST (no `.agents/tasks/review.json` present).
+Worktree UI dir: `c:\Users\AndyDin\reporting-dashboard\.worktrees\overlap-scope\reporting-ui`
+Iteration: FIRST implementation. (`.agents/tasks/review.json` is present but its
+`verdict` is `APPROVED` with an empty `findings` array and its `reviewDoc`
+points at an unrelated worktree — `...\.worktrees\ptr-bind-fix\...` — and none of
+the files this task defines existed in the tree yet, so there were no findings
+to fix; the task was implemented from scratch per `design.md` + `plan.md`.)
 
 ## What changed (in scope only)
 
-- `components/pwa/usePullToRefresh.ts` — converted to own the scroll element via a **callback ref**:
-  - Signature changed from `usePullToRefresh(scrollRef: RefObject<HTMLElement|null>)` to `usePullToRefresh()` (no argument).
-  - Added `const [el, setEl] = useState<HTMLElement|null>(null);` and a stable
-    `const setRef = useCallback((node) => setEl(node), []);`.
-  - The binding `useEffect` now reads the `el` STATE value instead of `scrollRef.current`,
-    and its dependency array changed from `[scrollRef]` to `[el]`.
-  - `PullToRefresh` interface gained a `ref: (node: HTMLElement|null) => void` field; the hook
-    returns `{ offset, progress, state, animated, ref: setRef }`.
-  - Imports: added `useCallback`; removed the now-unused `RefObject` type import. `useRef` is kept
-    (still used by the gesture bookkeeping refs).
-  - EVERYTHING else in the effect — touchstart/move/end/cancel handlers, `isTouchDevice`,
-    `prefersReducedMotion`, THRESHOLD/MAX_OFFSET/DIRECTION_SLOP, scrollTop===0 gating, downward
-    DIRECTION_SLOP check, vertical-dominance check, non-passive `touchmove` + `preventDefault`,
-    single `window.location.reload()` guarded by `triggeredRef`, spring-back `reset()`,
-    reduced-motion `animated`, listener cleanup — is byte-for-byte unchanged. No gesture semantics regressed.
+1. **NEW `lib/comparison/overlap-window.ts`** — the single, shared, PURE
+   overlap-window helper. No DOM, no Supabase; type-only import of `Instance`.
+   - `deriveOverlapWindow(master, analyst): OverlapWindow | null` — `[min,max]`
+     of the `.mid` of whichever side has FEWER instances. Master is pushed first
+     and the reduce uses strict `<`, so a tie keeps master — identical to the
+     compare page's `[master, analyst].reduce((a,b)=> b.length < a.length ? b : a)`.
+     Returns null when both sides empty.
+   - `inOverlap(i, w)` — inclusive both ends (`>= start && <= end`), identical to
+     the page's `inRange`.
+   - `scopeToOverlap(master, analyst)` — filters both sides by `inOverlap`;
+     passes inputs through unchanged with `window: null` when underivable.
 
-- `components/auth/AppShell.tsx` — wired the callback ref:
-  - `const pull = usePullToRefresh();` (no arg).
-  - Removed `const mainRef = useRef<HTMLElement>(null);` (it had no other consumer in the file).
-  - `<main ref={pull.ref} className="flex-1 overflow-auto">` (was `ref={mainRef}`).
-  - `<PullToRefreshIndicator {...pull} />` unchanged in placement; it destructures only
-    `offset/progress/state/animated`, so the extra `ref` field is ignored.
-  - Removed `useRef` from the React import (no longer used in the file).
+2. **NEW `lib/comparison/overlap-window.test.ts`** — pure-logic Vitest suite,
+   7 tests (design Testing items 1–7). See "Tests" below.
 
-No changes to `PullToRefreshIndicator.tsx`, `lib/pwa/pull-to-refresh-math.ts`, `manifest.json`,
-`globals.css`, or any unrelated file.
+3. **`lib/api/accuracyChecks.ts`** — single derivation + all three recompute
+   paths rerouted:
+   - Added `gradeOverlapScoped(xmlMaster, xmlAnalyst, tolerance, fileNameMaster)`:
+     `instancesFromRaw` both sides → null if master parses empty → canonicalise
+     the FULL sets with `canonicaliseTeams(masterRaw, analystRaw, tol, name)`
+     (SAME arguments the compare page's `canonical` uses, incl. the master file
+     name) → `scopeToOverlap` the already-canonical sets → grade with
+     `compareInstances` + `computePlayerAccuracyByScope` over the scoped sets.
+     Both downstream calls re-canonicalise but hit `canonicaliseTeams`'
+     idempotency guard (inputs are Home/Away-only) and pass through, so the
+     stored both/home/away split equals the live Overlap view's labels.
+   - `saveAccuracyCheck` — now grades via `gradeOverlapScoped` from the raw
+     source, NOT from `input.result.summary`. On a null grade it writes null
+     accuracy columns + null `player_accuracy` + `console.warn` (an explicit
+     "not graded yet" marker reconciled by backfill) — it does NOT fall back to
+     the Range-dependent `input.result`.
+   - `updateAccuracyCheck` — grades via `gradeOverlapScoped`; if the grade is
+     null AND `input.xmlAnalyst === undefined` (a future partial caller), it
+     fetches `xml_analyst, file_name_master, tolerance` for the row and re-grades
+     with stored fallbacks so a good row is never blanked. All conditional
+     `if (input.X !== undefined) row.Y = ...` metadata writes are preserved
+     verbatim; `xml_master: input.xmlMaster` preserved.
+   - `propagateMasterCorrection` — per row grades via `gradeOverlapScoped(xmlMaster,
+     row.xml_analyst, row.tolerance, fileNameMaster)` and writes the full column
+     set (summary + breakdowns + player_accuracy), keeping `xml_master: xmlMaster`.
+     Null grade → null columns + warn + continue (does not abort). Supabase
+     update error still throws. Removed the now-unused `const master = instancesFromRaw(...)`.
+   - `backfillPlayerAccuracy` / `recomputeAllPlayerAccuracy` — per-row body
+     rewritten guard-first: `if (xmlErr || !xmlRow) { skipped; continue }` →
+     `gradeOverlapScoped(...)` → `if (!graded) { skipped; continue }` → ONE
+     `update(...)` writing the full overlap-scoped column set (summary +
+     breakdowns + player_accuracy). All three branches (fetch error, null grade,
+     update error) `skipped += 1`, call `onProgress`, and continue — none throws.
+     List query + `force ? all : .is("player_accuracy", null)` branch unchanged.
+     A row is either fully overlap-scoped or untouched (idempotent).
+   - Removed the obsolete `computeStoredPlayerAccuracy` wrapper (no callers
+     remained after the reroute; leaving it would be dead code / unused).
+
+4. **`app/accuracy-compare/page.tsx`** — the `analystWindow` useMemo now calls
+   `deriveOverlapWindow(master.instances, analyst.instances)` and returns
+   `{ start, end }` (the `source` field was dropped — a grep confirmed only
+   `.start`/`.end` are read, in `effectiveRange` and the manual-range
+   placeholders). Added `import { deriveOverlapWindow } from "@/lib/comparison/overlap-window"`.
+   `rangeMode`, `effectiveRange`, `inRange`, `canonical`, the Range selector UI
+   and every live grading memo are UNTOUCHED — the live-view Range behavior is
+   unchanged (requirement 5). This is a pure React `useMemo` refactor reusing an
+   already-imported helper; it uses no new Next.js API.
+
+5. **catch/catches (requirement 6)** — NO code change needed. `baseAction` in
+   `lib/comparison/xml-compare.ts` already canonicalises `\bcatches\b → catch`,
+   and the overlap-scoped stored path flows through `compareInstances` →
+   `sameBaseAction`, inheriting it. Already covered by `cross-exact.test.ts`
+   ("scores master Catch as EXACT vs analyst Catches (and vice versa)") alongside
+   no-regression cases (short vs long passes stay non-exact; unrelated-stat
+   pairing unchanged).
 
 ## Commands run and results
 
-All run from `c:\Users\AndyDin\reporting-dashboard\.worktrees\ptr-bind-fix\reporting-ui`.
+### `npx tsc --noEmit` (worktree) — CLEAN
+```
+> npx tsc --noEmit
+tsc exit=0
+```
+Type-checks the ENTIRE project, including `app/accuracy-compare/page.tsx`,
+`lib/api/accuracyChecks.ts`, the new helper and the new test. (One tsc error was
+found and fixed during development: the item-7 fixture passed a possibly-null
+`playerNumber` into the `inst` helper; fixed with `?? 0`.)
 
-- `npx tsc --noEmit` → **exit 0, clean.** No type errors, no unused-import errors (confirms the
-  removed `RefObject`/`useRef` imports and the signature/return-type changes type-check end to end).
+### `npx vitest --run lib/comparison/overlap-window.test.ts` (worktree) — KNOWN ARTIFACT
+```
+FAIL  lib/comparison/overlap-window.test.ts
+Error: No test suite found in file .../lib/comparison/overlap-window.test.ts
+Test Files  1 failed (1) / Tests  no tests
+```
+This is the KNOWN WORKTREE ARTIFACT, NOT a real failure. Running the full suite
+in the worktree reports "No test suite found" for ALL EIGHT test files
+(`dispute-permissions.test.ts`, `master-manage-logic.test.ts`,
+`review-seek.test.ts`, `cross-exact.test.ts`, `json-adapter.test.ts`,
+`overlap-window.test.ts`, `pitch-zone-stat.test.ts`, `pull-to-refresh-math.test.ts`),
+including pre-existing ones that are known-good. The cause: the worktree's
+`node_modules` is a **junction** to the main tree
+(`Target: c:\Users\AndyDin\reporting-dashboard\reporting-ui\node_modules`),
+which confuses Vitest's test discovery in a worktree.
 
-- `npm run build` (`next build`, Next.js 16.2.10 Turbopack) → **success.**
-  - "Compiled successfully", "Finished TypeScript", all 35 static pages generated.
-  - NO `/fixtures` missing-env prerender error occurred (env was present), so no known-artifact
-    note is needed this run.
-  - Benign warning only: Next.js multi-lockfile workspace-root inference warning (unrelated to this change).
+**Proof the test suite is genuinely valid and passes** — I copied the helper +
+test into the MAIN tree (real `node_modules`) and ran them there, then removed
+the copies:
+```
+> npx vitest --run lib/comparison/overlap-window.test.ts   (in main tree)
+Test Files  1 passed (1)
+     Tests  7 passed (7)
+```
+All 7 tests pass. (The two temporary copies were deleted from the main tree
+afterward; `git status` on the main tree shows no residual change.)
 
-- `npx vitest --run` → **6 test files, 56 tests, all passing** — INCLUDING the untouched
-  `lib/pwa/pull-to-refresh-math.test.ts` (7 tests). No regressions.
+### `npm run build` (`next build`, worktree) — BLOCKED BY THE SAME JUNCTION (not a code error)
+```
+FATAL: An unexpected Turbopack error occurred.
+Error [TurbopackInternalError]: Symlink [project]/node_modules is invalid,
+  it points out of the filesystem root
+  ... Execution of find_package failed ...
+```
+Next.js 16 builds with Turbopack only (`--no-turbopack` is rejected: "unknown
+option"). `next.config.js` pins `turbopack.root = __dirname` (the worktree), and
+the worktree's `node_modules` junction targets the main tree OUTSIDE that root,
+so Turbopack panics while resolving the `next` package itself — i.e. BEFORE any
+app/lib code is compiled. Reproducible with zero code changes; purely
+environmental (the worktree + junction + Turbopack combination).
 
-### Important vitest environment note (worktree junction)
+**Proof the code builds clean under the real Next.js 16** — I temporarily copied
+the 4 changed files into the MAIN tree, added `distDir: ".next-verify"` to its
+`next.config.js` (so the running dev server's `.next` on port 3000 was NOT
+touched), and ran `npm run build`:
+```
+> npm run build   (main tree, distDir .next-verify)
+├ ○ /accuracy-compare
+...  (all routes prerendered)
+○  (Static)  prerendered as static content
+Exit Code: 0
+```
+Build succeeded, including the `/accuracy-compare` route that contains the edited
+page. Afterward I restored the main tree's `accuracyChecks.ts`, `page.tsx` and
+`next.config.js` from backups, deleted the copied `overlap-window.ts` and the
+`.next-verify` output. `git status` on the main tree shows NO residual change
+from this verification. The main-tree dev server on port 3000 was never stopped
+or disturbed.
 
-This worktree's `node_modules` is a **junction** to the main tree
-(`c:\Users\AndyDin\reporting-dashboard\reporting-ui\node_modules`). Running `npx vitest --run`
-plainly from the worktree makes EVERY suite fail with `Error: No test suite found in file ...`
-(including suites this task did not touch, and including the math test that passes fine in the main
-tree). This is a vitest + junctioned-`node_modules` resolution artifact, NOT a code defect:
-vitest's worker resolves its own module instance through the junction's canonical (main-tree) path,
-which differs from the collector's path, so registered `describe`/`it` suites are not matched.
+### `npx eslint ...` (worktree) — NO NEW ERRORS INTRODUCED
+Linting the 4 touched files reports 16 errors, but EVERY one is PRE-EXISTING in
+code I did not change:
+- `app/accuracy-compare/page.tsx`: React-compiler / `react-hooks` errors at
+  lines 1318, 1520, 1735, 1886, and memoization errors at 1888/1896/1947/1991/
+  2114/2184/2194/2201 — all in untouched memos/effects (e.g. the `[result]`
+  memos), not in the `analystWindow` memo I edited (~line 1760).
+- `lib/api/accuracyChecks.ts`: 4 `@typescript-eslint/no-explicit-any` errors at
+  1047/1048/1056/1079 — inside `getSavedMasters` / `getSavedMasterXml`, untouched.
 
-Fix for running the suite here: set `NODE_OPTIONS=--preserve-symlinks --preserve-symlinks-main`
-before `npx vitest --run`. With that, the suite is green (6 files / 56 tests). This is purely a
-local test-runner invocation detail; it does not require any config change and nothing in the repo
-was modified to accommodate it (the temporary diagnostic config used to isolate the cause was deleted).
+Confirmed pre-existing by running the SAME eslint on the MAIN tree (without my
+changes): identical set of errors, only shifted by the exact line offset my new
+code adds (e.g. accuracyChecks.ts `any` at 978/979/987/1010 in main → 1047/1048/
+1056/1079 in worktree). The new `overlap-window.ts` and `overlap-window.test.ts`
+produce no lint errors.
 
-### Optional jsdom test — not shipped (honest note)
+## Reasoned walkthrough — save / propagate / backfill derive the SAME window and write consistent values
 
-The plan recommended an optional jsdom test asserting the callback ref binds the four touch
-listeners (with `touchmove` non-passive) only after a non-null element is attached. I wrote such a
-test, but it cannot run under this project's vitest setup: the test must import the hook
-(`./usePullToRefresh`), and the hook has a **value** import `import { computePull } from
-"@/lib/pwa/pull-to-refresh-math"`. Vitest here has no resolver for the `@/` value alias (there is no
-`resolve.alias` and no tsconfig-paths plugin in `vitest.config.ts`). The one existing test that
-references `@/` (`app/accuracy-compare/dispute-permissions.test.ts`) only uses `import type` from
-`@/` (erased before vite's import-analysis) and imports its runtime values relatively — so it never
-exercises `@/` value resolution. Any hook-importing test hits
-`Failed to resolve import "@/lib/pwa/pull-to-refresh-math"`.
+All three paths call ONE function, `gradeOverlapScoped`, which is the only place
+the window and the grade are computed:
 
-Making the test runnable would require editing `vitest.config.ts` to add a `@/` alias, which is
-out of scope for this task and which the plan explicitly flagged as not-present. Rather than commit
-a red suite or expand scope, the optional test was removed. The fix remains verified by a clean
-`tsc --noEmit`, a clean `next build`, and the logical proof below.
+1. **Same window.** `gradeOverlapScoped` derives the window exclusively through
+   `scopeToOverlap` → `deriveOverlapWindow`, which is the SAME pure function the
+   compare page's `analystWindow` now calls (item 4 above). `deriveOverlapWindow`
+   depends only on each side's `.mid` values and `.length`, with master-first
+   ordering + strict `<` tie-break. The window is independent of team
+   canonicalisation (it never reads `.team`), so applying it before or after
+   `canonicaliseTeams` selects the identical rows. Therefore save, update,
+   propagate and backfill — all of which pass the SAME (master XML, analyst XML,
+   tolerance, master file name) into `gradeOverlapScoped` — derive the identical
+   `[start,end]`, and that window equals what the live Overlap view shows for the
+   same two files. The parity unit test (item 5) reproduces the page's prior
+   inline math and asserts equality with `deriveOverlapWindow`.
 
-## Logical proof the fix binds listeners when <main> mounts after the pre-auth render
+2. **Same labels.** Each path canonicalises the FULL sets first with
+   `canonicaliseTeams(masterRaw, analystRaw, tol, name)` — the exact argument
+   list the page uses for its `canonical`. Scoping then filters the
+   already-canonical rows. The downstream `compareInstances` and
+   `computePlayerAccuracyByScope` re-canonicalise, but their inputs are already
+   Home/Away-only so they hit the idempotency guard and pass through unchanged.
+   Hence the stored `both`/`home`/`away` split uses the full-set labels — the
+   same labels the live Overlap view shows — not a subset-derived relabeling.
+   Item-7 test asserts the full-then-scope split equals the live-path split on a
+   fixture where team frequency order differs inside vs across the window.
 
-This is the crux of the fix.
+3. **Consistent values.** Within `gradeOverlapScoped` the summary
+   (`accuracy/exact/master_total/...`), the `category_breakdown`/`team_breakdown`
+   and the `player_accuracy` all come from the SAME scoped, same-labelled
+   instances (`compareInstances` and `computePlayerAccuracyByScope` over
+   `scoped.master`/`scoped.analyst`). So the Ex/Mas pair and the OVR/PASS/OFF/
+   DEF/GK/OTH columns can no longer disagree with each other, and all are
+   overlap-scoped. Every write path persists exactly these fields (save/update/
+   propagate/backfill use the identical column list), so a row is either fully
+   overlap-scoped or (on a null grade) explicitly null and reconciled later —
+   never a mix of overlap player_accuracy with full-game summary.
 
-1. On first mount, `AppShell` is in a PRE-AUTH early-return branch (`isPublic`, `!ready || !user`,
-   `!allowed && !fallback`, or `!allowed`). None of those branches render `<main>`, so the hook's
-   callback ref is never attached to any element. The element state `el` is therefore `null`.
-2. The binding `useEffect` now depends on `[el]`. With `el === null`, the effect's guard
-   `if (!el || !isTouchDevice()) return;` returns immediately — no listeners bind yet. Correct.
-3. When auth resolves and AppShell renders the authenticated tree, `<main ref={pull.ref}>` mounts.
-   React invokes the callback ref with the live `<main>` node, which calls `setEl(node)` →
-   state transitions `null → node`.
-4. Because the effect's dependency is the `el` STATE (not a stable ref object), React re-runs the
-   effect after this state change. This time `el` is the real `<main>`, the guard passes (on touch
-   devices), and `touchstart` / `touchmove` (`{ passive: false }`) / `touchend` / `touchcancel`
-   bind to the live `<main>`.
-5. On unmount/navigation that removes `<main>`, React calls the callback ref with `null` →
-   `setEl(null)` → the effect's cleanup runs and removes the four listeners before the next run.
+4. **Idempotent / deterministic backfill.** `backfillPlayerAccuracy` re-grades a
+   row purely from its stored XML through the same deterministic function and
+   writes the full column set; re-running yields identical values.
+   `recomputeAllPlayerAccuracy` is `backfillPlayerAccuracy(onProgress, true)` —
+   the admin-triggered, force-all historical re-scope (requirement 4).
 
-Contrast with the OLD code: it depended on `[scrollRef]`, a stable ref OBJECT whose identity never
-changes. The effect ran exactly once on mount while `scrollRef.current` was `null`, returned early,
-and never re-ran after `<main>` appeared — so listeners never bound. The callback-ref/`[el]`
-dependency is exactly what makes the effect re-run on the `null → node` transition.
+## MUST be run by the user as admin (cannot run here)
 
-## Final confirmation requires a real device (cannot be automated here)
+The historical DB bulk re-scope — **`recomputeAllPlayerAccuracy` (force=true)**,
+triggered in-app from the Accuracy History page by an admin — MUST be run by the
+user. It cannot run from this environment because it needs the browser
+`DOMParser` (grading is client-side) and an authenticated Supabase session.
 
-The actual pull-to-refresh gesture depends on real touch events and the installed/standalone PWA
-context, neither of which is reproducible in this build/jsdom environment. Final confirmation that
-pulling down at the top of a page triggers a reload must be done by the USER on a real mobile device
-or installed PWA (hold and drag down at the top of the scroll area to reload).
+## Stakeholder-visible knock-on
+
+Once stored values change (new/updated/propagated checks immediately, and all
+historical checks after the admin runs the backfill), EVERY analyst's historical
+average and leaderboard position shifts materially: overlap scope reads HIGHER
+than full-game (the analyst is now scored only on the section they actually
+coded, not penalised for the rest of the match they never touched). Until the
+admin runs the backfill, Accuracy History will MIX overlap-scoped new rows with
+full-game old rows; this is expected and converges once backfill completes
+(idempotent). The `masterTotalMismatches` sibling banner may also fire more often
+under overlap scope — advisory only, not changed here.

@@ -75,6 +75,7 @@ import {
   playerNumberMapFromReport,
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
+import { deriveOverlapWindow } from "@/lib/comparison/overlap-window";
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import ManageMastersDialog from "./ManageMastersDialog";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
@@ -1752,20 +1753,16 @@ function AccuracyCompareInner() {
     }
   }, [gradedAnalyst, analyst, master, labelEdited]);
 
+  // Overlap window = the section the analyst coded. Derived via the SHARED
+  // pure helper so the live Overlap view and every stored-accuracy path
+  // (save/update/propagate/backfill) compute the SAME window from the same
+  // inputs. Only .start/.end are read downstream (the `source` field the inline
+  // version carried was never consumed, so it is dropped).
   const analystWindow = useMemo(() => {
-    const files = [master, analyst].filter(
-      (f): f is LoadedFile => !!f && f.instances.length > 0
-    );
-    if (files.length === 0) return null;
-    const smaller = files.reduce((a, b) =>
-      b.instances.length < a.instances.length ? b : a
-    );
-    const mids = smaller.instances.map((i) => i.mid);
-    return {
-      start: Math.min(...mids),
-      end: Math.max(...mids),
-      source: smaller.name,
-    };
+    if (!master || !analyst) return null;
+    const w = deriveOverlapWindow(master.instances, analyst.instances);
+    if (!w) return null;
+    return { start: w.start, end: w.end };
   }, [master, analyst]);
 
   const effectiveRange = useMemo(() => {
