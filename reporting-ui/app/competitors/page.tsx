@@ -632,6 +632,10 @@ function ReadyReckoner({
 }) {
   const [cells, setCells] = useState<Map<string, CapabilityCell>>(new Map());
   const [loading, setLoading] = useState(true);
+  // Declared with the other hooks (before any early return) so hook order is
+  // stable across renders — React's rules of hooks.
+  const [seedingCaps, setSeedingCaps] = useState(false);
+  const [seedMsg, setSeedMsg] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -710,8 +714,6 @@ function ReadyReckoner({
     );
   }
 
-  const [seedingCaps, setSeedingCaps] = useState(false);
-  const [seedMsg, setSeedMsg] = useState<string | null>(null);
   const runSeedCaps = async () => {
     setSeedingCaps(true);
     setSeedMsg(null);
