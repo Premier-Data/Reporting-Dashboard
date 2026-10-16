@@ -38,6 +38,7 @@ import {
   CAPABILITIES,
   listCapabilityCells,
   setCapabilityCell,
+  seedResearchedCapabilities,
   type Competitor,
   type CompetitorSource,
   type CompetitorPost,
@@ -709,14 +710,52 @@ function ReadyReckoner({
     );
   }
 
+  const [seedingCaps, setSeedingCaps] = useState(false);
+  const [seedMsg, setSeedMsg] = useState<string | null>(null);
+  const runSeedCaps = async () => {
+    setSeedingCaps(true);
+    setSeedMsg(null);
+    try {
+      const res = await seedResearchedCapabilities();
+      setSeedMsg(
+        res.set === 0
+          ? "No new cells set (researched competitors already have ratings)."
+          : `Set ${res.set} researched cell(s). Review and confirm.`
+      );
+      await load();
+    } catch (e) {
+      setSeedMsg(e instanceof Error ? e.message : "Seed failed.");
+    } finally {
+      setSeedingCaps(false);
+    }
+  };
+
   return (
     <div>
-      <p className="mb-3 text-xs text-slate-400">
-        How each competitor compares to Premier Data across its service
-        capabilities. The <span className="text-sky-300">Premier Data</span>{" "}
-        column is the baseline; competitor cells start as “?” — set each from
-        research. ✓ full · ~ partial · ✕ none · ? unknown.
-      </p>
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+        <p className="max-w-2xl text-xs text-slate-400">
+          How each competitor compares to Premier Data across its service
+          capabilities. The <span className="text-sky-300">Premier Data</span>{" "}
+          column is the baseline; competitor cells start as “?” — set each from
+          research. ✓ full · ~ partial · ✕ none · ? unknown.
+        </p>
+        {isAdmin && (
+          <button
+            onClick={runSeedCaps}
+            disabled={seedingCaps}
+            title="Fill a first-pass of ratings for the well-documented competitors (won't overwrite your edits)"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-white/10 disabled:opacity-50"
+          >
+            {seedingCaps ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+            Seed researched ratings
+          </button>
+        )}
+      </div>
+      {seedMsg && (
+        <div className="mb-3 rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-xs text-sky-200">
+          {seedMsg}
+        </div>
+      )}
       <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 bg-[#0d1526]">

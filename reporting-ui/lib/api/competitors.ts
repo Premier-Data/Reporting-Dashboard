@@ -279,6 +279,106 @@ export async function listCapabilityCells(): Promise<CapabilityCell[]> {
   return (data ?? []) as CapabilityCell[];
 }
 
+// Researched FIRST-PASS capability ratings for the well-documented
+// competitors, keyed by competitor name. Based on their public sites (verified
+// Oct 2026). Every cell carries a "needs confirming" posture — treat as a
+// starting point, not gospel. Only capabilities that differ from "unknown" are
+// listed; anything omitted stays "unknown" for manual research.
+//
+// Models in brief (from research):
+//  - iSportsAnalysis: online video-analysis + tagging + stats software; self-
+//    serve (coaches/clubs tag themselves), multi-sport, shareable. NOT a
+//    managed remote-analyst service; no live scores.
+//  - GamePulse: self-capture live scoring/stats app for coaches/clubs; multi-
+//    sport (AFL now, others coming). Not analyst-led, not video analysis.
+//  - PlayHQ: competition management + registration + live scoring/stats; not
+//    video analysis, not a managed analyst service.
+//  - Dartfish: video tagging/analysis software; self-serve, multi-sport. No
+//    managed service, no live scores, not grassroots-specific.
+const RESEARCHED_RATINGS: Record<
+  string,
+  Partial<Record<string, CapabilityRating>>
+> = {
+  iSportsAnalysis: {
+    remote_analysts: "no",
+    match_stats: "yes",
+    video_analysis: "yes",
+    team_lists: "unknown",
+    grassroots_focus: "partial",
+    accuracy_qa: "no",
+    dispute_review: "no",
+    analyst_benchmarking: "no",
+    live_scores: "no",
+    live_push: "no",
+    multi_sport: "yes",
+    reporting: "yes",
+    managed_service: "no",
+    self_capture_app: "yes",
+  },
+  GamePulse: {
+    remote_analysts: "no",
+    match_stats: "yes",
+    video_analysis: "no",
+    grassroots_focus: "yes",
+    accuracy_qa: "no",
+    live_scores: "yes",
+    multi_sport: "partial",
+    reporting: "partial",
+    managed_service: "no",
+    self_capture_app: "yes",
+  },
+  PlayHQ: {
+    remote_analysts: "no",
+    match_stats: "partial",
+    video_analysis: "no",
+    team_lists: "yes",
+    grassroots_focus: "yes",
+    live_scores: "yes",
+    multi_sport: "yes",
+    fixture_management: "yes",
+    reporting: "partial",
+    managed_service: "no",
+    self_capture_app: "yes",
+  },
+  Dartfish: {
+    remote_analysts: "no",
+    match_stats: "yes",
+    video_analysis: "yes",
+    grassroots_focus: "no",
+    accuracy_qa: "no",
+    live_scores: "no",
+    multi_sport: "yes",
+    reporting: "partial",
+    managed_service: "no",
+    self_capture_app: "yes",
+  },
+};
+
+/**
+ * Seed the researched first-pass capability ratings for the well-documented
+ * competitors. Only writes cells that are still "unknown" (never overwrites a
+ * rating someone has already set by hand). Returns how many cells were set.
+ */
+export async function seedResearchedCapabilities(): Promise<{ set: number }> {
+  const comps = await listCompetitors(true);
+  const existing = await listCapabilityCells();
+  const existingKeys = new Set(
+    existing.map((c) => `${c.competitor_id}|${c.capability_key}`)
+  );
+  let set = 0;
+  for (const comp of comps) {
+    const ratings = RESEARCHED_RATINGS[comp.name];
+    if (!ratings) continue;
+    for (const [key, rating] of Object.entries(ratings)) {
+      if (!rating || rating === "unknown") continue;
+      if (existingKeys.has(`${comp.id}|${key}`)) continue; // don't clobber manual edits
+      await setCapabilityCell(comp.id, key, rating, "First-pass from research — confirm");
+      set += 1;
+    }
+  }
+  return { set };
+}
+
 /** Upsert one competitor×capability cell (rating + note). */
 export async function setCapabilityCell(
   competitorId: number,
