@@ -1,0 +1,12 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Single-zone offset assumption",
+      "severity": "informational",
+      "confidence": "confirmed",
+      "detail": "NTFL_UTC_OFFSET = \"+09:30\" is hard-coded for Australia/Darwin (no DST). Correct for every current NTFL grade, but a future grade in a DST-observing or different zone would compute a wrong kickoff and mis-window its candidates. Non-blocking: the code comment already documents the remedy (per-fixture schedule.timezone -> offset lookup inside scheduledKickoffMs)."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\worker-live-detect\\playhq-worker\\.agents\\tasks\\review.md"
+}
