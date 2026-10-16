@@ -34,6 +34,16 @@ KNOWN_GRADE_IDS = "be950883-7630-4df5-81e4-a5bba0f24cb6,61ca876d-f028-4f60-ad85-
 # TT REST system that live scores + team lists are pushed to (scheduled job +
 # /api/push). No auth required on its write endpoints.
 TT_BASE_URL = "https://pdrest.advancedhp.com.au"
+# Supabase (same project the dashboard uses) for the competitor-intelligence
+# collector: reads competitor_sources, writes competitor_posts. The anon key
+# is already public in the static site and these tables have RLS disabled, so
+# it's safe to commit here (same posture as the rest of the stack).
+SUPABASE_URL = "https://uizimmfujhpuiqhjofzf.supabase.co"
+SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVpemltbWZ1amhwdWlxaGpvZnpmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODE1NzU2MzIsImV4cCI6MjA5NzE1MTYzMn0.kQBVjF5-NAe972IDZuQYrgYmU3njuU-HTI3Wp9pVh54"
+# How often (minutes) to poll competitor RSS/YouTube feeds. The collector only
+# runs on cron ticks that are a multiple of this, so it's independent of the
+# 2-minute score push.
+COMPETITOR_POLL_MINUTES = "30"
 
 # ── Route to your personal domain ───────────────────────────────────────────
 # Uncomment and set once your domain is on Cloudflare. Either a subdomain:

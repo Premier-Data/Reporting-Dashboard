@@ -43,6 +43,12 @@ export interface Env {
   // KV namespace holding the most recent TT pushes, so the production dashboard
   // can render a live push-activity feed (via /api/push-log) from any device.
   PUSH_LOG?: KVNamespace;
+  // Supabase (competitor-intelligence collector): read competitor_sources,
+  // write competitor_posts.
+  SUPABASE_URL?: string;
+  SUPABASE_ANON_KEY?: string;
+  // Poll cadence (minutes) for competitor RSS/YouTube feeds.
+  COMPETITOR_POLL_MINUTES?: string;
 }
 
 // Default grades the /live endpoint searches to resolve a game's teams.
@@ -1082,6 +1088,210 @@ function toFixtureLite(game: Record<string, unknown>): FixtureLite {
   };
 }
 
+// ── Competitor-intelligence collector ────────────────────────────────────────
+// Polls each competitor_source whose collection_method is rss/youtube, parses
+// new items, and inserts them into competitor_posts (deduped). Runs on the cron
+// every COMPETITOR_POLL_MINUTES. Social platforms (manual) are never polled.
+
+type CompetitorSourceRow = {
+  id: number;
+  competitor_id: number;
+  platform: string;
+  profile_url: string;
+  feed_url: string | null;
+  collection_method: string;
+};
+
+type FeedItem = {
+  externalId: string;
+  title: string;
+  url: string;
+  publishedAt: string | null;
+};
+
+// Minimal Supabase REST helpers (no SDK in the worker). RLS is disabled on
+// these tables, so the anon key suffices for read + insert.
+async function sbGet(
+  env: Env,
+  pathAndQuery: string
+): Promise<unknown[]> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) return [];
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${pathAndQuery}`, {
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`supabase get ${res.status}`);
+  return (await res.json()) as unknown[];
+}
+
+async function sbInsert(
+  env: Env,
+  table: string,
+  rows: Record<string, unknown>[]
+): Promise<void> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || rows.length === 0) return;
+  // Prefer resolution=ignore-duplicates so the unique (competitor_id,
+  // external_id) index drops repeats instead of erroring the whole batch.
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=ignore-duplicates,return=minimal",
+    },
+    body: JSON.stringify(rows),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`supabase insert ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+}
+
+// Pull the text content of the FIRST matching tag inside a block.
+function tagText(block: string, tag: string): string | null {
+  const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  if (!m) return null;
+  return decodeXmlEntities(stripCdata(m[1]).trim());
+}
+
+function stripCdata(s: string): string {
+  return s.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1");
+}
+
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+// Parse a feed body into items. Handles YouTube/Atom (<entry>) and RSS
+// (<item>). Returns newest-first order as the feed provides.
+function parseFeed(body: string): FeedItem[] {
+  const items: FeedItem[] = [];
+
+  // Atom (YouTube channel feeds are Atom): <entry>…</entry>.
+  const entryBlocks = body.match(/<entry[\s\S]*?<\/entry>/gi) ?? [];
+  for (const block of entryBlocks) {
+    // YouTube: <yt:videoId>, link href, <published>, <title>.
+    const videoId = tagText(block, "yt:videoId");
+    const linkMatch = block.match(/<link[^>]*href="([^"]+)"[^>]*\/?>/i);
+    const url = linkMatch?.[1] ?? "";
+    const title = tagText(block, "title") ?? "";
+    const published = tagText(block, "published") ?? tagText(block, "updated");
+    const id = videoId || tagText(block, "id") || url;
+    if (id && url) {
+      items.push({ externalId: id, title, url, publishedAt: published });
+    }
+  }
+  if (items.length > 0) return items;
+
+  // RSS: <item>…</item>.
+  const itemBlocks = body.match(/<item[\s\S]*?<\/item>/gi) ?? [];
+  for (const block of itemBlocks) {
+    const url = tagText(block, "link") ?? "";
+    const title = tagText(block, "title") ?? "";
+    const guid = tagText(block, "guid") || url;
+    const pub = tagText(block, "pubDate") || tagText(block, "dc:date");
+    let iso: string | null = null;
+    if (pub) {
+      const d = new Date(pub);
+      iso = Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+    if (guid && url) {
+      items.push({ externalId: guid, title, url, publishedAt: iso });
+    }
+  }
+  return items;
+}
+
+// Poll all rss/youtube sources and insert new posts. Returns a summary. Never
+// throws — a single bad feed is logged and skipped so others still collect.
+async function collectCompetitorPosts(env: Env): Promise<{
+  sources: number;
+  inserted: number;
+}> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    console.log("competitor collector: Supabase not configured");
+    return { sources: 0, inserted: 0 };
+  }
+  let sources: CompetitorSourceRow[] = [];
+  try {
+    sources = (await sbGet(
+      env,
+      "competitor_sources?select=id,competitor_id,platform,profile_url,feed_url,collection_method&collection_method=in.(rss,youtube)"
+    )) as CompetitorSourceRow[];
+  } catch (e) {
+    console.log("competitor collector: load sources failed:", e instanceof Error ? e.message : "err");
+    return { sources: 0, inserted: 0 };
+  }
+
+  let inserted = 0;
+  for (const src of sources) {
+    const feedUrl = src.feed_url || src.profile_url;
+    if (!feedUrl) continue;
+    try {
+      const res = await fetch(feedUrl, {
+        headers: { "User-Agent": "premier-data-competitor-collector/1.0" },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        await markSourceChecked(env, src.id, `http_${res.status}`);
+        continue;
+      }
+      const body = await res.text();
+      const items = parseFeed(body).slice(0, 15); // cap per poll
+      if (items.length === 0) {
+        await markSourceChecked(env, src.id, "no_items");
+        continue;
+      }
+      const rows = items.map((it) => ({
+        competitor_id: src.competitor_id,
+        source_id: src.id,
+        platform: src.platform,
+        external_id: it.externalId,
+        title: it.title || null,
+        url: it.url,
+        published_at: it.publishedAt,
+      }));
+      await sbInsert(env, "competitor_posts", rows);
+      inserted += rows.length;
+      await markSourceChecked(env, src.id, "ok");
+    } catch (e) {
+      await markSourceChecked(env, src.id, e instanceof Error ? e.message.slice(0, 40) : "error");
+    }
+  }
+  console.log(`competitor collector: polled ${sources.length} source(s), upserted up to ${inserted} item(s)`);
+  return { sources: sources.length, inserted };
+}
+
+// Stamp a source's last_checked_at + last_status (best effort).
+async function markSourceChecked(env: Env, id: number, status: string): Promise<void> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) return;
+  try {
+    await fetch(`${env.SUPABASE_URL}/rest/v1/competitor_sources?id=eq.${id}`, {
+      method: "PATCH",
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({ last_checked_at: new Date().toISOString(), last_status: status }),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    // non-fatal
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -1385,6 +1595,14 @@ export default {
       return json({ count: results.length, results }, 200, cors);
     }
 
+    // /api/collect-competitors — manually run the competitor feed collector
+    // (same work the cron does). Returns how many sources were polled and
+    // items upserted. Lets you populate the activity feed on demand.
+    if (url.pathname === "/api/collect-competitors") {
+      const result = await collectCompetitorPosts(env);
+      return json(result, 200, cors);
+    }
+
     // /api/push-log — the most recent TT pushes (newest first), so the
     // production dashboard can render a live push-activity feed from any
     // device. Read-only; no cache so it's always current.
@@ -1517,5 +1735,18 @@ export default {
       await recordPushLog(env, base, results);
     })();
     ctx.waitUntil(task);
+
+    // Competitor-intelligence collector — runs on cron ticks that are a
+    // multiple of COMPETITOR_POLL_MINUTES (default 30), independent of the
+    // 2-minute score push. Polls competitor RSS/YouTube feeds into Supabase.
+    const pollEvery = Math.max(2, Number(env.COMPETITOR_POLL_MINUTES ?? "30") || 30);
+    const minutes = Math.floor(Date.now() / 60_000);
+    if (minutes % pollEvery === 0) {
+      ctx.waitUntil(
+        collectCompetitorPosts(env).catch((e) =>
+          console.log("competitor collector error:", e instanceof Error ? e.message : "err")
+        )
+      );
+    }
   },
 };

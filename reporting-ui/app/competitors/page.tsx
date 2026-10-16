@@ -426,23 +426,32 @@ function SourcesEditor({
 }) {
   const [platform, setPlatform] = useState<SourcePlatform>("website");
   const [url, setUrl] = useState("");
+  const [feedUrl, setFeedUrl] = useState("");
   const [adding, setAdding] = useState(false);
+
+  const method = defaultMethod(platform);
+  const isAuto = method !== "manual";
 
   const add = async () => {
     if (!url.trim()) return;
     setAdding(true);
     try {
+      // For auto sources, use the explicit feed URL when given; otherwise fall
+      // back to the profile URL (works when the profile URL IS a feed, e.g. a
+      // pasted youtube.com/feeds/videos.xml?... link or a blog's /feed URL).
+      const feed = isAuto ? feedUrl.trim() || url.trim() : null;
       await addSource({
         competitor_id: competitorId,
         platform,
         profile_url: url.trim(),
-        feed_url: null,
-        collection_method: defaultMethod(platform),
+        feed_url: feed,
+        collection_method: method,
         last_checked_at: null,
         last_status: null,
         last_reviewed_at: null,
       });
       setUrl("");
+      setFeedUrl("");
       await onChange();
     } finally {
       setAdding(false);
@@ -491,7 +500,7 @@ function SourcesEditor({
           )}
         </ul>
       )}
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <select
           value={platform}
           onChange={(e) => setPlatform(e.target.value as SourcePlatform)}
@@ -505,8 +514,20 @@ function SourcesEditor({
           value={url}
           onChange={(e) => setUrl(e.target.value)}
           placeholder="Profile / page URL"
-          className="flex-1 rounded-md border border-white/10 bg-[#0d1526] px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
+          className="min-w-[160px] flex-1 rounded-md border border-white/10 bg-[#0d1526] px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500"
         />
+        {isAuto && (
+          <input
+            value={feedUrl}
+            onChange={(e) => setFeedUrl(e.target.value)}
+            placeholder={
+              platform === "youtube"
+                ? "Feed URL (youtube.com/feeds/videos.xml?channel_id=…)"
+                : "RSS/Atom feed URL (optional — defaults to the page URL)"
+            }
+            className="min-w-[200px] flex-1 rounded-md border border-emerald-500/30 bg-[#0d1526] px-2 py-1 text-xs text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+          />
+        )}
         <button
           onClick={add}
           disabled={adding || !url.trim()}
@@ -516,8 +537,11 @@ function SourcesEditor({
         </button>
       </div>
       <p className="mt-1.5 text-[10px] text-slate-500">
-        YouTube and blog links auto-collect; X / Instagram / Facebook / LinkedIn
-        / TikTok are tracked as manual “open profile” links (no free live feed).
+        YouTube and blog links auto-collect (every ~30 min); X / Instagram /
+        Facebook / LinkedIn / TikTok are tracked as manual “open profile” links
+        (no free live feed). For YouTube, paste the channel’s feed URL
+        <span className="text-slate-400"> youtube.com/feeds/videos.xml?channel_id=…</span>
+        — find the channel_id in the channel’s page source.
       </p>
     </div>
   );
