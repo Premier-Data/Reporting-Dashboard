@@ -186,6 +186,28 @@ export async function listRecentPosts(limit = 100): Promise<CompetitorPost[]> {
   return (data ?? []) as CompetitorPost[];
 }
 
+// The Cloudflare Worker base (same one the Live Scores feature uses) — it hosts
+// the competitor feed collector. Falls back to the workers.dev default.
+const WORKER_BASE =
+  process.env.NEXT_PUBLIC_PLAYHQ_WORKER_URL?.replace(/\/$/, "") ||
+  "https://playhq-scores.premier-data-enterprise.workers.dev";
+
+/**
+ * Manually run the feed collector NOW (the same job the worker cron runs every
+ * ~30 min): polls every rss/youtube source and upserts new posts into
+ * competitor_posts. Returns how many sources were polled and items upserted.
+ */
+export async function syncCompetitorFeeds(): Promise<{
+  sources: number;
+  inserted: number;
+}> {
+  const res = await fetch(`${WORKER_BASE}/api/collect-competitors`, {
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Sync failed (HTTP ${res.status})`);
+  return (await res.json()) as { sources: number; inserted: number };
+}
+
 // ── Seed ─────────────────────────────────────────────────────────────────────
 //
 // The initial competitor register. URLs verified via web search where noted;

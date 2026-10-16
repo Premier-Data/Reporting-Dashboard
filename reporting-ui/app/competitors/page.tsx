@@ -34,6 +34,7 @@ import {
   markSourceReviewed,
   listRecentPosts,
   seedCompetitors,
+  syncCompetitorFeeds,
   type Competitor,
   type CompetitorSource,
   type CompetitorPost,
@@ -98,6 +99,7 @@ export default function CompetitorsPage() {
   const [expanded, setExpanded] = useState<number | null>(null);
   const [editing, setEditing] = useState<Competitor | "new" | null>(null);
   const [seeding, setSeeding] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -157,6 +159,25 @@ export default function CompetitorsPage() {
     }
   };
 
+  const runSync = async () => {
+    if (!isAdmin) return;
+    setSyncing(true);
+    setNotice(null);
+    try {
+      const res = await syncCompetitorFeeds();
+      setNotice(
+        res.sources === 0
+          ? "Sync ran, but no auto (YouTube/RSS) sources are configured yet. Add a feed URL to a competitor's YouTube/blog source."
+          : `Synced ${res.sources} feed source(s); up to ${res.inserted} item(s) collected.`
+      );
+      await load();
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "Sync failed.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   const removeCompetitor = async (c: Competitor) => {
     if (!isAdmin) return;
     if (!window.confirm(`Delete "${c.name}" and all its sources?`)) return;
@@ -202,6 +223,15 @@ export default function CompetitorsPage() {
                 Seed starter list
               </button>
             )}
+            <button
+              onClick={runSync}
+              disabled={syncing}
+              title="Collect new posts from YouTube/RSS sources now"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-200 hover:bg-emerald-500/20 disabled:opacity-50"
+            >
+              {syncing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+              {syncing ? "Syncing…" : "Sync now"}
+            </button>
             <button
               onClick={() => setEditing("new")}
               className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white hover:bg-sky-700"
