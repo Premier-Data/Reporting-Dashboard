@@ -1,90 +1,58 @@
-# Verification — live-during-play detection fix in `liveFixtureIds`
-
-Scope of change: ONLY `playhq-worker/src/index.ts`. No changes to reporting-ui,
-wrangler.toml, payload builders, cron schedule, the display fixture map, or any
-npm dependency. `git status` after cleanup shows only `src/index.ts` modified
-(plus the untracked `.agents/` task dir) and no stray scratch/temp files.
+# Verification — score-source fix (spectator-derived live score in pushFixtureToTT)
 
 ## What changed
+`src/index.ts` only. Scope: `pushFixtureToTT` + two new PURE helpers (`liveHasScore`, `chooseLive`).
 
-1. Added pure, exported, testable helpers above `pushFixtureToTT`:
-   - `WINDOW_BEFORE_MS` (30 min) / `WINDOW_AFTER_MS` (4 h) — mirror the UI window.
-   - `NTFL_UTC_OFFSET = "+09:30"` — Darwin fixed offset (no DST). Documented
-     rationale: the Worker runs in UTC, so unlike the browser UI it must apply
-     the venue offset explicitly or the window would be ~9.5 h wrong.
-   - `scheduledKickoffMs({date,time})` → kickoff epoch ms, or `null` when the
-     date is missing/unparseable. Mirrors the UI `scheduleDate` + explicit offset.
-   - `restStatusUnknown(status)` → `""`/`"NULL"` (verbatim from UI semantics).
-   - `isSpectatorLive(status)` → `IN_PROGRESS`/`LIVE` (mirrors UI `isLive`).
-   - `isLiveCandidate(status, scheduledMs, nowMs)` → true when status is
-     unknown OR `UPCOMING` AND kickoff is inside the window. Excludes
-     FINAL/IN_PROGRESS/LIVE.
-   - `mapPool(items, limit, fn)` → bounded-concurrency (limit 4) worker pool
-     returning `PromiseSettledResult[]`; never rejects (per-item try/catch).
+- Added `liveHasScore(live)` — true when any of total/goals/behinds on either side is a real `number` (the spectator normaliser leaves them `null` when the feed has no data; a live game fills them, including genuine 0).
+- Added `chooseLive(spectatorLive, summaryLive)` — returns the spectator-derived `live` when it carries a usable score, else the summary-derived `live`. Pure, no I/O, never throws.
+- In `pushFixtureToTT`:
+  - Kept `resolveFullGame` + `fetchGameSummary`.
+  - `summaryToScorersPeriods` output renamed to `summaryLive` (fallback source). Team-list push (`summaryToTeamLists` -> `lists` -> `ttTeamBody`) is UNCHANGED.
+  - Built `spectatorLive` the same way `/api/fixtures/:id/live` does: `toFixtureLite(full)` for team identity, then `fetchGame(shortId, env)` + `normaliseLive(shortId, game, { home: lite.home, away: lite.away })`. Wrapped in try/catch so a spectator-fetch failure yields `null` (never throws out of the push).
+  - `const live = chooseLive(spectatorLive, summaryLive);` feeds both `ttScoreBody(fullId, live)` AND the push-log `score` string + `match` — so the Push Activity log shows the real in-play score.
+  - `status` / `competition` / `round` metadata still read from the summary / `full` record (unchanged).
 
-2. Rewrote `liveFixtureIds(env)` to UNION two passes, keeping the FULL-UUID
-   return shape that `pushFixtureToTT` → `resolveFullGame` already accepts:
-   - (a) Cheap first pass, UNCHANGED behaviour: any grade-feed game whose REST
-     status is already `IN_PROGRESS`/`LIVE` is added (no regression).
-   - (b) Spectator probe: non-live games that are in-window + unknown/UPCOMING
-     become candidates `{ fullId, shortId: fullId.split("-")[0] }`, collected
-     across all grades, then probed via the existing `fetchGame(shortId, env)`
-     (same spectator `game` op behind `/api/fixtures/:id/live`) with
-     `mapPool(..., 4, ...)`. Candidates the spectator feed reports as live are
-     added by their FULL id. Rejected probes are ignored, never rethrown.
+### Why no ctx / no extra fetch
+`resolveGameTeams(gameId, env, ctx)` internally is exactly `resolveFullGame(gameId, env)` -> `toFixtureLite(match)` -> `{ home: lite.home, away: lite.away }` (it ignores `ctx` via `void ctx`). `pushFixtureToTT` already holds the resolved `full` record, so `toFixtureLite(full)` yields the identical `GameTeams` value with no network call and no `ExecutionContext` plumbing. `GameTeams = { home: FixtureTeam; away: FixtureTeam } | null` and `toFixtureLite` returns `home`/`away` of type `FixtureTeam` ({id,name}) — shapes line up exactly, no adaptation needed.
 
-## Commands run and results
+## Commands run
 
-- `npm run typecheck` (= `tsc --noEmit`, worker's real tsconfig with Cloudflare
-  worker types, `strict: true`) — **Exit 0 (GREEN)**. Run in the worktree
-  worker dir `.worktrees\worker-live-detect\playhq-worker`. The node_modules
-  junction resolved fine; no fallback to the main tree was needed.
-- `npx wrangler deploy --dry-run --outdir .wrangler-dryrun-tmp` — **Exit 0**,
-  reported `Total Upload: 48.56 KiB / gzip: 13.73 KiB`. Dry run only, no deploy.
-  Temp outdir deleted afterwards. (Wrangler 3.114.17 printed an out-of-date
-  advisory; non-fatal.)
-- Pure-helper unit test: no test runner is installed and new deps are forbidden,
-  so a throwaway `src/_scratch_live_detect.test.mts` was run with Node 22.19's
-  built-in `node:test` + `node:assert/strict`. Because Node's strip-only mode
-  rejects `index.ts`'s TS parameter property (`UpstreamError(public status)`),
-  `index.ts` was first transpiled to a temp `.wrangler-tsc-tmp/index.js`
-  (`npx tsc ... --outDir .wrangler-tsc-tmp`; it still emits JS despite the
-  expected missing-ambient-type errors) and the test imported the emitted JS.
-  Result: **8 tests, 8 pass, 0 fail**. Scratch file and temp dir deleted
-  afterwards; `npm run typecheck` re-run — still GREEN.
+### 1. Typecheck — WORKTREE tree
+Tree: `c:\Users\AndyDin\reporting-dashboard\.worktrees\worker-score-source\playhq-worker`
+```
+npm run typecheck   # tsc --noEmit
+```
+Exit code: **0** (clean). The worktree's node_modules junction resolved fine — typecheck was run in the WORKTREE, not the main tree.
 
-### Assertions that passed
-- `scheduledKickoffMs({date:"2026-10-16",time:"19:40:00"})` ===
-  `Date.parse("2026-10-16T19:40:00+09:30")`; `null` for missing/bad/`null` date.
-- `restStatusUnknown` true for `""`/`"NULL"`/`null`/`undefined`, false for
-  `UPCOMING`/`FINAL`.
-- `isSpectatorLive` true for `IN_PROGRESS`/`LIVE`, false otherwise.
-- `isLiveCandidate("UPCOMING"/"",kickoff,…)` true at kickoff and at both window
-  edges (−29 min, +3 h); false at −31 min and +5 h; false for `FINAL` and
-  `IN_PROGRESS`; false when `scheduledMs` is `null`.
+### 2. Bundle without deploy — WORKTREE tree
+```
+npx wrangler deploy --dry-run
+```
+Exit code: **0**. "Total Upload: 49.34 KiB / gzip: 13.90 KiB ... --dry-run: exiting now." No real deploy performed. (Wrangler printed an out-of-date-version warning, non-fatal.)
 
-## Reasoned walkthrough of the required scenarios
+### 3. Throwaway pure-logic test (created, run, deleted)
+`__chooseLive.throwaway.mjs` mirrored `liveHasScore` + `chooseLive` and asserted the cases below.
+```
+node __chooseLive.throwaway.mjs   ->  "all chooseLive cases passed"  (exit 0)
+```
+File deleted afterwards (`Test-Path` -> False).
 
-(a) **Game live NOW** (REST `UPCOMING`, spectator `IN_PROGRESS`, within window):
-    the cheap pass skips it (REST not live), but `isLiveCandidate` returns true
-    so it is queued; `fetchGame(shortId)` returns `status: "IN_PROGRESS"`,
-    `isSpectatorLive` is true, and its FULL id is added → pushed. ✔
+## Reasoned walkthrough (acceptance criteria)
 
-(b) **Far-future / long-past UPCOMING game**: `isLiveCandidate` is false
-    (outside the 30-min-before / 4-h-after window), so it is never queued and
-    never probed — bounding cost to a handful of probes per tick. ✔
+- **(a) LIVE game pushes the spectator score (non-zero, matches /live):** spectator feed yields `home.total=26, away.total=34` (real numbers). `liveHasScore(spectatorLive)` is true, so `chooseLive` returns `spectatorLive`. `ttScoreBody` reads `live.home.goals/behinds` + `live.away.goals/behinds` from that spectator normaliser — the exact fields `normaliseLive` fills from `statistics` `TOTAL_GOALS`/`TOTAL_BEHINDS`/`TOTAL_SCORE`, i.e. the same values `/api/fixtures/:id/live` returns. Zeros eliminated. Verified by throwaway case (a) and (d) (a just-started 0-0 live feed with numeric zeros is still chosen over a null summary).
 
-(c) **Spectator fetch error for one candidate**: `mapPool` wraps each `fn` call
-    in try/catch and records a `rejected` settled result; the loop only acts on
-    `fulfilled` results, so one failing probe is skipped and never aborts the
-    batch or the scheduled loop (mirrors the worker's never-throw discipline). ✔
+- **(b) FINAL game still pushes correct totals via summary fallback:** post-game the spectator feed can be empty (all `null`). `liveHasScore(spectatorLive)` is false, so `chooseLive` returns `summaryLive`, which for a FINAL NTFL game carries real `scoreTotal` / `TOTAL_GOALS` / `TOTAL_BEHINDS`. Verified by throwaway case (b).
 
-(d) **FINAL games**: `isLiveCandidate` excludes FINAL (not unknown/UPCOMING), so
-    FINAL games are never probed. FINAL-time pushes are unaffected — this
-    function only decides which fixtures to forward; the existing cheap pass and
-    the downstream FINAL/accepted-score push paths are unchanged. ✔
+- **(c) spectator-fetch failure falls back to summary, never throws:** `fetchGame`/`normaliseLive` are wrapped in try/catch setting `spectatorLive = null`; `chooseLive(null, summaryLive)` returns `summaryLive`. The push proceeds; no throw escapes `pushFixtureToTT` (its existing never-throw discipline — early returns for not-found / summary-failed — is preserved, and the new code adds only a swallowing try/catch). Verified by throwaway case (c).
 
-(e) **Returned id shape**: still a `string[]` of FULL grade-feed UUIDs (both
-    passes add `fullId`). `pushFixtureToTT(id)` → `resolveFullGame(id)` matches
-    on `full === id || full.split("-")[0] === id`, so a full UUID is accepted —
-    contract unchanged. ✔
+- **(d) team-list push unchanged:** `summaryToTeamLists(shortId, summary)` -> `lists` -> `ttTeamBody(fullId, lists)` path is byte-for-byte unchanged. Team lists remain sourced from the authoritative REST summary roster.
+
+- **(e) log score string reflects real in-play score:** the push-log `score` and `match` strings read from the same chosen `live`, so the Push Activity log now shows the spectator in-play score during play (and the summary totals when final / on fallback).
+
+- **(f) ttScoreBody team ids remain valid UUIDs:** spectator path ids come from `toFixtureLite(full)` -> `competitors[].id` (grade-feed team UUIDs) — the SAME source the previous summary path used (`summaryToScorersPeriods` also read `competitors[].id`) and the same ids `/live` returns via `resolveGameTeams`. So the UUIDs TT keys on are unchanged between paths; no risk of id drift.
+
+## Junction reminder
+The worktree uses a `node_modules` junction into the main tree. Here it resolved cleanly and typecheck + dry-run both ran in the WORKTREE. If a future run shows module-resolution failures in the worktree, re-run `npm run typecheck` in the MAIN tree at `c:\Users\AndyDin\reporting-dashboard\playhq-worker` and note the tree used.
+
+## Not done (per instructions)
+No commit, push, merge, worktree removal, or real deploy. No deps added. `wrangler.toml`, `liveFixtureIds`, team-list logic, TT_BASE_URL/cron/payload shapes untouched. reporting-ui and the main tree untouched.

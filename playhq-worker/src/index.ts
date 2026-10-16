@@ -1058,6 +1058,37 @@ async function mapPool<T, R>(
   return results;
 }
 
+// Does a NormalisedLive carry a usable in-play score signal? The spectator
+// normaliser (`normaliseLive`) leaves total/goals/behinds as `null` on each
+// side when the feed has no data (pre-game, or a failed/empty fetch); once a
+// game is live it fills them with numbers (including a genuine 0). So "usable"
+// means at least one of total/goals/behinds on either side is a real number.
+function liveHasScore(live: NormalisedLive): boolean {
+  const num = (v: number | null): boolean => typeof v === "number";
+  return (
+    num(live.home.total) ||
+    num(live.home.goals) ||
+    num(live.home.behinds) ||
+    num(live.away.total) ||
+    num(live.away.goals) ||
+    num(live.away.behinds)
+  );
+}
+
+// Decide which NormalisedLive to push: prefer the SPECTATOR-derived score while
+// a game is live (it carries the real in-play totals the UI shows); otherwise
+// fall back to the SUMMARY-derived score. The summary is correct once a game is
+// FINAL (and the spectator feed may be empty post-game), and the fallback also
+// covers a failed/empty spectator fetch (passed as null) so the push is never
+// skipped. Pure — no I/O, no throwing.
+function chooseLive(
+  spectatorLive: NormalisedLive | null,
+  summaryLive: NormalisedLive
+): NormalisedLive {
+  if (spectatorLive && liveHasScore(spectatorLive)) return spectatorLive;
+  return summaryLive;
+}
+
 async function pushFixtureToTT(
   shortId: string,
   env: Env
@@ -1073,8 +1104,29 @@ async function pushFixtureToTT(
     return { id: shortId, fullId, error: e instanceof Error ? e.message : "summary_failed" };
   }
 
-  const live = summaryToScorersPeriods(shortId, summary);
+  // Team lists stay sourced from the REST summary (the authoritative full
+  // roster), as does the summary-derived score used as a FINAL/pre-game and
+  // failure fallback below.
+  const summaryLive = summaryToScorersPeriods(shortId, summary);
   const lists = summaryToTeamLists(shortId, summary);
+
+  // SCORE: source the in-play totals from the SPECTATOR feed the same way
+  // /api/fixtures/:id/live does. For NTFL the REST summary stays PENDING with
+  // zero totals until FINAL, so live pushes must read the spectator feed. We
+  // reuse the already-resolved `full` record (via toFixtureLite) for team
+  // identity — the same grade-feed team UUIDs resolveGameTeams would return —
+  // so no ExecutionContext or extra fetch is needed. A spectator-fetch failure
+  // leaves spectatorLive null so chooseLive falls back to the summary score;
+  // the push is never skipped and never throws here.
+  let spectatorLive: NormalisedLive | null = null;
+  try {
+    const lite = toFixtureLite(full);
+    const game = (await fetchGame(shortId, env)) as Record<string, unknown>;
+    spectatorLive = normaliseLive(shortId, game, { home: lite.home, away: lite.away });
+  } catch {
+    spectatorLive = null;
+  }
+  const live = chooseLive(spectatorLive, summaryLive);
 
   const score = await ttPost(env, "/PlayHQScoreUpdate", ttScoreBody(fullId, live));
   const team = lists
