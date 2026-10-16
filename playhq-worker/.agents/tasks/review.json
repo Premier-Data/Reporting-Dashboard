@@ -1,12 +1,7 @@
 {
   "verdict": "APPROVED",
   "findings": [
-    {
-      "label": "Single-zone offset assumption",
-      "severity": "informational",
-      "confidence": "confirmed",
-      "detail": "NTFL_UTC_OFFSET = \"+09:30\" is hard-coded for Australia/Darwin (no DST). Correct for every current NTFL grade, but a future grade in a DST-observing or different zone would compute a wrong kickoff and mis-window its candidates. Non-blocking: the code comment already documents the remedy (per-fixture schedule.timezone -> offset lookup inside scheduledKickoffMs)."
-    }
+    "Non-blocking (possible, by design): chooseLive prefers the spectator score the instant any total/goals/behinds field is a real number, so a genuine 0-0 at the opening bounce is pushed as 0-0; the summary is consulted for score only when the spectator feed is entirely null, not merely zero. Correct behaviour (summary is also 0/PENDING pre-game); noted for boundary clarity, no action required."
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\worker-live-detect\\playhq-worker\\.agents\\tasks\\review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\worker-score-source\\playhq-worker\\.agents\\tasks\\score-source-review.md"
 }
