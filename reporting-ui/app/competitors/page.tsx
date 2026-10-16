@@ -35,12 +35,17 @@ import {
   listRecentPosts,
   seedCompetitors,
   syncCompetitorFeeds,
+  CAPABILITIES,
+  listCapabilityCells,
+  setCapabilityCell,
   type Competitor,
   type CompetitorSource,
   type CompetitorPost,
   type CompetitorCategory,
   type SourcePlatform,
   type CollectionMethod,
+  type CapabilityCell,
+  type CapabilityRating,
 } from "@/lib/api/competitors";
 
 const CATEGORIES: CompetitorCategory[] = [
@@ -89,6 +94,7 @@ export default function CompetitorsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin" || user?.role === "super_admin";
 
+  const [tab, setTab] = useState<"register" | "reckoner">("register");
   const [competitors, setCompetitors] = useState<Competitor[]>([]);
   const [posts, setPosts] = useState<CompetitorPost[]>([]);
   const [loading, setLoading] = useState(true);
@@ -241,6 +247,30 @@ export default function CompetitorsPage() {
           </div>
         </div>
 
+        {/* Tabs */}
+        <div className="mb-4 flex gap-1 border-b border-white/10">
+          <button
+            onClick={() => setTab("register")}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition ${
+              tab === "register"
+                ? "border-sky-500 text-white"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Register
+          </button>
+          <button
+            onClick={() => setTab("reckoner")}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm font-semibold transition ${
+              tab === "reckoner"
+                ? "border-sky-500 text-white"
+                : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            Ready Reckoner
+          </button>
+        </div>
+
         {/* Summary chips */}
         <div className="mb-4 flex flex-wrap gap-3 text-xs">
           <span className="rounded-lg bg-white/5 px-3 py-1.5 text-slate-300">
@@ -260,6 +290,10 @@ export default function CompetitorsPage() {
           </div>
         )}
 
+        {tab === "reckoner" ? (
+          <ReadyReckoner competitors={competitors} isAdmin={isAdmin} />
+        ) : (
+        <>
         {/* Filters */}
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <div className="relative min-w-[180px] max-w-xs flex-1">
@@ -346,6 +380,8 @@ export default function CompetitorsPage() {
             </ul>
           )}
         </div>
+        </>
+        )}
       </div>
 
       {editing && (
@@ -574,6 +610,216 @@ function SourcesEditor({
         — find the channel_id in the channel’s page source.
       </p>
     </div>
+  );
+}
+
+// ── Ready Reckoner (capability matrix) ───────────────────────────────────────
+
+const RATING_CELL: Record<CapabilityRating, { label: string; cls: string }> = {
+  yes: { label: "✓", cls: "bg-emerald-500/15 text-emerald-300" },
+  partial: { label: "~", cls: "bg-amber-500/15 text-amber-300" },
+  no: { label: "✕", cls: "bg-red-500/15 text-red-300" },
+  unknown: { label: "?", cls: "bg-white/5 text-slate-500" },
+};
+
+function ReadyReckoner({
+  competitors,
+  isAdmin,
+}: {
+  competitors: Competitor[];
+  isAdmin: boolean;
+}) {
+  const [cells, setCells] = useState<Map<string, CapabilityCell>>(new Map());
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await listCapabilityCells();
+      const m = new Map<string, CapabilityCell>();
+      for (const c of list) m.set(`${c.competitor_id}|${c.capability_key}`, c);
+      setCells(m);
+    } catch {
+      setCells(new Map());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const ratingFor = (competitorId: number, key: string): CapabilityRating =>
+    cells.get(`${competitorId}|${key}`)?.rating ?? "unknown";
+
+  const onChange = async (
+    competitorId: number,
+    key: string,
+    rating: CapabilityRating
+  ) => {
+    // Optimistic update.
+    setCells((cur) => {
+      const next = new Map(cur);
+      const k = `${competitorId}|${key}`;
+      const prev = next.get(k);
+      next.set(k, {
+        id: prev?.id ?? -1,
+        competitor_id: competitorId,
+        capability_key: key,
+        rating,
+        note: prev?.note ?? null,
+      });
+      return next;
+    });
+    try {
+      await setCapabilityCell(competitorId, key, rating, null);
+    } catch {
+      await load(); // revert to server state on failure
+    }
+  };
+
+  // Group capabilities for section headers.
+  const groups = useMemo(() => {
+    const order: string[] = [];
+    const byGroup = new Map<string, typeof CAPABILITIES>();
+    for (const cap of CAPABILITIES) {
+      if (!byGroup.has(cap.group)) {
+        byGroup.set(cap.group, []);
+        order.push(cap.group);
+      }
+      byGroup.get(cap.group)!.push(cap);
+    }
+    return order.map((g) => ({ group: g, caps: byGroup.get(g)! }));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center gap-2 py-20 text-sm text-slate-400">
+        <Loader2 size={18} className="animate-spin" /> Loading matrix…
+      </div>
+    );
+  }
+
+  if (competitors.length === 0) {
+    return (
+      <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-10 text-center text-sm text-slate-400">
+        No competitors yet — add some on the Register tab first.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <p className="mb-3 text-xs text-slate-400">
+        How each competitor compares to Premier Data across its service
+        capabilities. The <span className="text-sky-300">Premier Data</span>{" "}
+        column is the baseline; competitor cells start as “?” — set each from
+        research. ✓ full · ~ partial · ✕ none · ? unknown.
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-white/10">
+        <table className="w-full border-collapse text-xs">
+          <thead className="sticky top-0 bg-[#0d1526]">
+            <tr className="border-b border-white/10 text-left">
+              <th className="sticky left-0 z-10 bg-[#0d1526] px-3 py-2 font-semibold text-slate-300">
+                Capability
+              </th>
+              <th className="whitespace-nowrap px-3 py-2 text-center font-bold text-sky-300">
+                Premier Data
+              </th>
+              {competitors.map((c) => (
+                <th
+                  key={c.id}
+                  className="whitespace-nowrap px-3 py-2 text-center font-semibold text-slate-300"
+                  title={c.name}
+                >
+                  {c.name}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(({ group, caps }) => (
+              <GroupRows
+                key={group}
+                group={group}
+                caps={caps}
+                competitors={competitors}
+                ratingFor={ratingFor}
+                onChange={onChange}
+                isAdmin={isAdmin}
+                colSpan={competitors.length + 2}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function GroupRows({
+  group,
+  caps,
+  competitors,
+  ratingFor,
+  onChange,
+  isAdmin,
+  colSpan,
+}: {
+  group: string;
+  caps: typeof CAPABILITIES;
+  competitors: Competitor[];
+  ratingFor: (competitorId: number, key: string) => CapabilityRating;
+  onChange: (competitorId: number, key: string, rating: CapabilityRating) => void;
+  isAdmin: boolean;
+  colSpan: number;
+}) {
+  return (
+    <>
+      <tr className="bg-white/[0.03]">
+        <td colSpan={colSpan} className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+          {group}
+        </td>
+      </tr>
+      {caps.map((cap) => (
+        <tr key={cap.key} className="border-b border-white/5 hover:bg-white/[0.02]">
+          <td className="sticky left-0 z-10 bg-[#0d1526] px-3 py-1.5 text-slate-200" title={cap.detail ?? ""}>
+            {cap.label}
+          </td>
+          {/* Premier Data baseline (fixed). */}
+          <td className="px-2 py-1.5 text-center">
+            <span className={`inline-flex h-5 w-6 items-center justify-center rounded text-[11px] font-bold ${RATING_CELL[cap.pd].cls}`}>
+              {RATING_CELL[cap.pd].label}
+            </span>
+          </td>
+          {competitors.map((c) => {
+            const r = ratingFor(c.id, cap.key);
+            return (
+              <td key={c.id} className="px-2 py-1 text-center">
+                {isAdmin ? (
+                  <select
+                    value={r}
+                    onChange={(e) => onChange(c.id, cap.key, e.target.value as CapabilityRating)}
+                    className={`cursor-pointer rounded border-0 bg-transparent px-1 py-0.5 text-center text-[11px] font-bold outline-none ${RATING_CELL[r].cls}`}
+                    title={`${c.name} — ${cap.label}`}
+                  >
+                    <option value="unknown">?</option>
+                    <option value="yes">✓ yes</option>
+                    <option value="partial">~ partial</option>
+                    <option value="no">✕ no</option>
+                  </select>
+                ) : (
+                  <span className={`inline-flex h-5 w-6 items-center justify-center rounded text-[11px] font-bold ${RATING_CELL[r].cls}`}>
+                    {RATING_CELL[r].label}
+                  </span>
+                )}
+              </td>
+            );
+          })}
+        </tr>
+      ))}
+    </>
   );
 }
 

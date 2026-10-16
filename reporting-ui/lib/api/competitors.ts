@@ -208,6 +208,98 @@ export async function syncCompetitorFeeds(): Promise<{
   return (await res.json()) as { sources: number; inserted: number };
 }
 
+// ── Ready reckoner (capability matrix) ───────────────────────────────────────
+//
+// The capability ROWS are defined here so they're versioned + consistent. Each
+// has a Premier Data baseline (what PD does), rendered as the fixed first
+// column. Competitor cells are stored per (competitor, capability) and default
+// to "unknown" until someone fills them in from research.
+//
+// The list is grounded in Premier Data's actual service (grassroots match
+// stats + video analysis delivered by remote analysts, plus the platform
+// features in this dashboard): analyst-led coding, accuracy QA, live scores,
+// multi-sport, reporting, etc. Edit CAPABILITIES to add/adjust rows.
+
+export type CapabilityRating = "yes" | "partial" | "no" | "unknown";
+
+export type CapabilityDef = {
+  key: string;
+  label: string;
+  group: string;
+  /** What Premier Data does for this capability (the baseline column). */
+  pd: CapabilityRating;
+  /** Short description shown on hover / under the row label. */
+  detail?: string;
+};
+
+export const CAPABILITIES: CapabilityDef[] = [
+  // Core service
+  { key: "remote_analysts", label: "Remote analyst service", group: "Core service", pd: "yes", detail: "Trained analysts code matches remotely as a managed service." },
+  { key: "match_stats", label: "Match statistics", group: "Core service", pd: "yes", detail: "Per-player and team stats coded from footage." },
+  { key: "video_analysis", label: "Video analysis", group: "Core service", pd: "yes", detail: "Clip review, tagging and match vision." },
+  { key: "team_lists", label: "Team lists / line-ups", group: "Core service", pd: "yes" },
+  { key: "grassroots_focus", label: "Grassroots / community focus", group: "Core service", pd: "yes", detail: "Elite-level analysis for community clubs." },
+
+  // Accuracy / quality
+  { key: "accuracy_qa", label: "Accuracy QA & grading", group: "Accuracy & quality", pd: "yes", detail: "Master-vs-analyst accuracy checks and grading." },
+  { key: "dispute_review", label: "Dispute / correction workflow", group: "Accuracy & quality", pd: "yes" },
+  { key: "analyst_benchmarking", label: "Analyst benchmarking", group: "Accuracy & quality", pd: "yes", detail: "Compare analysts, leaderboards, profiles." },
+
+  // Live / coverage
+  { key: "live_scores", label: "Live scores", group: "Live & coverage", pd: "yes", detail: "Live score + goal-kicker feeds (PlayHQ-sourced)." },
+  { key: "live_push", label: "Live data push / integrations", group: "Live & coverage", pd: "yes", detail: "Pushes scores to external platforms (e.g. JADE)." },
+  { key: "multi_sport", label: "Multi-sport", group: "Live & coverage", pd: "yes", detail: "Aussie Rules + soccer, expanding." },
+
+  // Platform / reporting
+  { key: "reporting", label: "Reporting & dashboards", group: "Platform & reporting", pd: "yes" },
+  { key: "board_reports", label: "Board / exec reporting", group: "Platform & reporting", pd: "yes" },
+  { key: "ai_recommendations", label: "AI recommendations / insights", group: "Platform & reporting", pd: "yes" },
+  { key: "fixture_management", label: "Fixture management", group: "Platform & reporting", pd: "yes" },
+  { key: "messaging", label: "In-platform messaging", group: "Platform & reporting", pd: "yes" },
+
+  // Model / delivery
+  { key: "managed_service", label: "Fully managed (not self-serve)", group: "Model & delivery", pd: "yes", detail: "PD codes for the club vs. club self-captures." },
+  { key: "self_capture_app", label: "Self-capture app for clubs", group: "Model & delivery", pd: "partial", detail: "PD is analyst-led; some capture tooling exists." },
+];
+
+export type CapabilityCell = {
+  id: number;
+  competitor_id: number;
+  capability_key: string;
+  rating: CapabilityRating;
+  note: string | null;
+};
+
+/** All stored capability cells (across every competitor). */
+export async function listCapabilityCells(): Promise<CapabilityCell[]> {
+  const { data, error } = await supabase
+    .from("competitor_capabilities")
+    .select("*");
+  if (error) throw new Error(error.message || "Failed loading capabilities");
+  return (data ?? []) as CapabilityCell[];
+}
+
+/** Upsert one competitor×capability cell (rating + note). */
+export async function setCapabilityCell(
+  competitorId: number,
+  capabilityKey: string,
+  rating: CapabilityRating,
+  note: string | null
+): Promise<void> {
+  const { error } = await supabase
+    .from("competitor_capabilities")
+    .upsert(
+      {
+        competitor_id: competitorId,
+        capability_key: capabilityKey,
+        rating,
+        note,
+      },
+      { onConflict: "competitor_id,capability_key" }
+    );
+  if (error) throw new Error(error.message || "Failed saving capability");
+}
+
 // ── Seed ─────────────────────────────────────────────────────────────────────
 //
 // The initial competitor register. URLs verified via web search where noted;
