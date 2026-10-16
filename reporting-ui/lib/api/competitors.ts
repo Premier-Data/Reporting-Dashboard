@@ -233,14 +233,22 @@ export type CapabilityDef = {
 };
 
 export const CAPABILITIES: CapabilityDef[] = [
-  // Core service
-  { key: "remote_analysts", label: "Remote analyst service", group: "Core service", pd: "yes", detail: "Trained analysts code matches remotely as a managed service." },
-  { key: "match_stats", label: "Match statistics", group: "Core service", pd: "yes", detail: "Per-player and team stats coded from footage." },
-  { key: "video_analysis", label: "Video analysis", group: "Core service", pd: "yes", detail: "Clip review, tagging and match vision." },
+  // Core service — PD: capture footage → analysts code it → platform delivers.
+  { key: "remote_analysts", label: "Remote analyst service", group: "Core service", pd: "yes", detail: "Trained analysts code matches from footage as a managed service (Capture → Analyse → Improve)." },
+  { key: "match_stats", label: "Match statistics", group: "Core service", pd: "yes", detail: "100+ per-player and team stats coded from video footage." },
+  { key: "video_analysis", label: "Video analysis & edits", group: "Core service", pd: "yes", detail: "120+ video edits, clip review and match vision." },
+  { key: "video_highlights", label: "Video highlights", group: "Core service", pd: "yes", detail: "Individual and team highlight reels." },
   { key: "team_lists", label: "Team lists / line-ups", group: "Core service", pd: "yes" },
-  { key: "grassroots_focus", label: "Grassroots / community focus", group: "Core service", pd: "yes", detail: "Elite-level analysis for community clubs." },
+  { key: "grassroots_focus", label: "Grassroots / community focus", group: "Core service", pd: "yes", detail: "Elite-level analysis for community clubs (800+ teams, 14K+ games)." },
 
-  // Accuracy / quality
+  // Insight products — the "Performance & Insight" add-ons PD markets.
+  { key: "player_profiles", label: "Player performance profiles", group: "Insights", pd: "yes", detail: "Personalised player profiles + season averages." },
+  { key: "leaderboards", label: "Leaderboards", group: "Insights", pd: "yes", detail: "500+ real-time leaderboards across stat categories." },
+  { key: "heat_maps", label: "Heat maps / positional data", group: "Insights", pd: "yes", detail: "Player heat maps and positional visualisations." },
+  { key: "opposition_analysis", label: "Opposition analysis", group: "Insights", pd: "yes", detail: "Scouting / opposition breakdowns." },
+  { key: "ai_recommendations", label: "AI recommendations / insights", group: "Insights", pd: "yes" },
+
+  // Accuracy / quality — PD's internal QA edge.
   { key: "accuracy_qa", label: "Accuracy QA & grading", group: "Accuracy & quality", pd: "yes", detail: "Master-vs-analyst accuracy checks and grading." },
   { key: "dispute_review", label: "Dispute / correction workflow", group: "Accuracy & quality", pd: "yes" },
   { key: "analyst_benchmarking", label: "Analyst benchmarking", group: "Accuracy & quality", pd: "yes", detail: "Compare analysts, leaderboards, profiles." },
@@ -248,18 +256,19 @@ export const CAPABILITIES: CapabilityDef[] = [
   // Live / coverage
   { key: "live_scores", label: "Live scores", group: "Live & coverage", pd: "yes", detail: "Live score + goal-kicker feeds (PlayHQ-sourced)." },
   { key: "live_push", label: "Live data push / integrations", group: "Live & coverage", pd: "yes", detail: "Pushes scores to external platforms (e.g. JADE)." },
-  { key: "multi_sport", label: "Multi-sport", group: "Live & coverage", pd: "yes", detail: "Aussie Rules + soccer, expanding." },
+  { key: "multi_sport", label: "Multi-sport", group: "Live & coverage", pd: "yes", detail: "Aussie Rules + football (soccer); UK arm too." },
 
   // Platform / reporting
+  { key: "mobile_app", label: "Mobile app", group: "Platform & reporting", pd: "yes", detail: "iOS/Android app for coaches and players." },
   { key: "reporting", label: "Reporting & dashboards", group: "Platform & reporting", pd: "yes" },
   { key: "board_reports", label: "Board / exec reporting", group: "Platform & reporting", pd: "yes" },
-  { key: "ai_recommendations", label: "AI recommendations / insights", group: "Platform & reporting", pd: "yes" },
   { key: "fixture_management", label: "Fixture management", group: "Platform & reporting", pd: "yes" },
   { key: "messaging", label: "In-platform messaging", group: "Platform & reporting", pd: "yes" },
 
   // Model / delivery
-  { key: "managed_service", label: "Fully managed (not self-serve)", group: "Model & delivery", pd: "yes", detail: "PD codes for the club vs. club self-captures." },
-  { key: "self_capture_app", label: "Self-capture app for clubs", group: "Model & delivery", pd: "partial", detail: "PD is analyst-led; some capture tooling exists." },
+  { key: "managed_service", label: "Fully managed (not self-serve)", group: "Model & delivery", pd: "yes", detail: "PD codes for the club; club just uploads footage." },
+  { key: "flexible_packages", label: "Flexible packages (per-game / season)", group: "Model & delivery", pd: "yes", detail: "Full season, 1–8 game packs, or custom." },
+  { key: "self_capture_app", label: "Self-capture by club", group: "Model & delivery", pd: "no", detail: "PD is analyst-led — the club uploads footage, PD codes it (not a self-capture model)." },
 ];
 
 export type CapabilityCell = {
@@ -303,14 +312,18 @@ const RESEARCHED_RATINGS: Record<
     remote_analysts: "no",
     match_stats: "yes",
     video_analysis: "yes",
-    team_lists: "unknown",
+    video_highlights: "yes",
     grassroots_focus: "partial",
+    player_profiles: "partial",
+    leaderboards: "unknown",
+    heat_maps: "unknown",
     accuracy_qa: "no",
     dispute_review: "no",
     analyst_benchmarking: "no",
     live_scores: "no",
     live_push: "no",
     multi_sport: "yes",
+    mobile_app: "partial",
     reporting: "yes",
     managed_service: "no",
     self_capture_app: "yes",
@@ -319,10 +332,14 @@ const RESEARCHED_RATINGS: Record<
     remote_analysts: "no",
     match_stats: "yes",
     video_analysis: "no",
+    video_highlights: "no",
     grassroots_focus: "yes",
+    player_profiles: "partial",
+    leaderboards: "unknown",
     accuracy_qa: "no",
     live_scores: "yes",
     multi_sport: "partial",
+    mobile_app: "yes",
     reporting: "partial",
     managed_service: "no",
     self_capture_app: "yes",
@@ -331,10 +348,15 @@ const RESEARCHED_RATINGS: Record<
     remote_analysts: "no",
     match_stats: "partial",
     video_analysis: "no",
+    video_highlights: "no",
     team_lists: "yes",
     grassroots_focus: "yes",
+    player_profiles: "partial",
+    leaderboards: "unknown",
+    heat_maps: "no",
     live_scores: "yes",
     multi_sport: "yes",
+    mobile_app: "yes",
     fixture_management: "yes",
     reporting: "partial",
     managed_service: "no",
@@ -344,10 +366,12 @@ const RESEARCHED_RATINGS: Record<
     remote_analysts: "no",
     match_stats: "yes",
     video_analysis: "yes",
+    video_highlights: "yes",
     grassroots_focus: "no",
     accuracy_qa: "no",
     live_scores: "no",
     multi_sport: "yes",
+    mobile_app: "yes",
     reporting: "partial",
     managed_service: "no",
     self_capture_app: "yes",
