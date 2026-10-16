@@ -965,6 +965,99 @@ function logPushResult(r: Record<string, unknown>, base: string): void {
   );
 }
 
+// --- Live-during-play detection helpers (mirror the Next.js UI's spectator
+// feed detection in reporting-ui/app/live-scores/page.tsx + lib/api/playhq.ts).
+// The NTFL PlayHQ REST feed never reports IN_PROGRESS — a game stays UPCOMING
+// then flips straight to FINAL — so the cheap REST status check alone finds
+// nothing while a game is being played. To detect in-play games we build a
+// bounded CANDIDATE set (status unknown/UPCOMING, scheduled within a kickoff
+// window) and probe each one's spectator feed, which DOES report IN_PROGRESS.
+
+// Kickoff window, matching the UI exactly: 30 min before, 4 h after kickoff.
+const WINDOW_BEFORE_MS = 30 * 60 * 1000;
+const WINDOW_AFTER_MS = 4 * 60 * 60 * 1000;
+
+// Venue offset for computing a fixture's kickoff epoch. The UI's scheduleDate
+// parses "yyyy-mm-ddThh:mm:ss" with NO offset, so a browser reads it in the
+// viewer's local zone (for the intended user = the venue zone, Darwin). A
+// Cloudflare Worker runs in UTC, so the same string would be ~9.5 h wrong.
+// NTFL = Australia/Darwin = UTC+09:30, no DST, so we apply that offset
+// explicitly. If a future grade sits in a DST-observing zone, replace this with
+// a per-fixture schedule.timezone -> offset lookup inside scheduledKickoffMs.
+const NTFL_UTC_OFFSET = "+09:30";
+
+// Kickoff epoch (ms) for a grade-feed schedule `{ date, time }` (venue-local),
+// or null when the date is missing / unparseable. Mirrors the UI's
+// scheduleDate but reads the fixed Darwin offset instead of the viewer zone.
+export function scheduledKickoffMs(
+  schedule: { date?: string | null; time?: string | null } | null | undefined
+): number | null {
+  const date = schedule?.date;
+  if (!date) return null;
+  const time = schedule.time || "00:00:00";
+  const ms = Date.parse(`${date}T${time}${NTFL_UTC_OFFSET}`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+// REST status the grade feed doesn't fill in — "" or "NULL" (copied verbatim
+// from the UI's restStatusUnknown semantics).
+export function restStatusUnknown(status: unknown): boolean {
+  const s = String(status ?? "").trim().toUpperCase();
+  return s === "" || s === "NULL";
+}
+
+// A game the spectator feed reports as being played (mirrors the UI's isLive).
+export function isSpectatorLive(status: unknown): boolean {
+  const s = String(status ?? "").toUpperCase();
+  return s === "IN_PROGRESS" || s === "LIVE";
+}
+
+// Worth probing the spectator feed? True when the REST status is one the feed
+// never resolves while in play — unknown ("" / "NULL") OR "UPCOMING" (the NTFL
+// feed uses UPCOMING, not empty) — AND kickoff falls inside the window. FINAL /
+// IN_PROGRESS / LIVE are excluded here (FINAL needs no probe; IN_PROGRESS/LIVE
+// are already caught by the cheap REST first pass).
+export function isLiveCandidate(
+  status: unknown,
+  scheduledMs: number | null,
+  nowMs: number
+): boolean {
+  const s = String(status ?? "").trim().toUpperCase();
+  const statusProbe = restStatusUnknown(status) || s === "UPCOMING";
+  if (!statusProbe) return false;
+  if (scheduledMs == null) return false;
+  return (
+    nowMs >= scheduledMs - WINDOW_BEFORE_MS &&
+    nowMs <= scheduledMs + WINDOW_AFTER_MS
+  );
+}
+
+// Run `fn` over `items` with at most `limit` in flight at once, settling every
+// result (never rejecting), so one failing probe can't abort the batch. A tiny
+// local worker pool — no dependency, mirrors the UI's Promise.allSettled but
+// bounded so a 2-min tick never fires dozens of probes at once.
+async function mapPool<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = new Array(items.length);
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < items.length) {
+      const i = cursor++;
+      try {
+        results[i] = { status: "fulfilled", value: await fn(items[i]) };
+      } catch (reason) {
+        results[i] = { status: "rejected", reason };
+      }
+    }
+  };
+  const pool = Array.from({ length: Math.min(limit, items.length) }, worker);
+  await Promise.all(pool);
+  return results;
+}
+
 async function pushFixtureToTT(
   shortId: string,
   env: Env
@@ -1011,14 +1104,27 @@ async function pushFixtureToTT(
   };
 }
 
-// Find all fixtures across the known grades whose status is in-progress/live,
-// so the scheduled push knows which to forward. Returns their SHORT ids.
+// Find all fixtures across the known grades that are being played right now, so
+// the scheduled push knows which to forward. Returns their FULL ids (the grade
+// feed's UUID — pushFixtureToTT -> resolveFullGame accepts a full UUID).
+//
+// Two passes, UNIONed:
+//  (a) cheap REST first pass — any fixture the grade feed already reports as
+//      IN_PROGRESS/LIVE (kept unchanged so nothing regresses); and
+//  (b) spectator probe — for NTFL the REST feed stays UPCOMING right up until
+//      FINAL, so we probe the spectator feed of each in-window UPCOMING/unknown
+//      candidate and include the ones the feed reports as live. Bounded by a
+//      kickoff window + a small concurrency pool; a probe failure for one
+//      candidate is swallowed so it can never abort the scheduled loop.
 async function liveFixtureIds(env: Env): Promise<string[]> {
   const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
   const ids = new Set<string>();
+  // Candidates to probe via the spectator feed, collected across all grades.
+  const candidates: Array<{ fullId: string; shortId: string }> = [];
+  const now = Date.now();
   for (const gradeId of gradeIds) {
     if (!UUID_RE.test(gradeId)) continue;
     let games: Array<Record<string, unknown>> = [];
@@ -1028,13 +1134,36 @@ async function liveFixtureIds(env: Env): Promise<string[]> {
       continue;
     }
     for (const g of games) {
-      const s = String(g.status ?? "").toUpperCase();
-      if (s === "IN_PROGRESS" || s === "LIVE") {
-        const id = String(g.id ?? "");
-        if (id) ids.add(id);
+      const fullId = String(g.id ?? "");
+      if (!fullId) continue;
+      // (a) Cheap first pass: REST already says it's live.
+      if (isSpectatorLive(g.status)) {
+        ids.add(fullId);
+        continue;
+      }
+      // (b) Otherwise queue it as a spectator probe candidate if it's within
+      //     the kickoff window and its REST status is unknown/UPCOMING.
+      const schedule = (g.schedule ?? {}) as { date?: string | null; time?: string | null };
+      if (isLiveCandidate(g.status, scheduledKickoffMs(schedule), now)) {
+        candidates.push({ fullId, shortId: fullId.split("-")[0] });
       }
     }
   }
+
+  // Probe candidates' spectator feeds with bounded concurrency. The spectator
+  // `game` op (fetchGame) takes the SHORT id, same as /api/fixtures/:id/live.
+  // A rejected probe is ignored — never rethrown — so one bad candidate can't
+  // abort the push.
+  const probes = await mapPool(candidates, 4, async (c) => {
+    const game = (await fetchGame(c.shortId, env)) as Record<string, unknown>;
+    return { fullId: c.fullId, status: String(game?.status ?? "") };
+  });
+  for (const p of probes) {
+    if (p.status === "fulfilled" && isSpectatorLive(p.value.status)) {
+      ids.add(p.value.fullId);
+    }
+  }
+
   return [...ids];
 }
 
