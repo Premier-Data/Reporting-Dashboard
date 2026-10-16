@@ -37,7 +37,11 @@ import {
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthContext";
 import { pageKeyForPath, ROLE_LABELS } from "@/lib/api/auth";
-import { getUnreadCount, subscribeToAllMessages } from "@/lib/api/messages";
+import {
+  getUnreadCount,
+  subscribeToAllMessages,
+  onUnreadShouldRefresh,
+} from "@/lib/api/messages";
 
 const sections = [
   {
@@ -238,9 +242,15 @@ export default function Sidebar({
   const router = useRouter();
   const { user, hasAccess, logout } = useAuth();
 
-  // Unread message count for the Messages nav badge. Refreshed on mount, when
-  // the route changes (so opening/reading a thread updates it), and live via
-  // Realtime on any new message.
+  // Unread message count for the Messages nav badge. Set up ONCE per user (not
+  // per navigation): the initial fetch, the live Realtime subscription, and the
+  // explicit read-refresh listener are all established on user change/mount and
+  // torn down on user change/unmount.
+  //   - initial count: refresh() on mount
+  //   - live update: subscribeToAllMessages(refresh) bumps it on any new message
+  //   - clears after read: markConversationRead fires notifyUnreadChanged, which
+  //     reaches us through onUnreadShouldRefresh — so the badge drops without a
+  //     per-navigation refetch (removed pathname from the deps).
   const [unread, setUnread] = useState(0);
   useEffect(() => {
     if (!user) return;
@@ -253,12 +263,14 @@ export default function Sidebar({
         })
         .catch(() => {});
     refresh();
-    const unsub = subscribeToAllMessages(refresh);
+    const unsubRealtime = subscribeToAllMessages(refresh);
+    const unsubRead = onUnreadShouldRefresh(refresh);
     return () => {
       cancelled = true;
-      unsub();
+      unsubRealtime();
+      unsubRead();
     };
-  }, [user, pathname]);
+  }, [user]);
 
   function handleLogout() {
     logout();

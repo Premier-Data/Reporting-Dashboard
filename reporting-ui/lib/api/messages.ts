@@ -45,6 +45,39 @@ export interface Attachment {
 
 const ATTACHMENT_BUCKET = "message-attachments";
 
+// ----------------------------------------------------------------------
+// Unread-count refresh signal (pure, Supabase-free).
+//
+// The sidebar badge subscribes ONCE per user (see Sidebar.tsx) and no longer
+// refetches on every navigation. To keep "clears after read" working without a
+// per-nav poll, read actions fire this lightweight in-process event; listeners
+// (the badge) re-run their own getUnreadCount. No new deps, no Supabase traffic
+// — this is the explicit refresh trigger that replaces the pathname refetch.
+// ----------------------------------------------------------------------
+const unreadListeners = new Set<() => void>();
+
+/**
+ * Subscribe to "unread count may have changed" notifications. Returns an
+ * unsubscribe function. Used by the sidebar badge to refresh after a read.
+ */
+export function onUnreadShouldRefresh(cb: () => void): () => void {
+    unreadListeners.add(cb);
+    return () => {
+        unreadListeners.delete(cb);
+    };
+}
+
+/** Fire all unread-refresh listeners (e.g. after marking a conversation read). */
+export function notifyUnreadChanged(): void {
+    for (const cb of unreadListeners) {
+        try {
+            cb();
+        } catch {
+            // A single bad listener must not break the others.
+        }
+    }
+}
+
 /** Classify a file's MIME type into our attachment kind. */
 export function attachmentTypeFor(mime: string): AttachmentType {
     if (mime.startsWith("image/")) return "image";
@@ -497,6 +530,10 @@ export async function markConversationRead(
         console.error("Failed marking conversation read:", error);
         throw new Error(error.message || "Failed marking read");
     }
+    // Read watermark moved → the sidebar badge should drop to the new count.
+    // This replaces the old per-navigation refetch (Sidebar now subscribes
+    // once per user and listens for this signal).
+    notifyUnreadChanged();
 }
 
 /**

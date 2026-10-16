@@ -12,6 +12,7 @@
 //     highest known one — no full re-download.
 
 import { supabase } from "@/lib/supabase";
+import { createKeyedCache } from "@/lib/api/cache";
 import {
   compToFixtures,
   fetchCompetitionWithMeta,
@@ -186,12 +187,15 @@ export async function queryCompFixtures(
  * Supabase's JS client has no GROUP BY, so we page through the two small
  * columns and tally client-side (cheap — only sport + season are selected).
  */
-export async function getCompFacets(
-  options: { accuracyOnly?: boolean } = {}
-): Promise<{
+export type CompFacets = {
   sports: { sport: string; count: number }[];
   years: { year: string; count: number }[];
-}> {
+};
+
+// Internal fetcher: full-table facet scan. `key` is "accuracy" or "normal"
+// (derived from accuracyOnly) so the two variants cache independently.
+async function fetchCompFacets(key: string): Promise<CompFacets> {
+  const accuracyOnly = key === "accuracy";
   const sportCounts = new Map<string, number>();
   const yearCounts = new Map<string, number>();
   let from = 0;
@@ -212,7 +216,7 @@ export async function getCompFacets(
       // Accuracy comps: count ONLY them when asked, else EXCLUDE them (they
       // don't belong in the normal sport/year dropdowns).
       const isAccuracy = isAccuracyCompetition(r.competition);
-      if (options.accuracyOnly ? !isAccuracy : isAccuracy) continue;
+      if (accuracyOnly ? !isAccuracy : isAccuracy) continue;
       const s = (r.sport ?? "").trim();
       if (s) sportCounts.set(s, (sportCounts.get(s) ?? 0) + 1);
       if (r.season != null) {
@@ -231,6 +235,26 @@ export async function getCompFacets(
       .sort((a, b) => Number(b[0]) - Number(a[0]))
       .map(([year, count]) => ({ year, count })),
   };
+}
+
+// The facets are session-static: they only change when the comp_fixtures table
+// is re-synced, and every such mutation calls compFacetsCached.invalidate().
+// Keyed by "accuracy"/"normal" so the two variants don't clobber each other.
+// Returned objects are shared READ-ONLY instances (see cache.ts) — the three
+// caller pages only read / setState the sports/years arrays, never mutate them.
+const compFacetsCached = createKeyedCache(fetchCompFacets, (k) => k);
+
+/**
+ * Distinct sports and seasons present in the table, for the filter dropdowns.
+ * Supabase's JS client has no GROUP BY, so we page through the two small
+ * columns and tally client-side (cheap — only sport + season are selected).
+ *
+ * Cached once per session per variant; invalidated on any comp-sync mutation.
+ */
+export async function getCompFacets(
+  options: { accuracyOnly?: boolean } = {}
+): Promise<CompFacets> {
+  return compFacetsCached.get(options.accuracyOnly ? "accuracy" : "normal");
 }
 
 /** Current sync state, for the "last synced" display + probe start point. */
@@ -776,6 +800,8 @@ export async function purgeExcludedCompetitions(): Promise<number> {
       .eq("competition", name);
     if (!error) removed += count ?? 0;
   }
+  // Deleted rows → cached facets may be stale.
+  if (removed > 0) compFacetsCached.invalidate();
   return removed;
 }
 
@@ -857,6 +883,8 @@ export async function fullSync(opts?: {
   // Link competition teams to the `teams` table via their external UID.
   await linkTeamUids();
   await writeMeta({ full: true, maxUid, compCount: found, fixtureCount: fixtures });
+  // Table contents changed → drop the cached facets so the next read re-tallies.
+  compFacetsCached.invalidate();
   return { comps: found, fixtures, maxUid };
 }
 
@@ -883,6 +911,8 @@ export async function resyncCompetitions(
     const r = await syncOne(uid, signal);
     out.push({ uid, status: r.status, fixtures: r.fixtures });
   }
+  // Re-stored one or more comps → cached facets may be stale.
+  compFacetsCached.invalidate();
   return out;
 }
 
@@ -999,6 +1029,8 @@ export async function incrementalSync(opts?: {
     maxUid,
     // comp_count/fixture_count reflect the whole table, recomputed below.
   });
+  // Table contents may have changed (refetched/added comps) → drop the cache.
+  compFacetsCached.invalidate();
   return { changed, added, fixtures, maxUid };
 }
 
