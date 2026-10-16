@@ -77,6 +77,7 @@ export const PAGES: PageDef[] = [
     { key: "users", label: "User Accounts", href: "/users" },
     { key: "permissions", label: "Permissions", href: "/permissions" },
     { key: "admin-config", label: "Admin Configuration", href: "/admin-config" },
+    { key: "competitors", label: "Competitor Intelligence", href: "/competitors" },
 ];
 
 // Companion routes that share another page's access (no separate permission).

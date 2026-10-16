@@ -31,6 +31,7 @@ import {
   FileText,
   Radio,
   SlidersHorizontal,
+  Radar,
   X,
 } from "lucide-react";
 
@@ -216,6 +217,11 @@ const sections = [
         title: "Permissions",
         href: "/permissions",
         icon: KeyRound,
+      },
+      {
+        title: "Competitor Intelligence",
+        href: "/competitors",
+        icon: Radar,
       },
       {
         title: "Settings",
