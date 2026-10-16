@@ -1,16 +1,8 @@
 {
   "verdict": "APPROVED",
   "findings": [
-    {
-      "severity": "non-blocking",
-      "label": "Shared cached array on admin path",
-      "detail": "On a cache hit, the admin branch of both pages assigns the shared cached array instance to component state (setAllChecks(data) / setChecks(c)) rather than a fresh fetch result. Safe today because consumers only filter/map, but a future in-place sort/mutation would corrupt the cache for the next reader. Suggest a 'treat as read-only' comment on the fetch helpers."
-    },
-    {
-      "severity": "informational",
-      "label": "createKeyedCache is dead-but-tested",
-      "detail": "The keyed cache (normalized-key, invalidate-clears-all) is implemented with 5 passing unit tests but wired to no production fetch; getAccuracyChecksForAnalyst and getAllAccuracyChecks are themselves callerless dead code. Not a defect; the keyed path ships unused."
-    }
+    "Non-blocking: worktree vitest and Turbopack build failed on a known filesystem-junction artifact; the test suite was validated in the main tree, which does not contain these edits. The worktree `tsc --noEmit` and `--webpack` build both ran clean against the actual edits, and the changed files carry no dedicated behavioral tests, so the main-tree run would not have exercised the new behavior regardless. Runtime proofs (badge network panel, before/after file diff) remain the author's noted manual checks.",
+    "Non-blocking: the facet cache is invalidated only by the four comp-sync functions (fullSync, incrementalSync, resyncCompetitions, purgeExcludedCompetitions). No other writer to comp_fixtures sport/season/competition columns exists today (confirmed), but a future direct writer that bypasses these would serve stale facets."
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\meta-cache\\reporting-ui/.agents/tasks/2026-10-15-154808-review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\req-reduction\\reporting-ui\\.agents\\tasks\\review.md"
 }

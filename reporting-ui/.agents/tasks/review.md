@@ -1,84 +1,95 @@
-# Overlap-scoped saved accuracy % with shared window helper
+# Supabase request-volume reduction — three behavior-preserving reads cut
 
-Every stored accuracy figure on a saved check (`accuracy`, `exact`, `master_total`, the breakdowns, and the whole `player_accuracy` JSON that feeds analyst profiles and leaderboards) is now derived OVERLAP-SCOPED through a single shared pure function, so the saved number matches what the compare page shows in Overlap mode regardless of which Range was on screen at save time. A new `lib/comparison/overlap-window.ts` holds the one definition of the overlap window; all three recompute paths in `lib/api/accuracyChecks.ts` (save/update, `propagateMasterCorrection`, `backfillPlayerAccuracy`/`recomputeAllPlayerAccuracy`) and the compare page's live `analystWindow` route through it. The approach canonicalises the FULL master/analyst sets first (same arguments the live view uses, including the master file name), then filters by the overlap window, so the stored Home/Away split provably matches the live labels, not just the headline. The catch/catches "same stat" requirement needed no code change in this diff — the rule already lives in `baseAction`/the synonym map on `main` and is inherited unchanged.
+Three independent changes trim redundant Supabase traffic without altering what the user sees. The sidebar unread badge stops refetching and re-subscribing on every navigation (now set up once per user, refreshed live via Realtime and explicitly on read). The comp-fixtures facet scan — a full-table paged read run on three pages' mount — is cached per session behind the existing `cache.ts` keyed-cache pattern and invalidated on every comp-sync mutation. The master-timeline download fetches only `xml_master` instead of both XML blobs, halving its egress. All edits stay inside the files named in the plan; exported signatures are untouched.
 
-Watch for: (confirmed) `computeStoredPlayerAccuracy` was fully removed rather than kept as the "thin wrapper" the plan described — this is cleaner, not a defect, since it had no external callers. (possible) The compare page's `analystWindow` null-guard tightened from "at least one file has instances" to "both file objects present"; this only changes a manual-range placeholder in a single-file-loaded state where no comparison is possible, so it is cosmetic and does not touch live-view grading.
+Watch for: the Turbopack build and worktree vitest run both failed in the worktree and were only validated in the main tree (which does not contain these edits) — but the worktree `tsc --noEmit` and the worktree `--webpack` build both ran clean against the edited code, so type-safety and compilation of the changes are covered (confirmed). `purgeExcludedCompetitions` invalidates the facet cache only when `removed > 0`, which is correct because a zero-removal run changes nothing (confirmed).
 
 **Verdict**: APPROVED
 
 ## High-level view
 
-The window math is now one pure module. `deriveOverlapWindow` returns `[min,max]` of the `.mid` values of whichever side has fewer instances, with master pushed first and a strict `<` tie-break so a tie keeps master — reproducing the compare page's prior inline `reduce` exactly. The live page's `analystWindow` and the API's `gradeOverlapScoped` both call it, so there is a single definition of "overlap" and the saved number is provably the same window the Overlap view shows.
+Change 1 is the gating behavioral change. The sidebar badge effect dependency moved from `[user, pathname]` to `[user]`, so the initial `getUnreadCount` fetch and the `subscribeToAllMessages` Realtime channel are established once per session instead of being torn down and rebuilt on every route change. The old "clears after read" behavior rode on the pathname re-run; it is now replaced by an explicit in-process event — `markConversationRead` fires `notifyUnreadChanged`, the sidebar's `refresh` is registered via `onUnreadShouldRefresh`, so the badge drops on read with no navigation. All three badge behaviors (initial count, live increment, clears-after-read) trace cleanly through the code.
 
-The label-correctness argument hinges on ordering: canonicalise the FULL sets (with the master file name) first, THEN scope by `.mid`. Scoping first and canonicalising the subset could resolve Home/Away from window-local team frequencies and flip the split — the earlier (v1) bug this revision fixes. Because the scoped inputs are already Home/Away-only, the downstream `compareInstances` and `computePlayerAccuracyByScope` re-canonicalisations hit `canonicaliseTeams`' idempotency guard and pass through unchanged, so the stored both/home/away split equals the live labels. That guard and the empty-team early-return both exist in the (unchanged) `xml-compare.ts`.
+Change 2 caches only `getCompFacets`, the one session-static full-table scan, keyed on the `accuracy`/`normal` variant and invalidated at the end of every function that writes `comp_fixtures` contents. The other candidate reads (`getUnreadCount`, `getRolePermissions`, allocation reads) are documented SKIPs with sound liveness reasoning — `getUnreadCount` in particular must stay uncached so Realtime and the Change-1 trigger remain authoritative.
 
-All four write paths call the same `gradeOverlapScoped(xmlMaster, xmlAnalyst, tolerance, fileNameMaster)` and persist an identical column set, so summary and `player_accuracy` can no longer disagree and the three recompute paths are mutually consistent, deterministic, and idempotent. A null grade (unparsable/empty master) is handled uniformly: write null accuracy columns plus a `console.warn`, never a fall-back to the range-dependent `input.result`, so the "always overlap" invariant can't be silently broken; the row is reconciled by a later backfill.
+Change 3 repoints the download's cold-path fallback from `getAccuracyChecksXml` (which selects `id, xml_master, xml_analyst`) to `getSavedMasterXml` (which selects `xml_master` only). Both read the same column for the same id and return the same string, so the serialized file is byte-identical; the only difference is the dropped unused analyst blob. The other `getAccuracyChecksXml` caller is untouched and its signature is unchanged.
 
-The compare page's live Range selector (`rangeMode`, `effectiveRange`, `inRange`, `canonical`, every live grading memo) is untouched — the only edit repoints the auto-window memo at the shared helper. Core matching in `xml-compare.ts` is not altered; the diff reuses `compareInstances`/`canonicaliseTeams` on filtered inputs only. The pure test suite encodes the synthetic-window and label-parity assertions.
+The recorded verification is partially indirect: the worktree junction broke Turbopack and the jsdom-based vitest run, so the author ran the full suite in the main tree and relied on the worktree's clean `tsc` and `--webpack` build for the edits themselves. That split is explained rather than hidden, and the edited files carry no dedicated behavioral tests that a worktree run would have exercised beyond what `tsc` + build already cover.
 
 <details>
 <summary>Issues (2)</summary>
 
-1. **Plan/impl drift on `computeStoredPlayerAccuracy`** — the plan said reimplement it as a thin wrapper; the implementation removed it entirely. Non-blocking: there were no external callers (it was a module-local function), removal is cleaner, and the verification doc records the decision. No action required.
-2. **`analystWindow` single-file null behavior** — the memo now returns null when either `master` or `analyst` is absent, whereas the old code derived a window from whichever single side had instances. Only affects the manual-range input placeholder when exactly one file is loaded (a state with no gradeable comparison). Cosmetic; leave as is unless the placeholder hint matters.
+1. **Indirect test evidence** — worktree vitest and Turbopack build failed on a known junction artifact; the suite was validated in the main tree, which lacks the edits. Non-blocking: worktree `tsc --noEmit` and `--webpack` build ran clean against the actual edits, and the changed files have no dedicated behavioral tests, so the main-tree run would not have exercised the new behavior regardless. Runtime proofs (badge network panel, before/after file diff) remain the author's noted manual checks.
+2. **Facet-cache liveness depends on sync invalidation discipline** — the cache is only dropped by the four comp-sync functions; any future direct writer to `comp_fixtures` sport/season/competition columns that bypasses them would serve stale facets. No such writer exists today (confirmed), so not blocking.
 
 </details>
 
 <details>
 <summary>Details</summary>
 
-### One pure window, shared by the live view and all stored paths
+## Sidebar badge: subscribe once per user, refresh on read instead of per-nav
 
-`deriveOverlapWindow` pushes `master` as the first candidate and reduces with strict `b.arr.length < a.arr.length`, so a length tie keeps master — identical to the page's old `[master, analyst].reduce((a,b)=> b.instances.length < a.instances.length ? b : a)`. `inOverlap` is inclusive on both ends, matching the old `inRange`. The window reads only `.mid`/`.length` and never `.team`, so applying it before or after `canonicaliseTeams` selects the identical rows. The parity test reproduces the page's prior inline math as an oracle and asserts equality for several fixtures, which is the concrete "saved == what I see in Overlap mode" proof for window selection and bounds.
+The effect now keys on `[user]` alone (confirmed — diff line `}, [user];` replacing `[user, pathname]`). `usePathname` is retained because `pathname.startsWith(item.href)` still drives active-link highlighting (confirmed, Sidebar.tsx L362), so the retained import is live code, not a leftover.
 
-The compare page edit is the whole of the live-view change: the `analystWindow` memo now calls `deriveOverlapWindow(master.instances, analyst.instances)` and returns `{start, end}`. The dropped `source` field was dead (only `.start`/`.end` are read, in `effectiveRange` and the manual-range placeholders). `effectiveRange` still honours full/manual/auto exactly as before.
+The three badge behaviors hold up against the code:
 
-### Canonicalise-full-then-scope keeps the stored labels equal to the live labels
+(a) Initial count — the effect body calls `refresh()` on mount, which runs `getUnreadCount(uid)` → `setUnread(n)`, unchanged from before (confirmed).
 
-`gradeOverlapScoped` canonicalises the full sets with `canonicaliseTeams(masterRaw, analystRaw, tol, name)` — the same argument list the page's `canonical` memo uses, master file name included — then `scopeToOverlap`s the already-canonical sets, then grades. The downstream `compareInstances` and `computePlayerAccuracyByScope` re-canonicalise, but their inputs are already Home/Away-only, so they hit the idempotency guard (`isCanon(master) && isCanon(analyst)`) and pass through, preserving the full-set labels. Both the guard and the `mTeams.length === 0 || aTeams.length === 0` early return are present in the unchanged `xml-compare.ts`, so the two-leg label-preservation the design relies on holds. The item-7 fixture builds a case where team frequency order differs inside the window versus across the full game and asserts the full-then-scope split equals the live full-then-filter split, guarding against regressing to the v1 scope-first ordering.
+(b) Live update — `subscribeToAllMessages(refresh)` is still opened inside the effect and is unchanged in `messages.ts`; a new inbound INSERT still calls `refresh`, bumping the badge with no navigation (confirmed — subscription code untouched in the diff, callback wiring intact).
 
-### Four paths, one derivation, consistent writes
+(c) Clears after read — opening a conversation calls `getMessages`, which calls `markConversationRead` (confirmed, messages.ts L477). `markConversationRead` now calls `notifyUnreadChanged()` after the `last_read_at` update succeeds (confirmed, diff), which fires every `onUnreadShouldRefresh` listener — the sidebar's `refresh` — dropping the badge without a route change. This explicit trigger is a faithful replacement for the pathname re-run that previously drove the same refresh.
+
+The new event mechanism is pure and Supabase-free: a module-level `Set<() => void>`, each listener guarded so one throwing callback cannot break the others. Cleanup unsubscribes both the Realtime channel and the read listener (confirmed, diff). With the subscription living for the session and the sidebar mounted once in the authenticated layout, unrelated navigation issues no new `conversation_members`/`messages` reads and does not reopen the channel — the request-volume win. The runtime Network-panel confirmation of (d) is left as a manual check, but it follows statically from the dependency-array change and the single mount point.
+
+## Comp-fixtures facet cache keyed on the accuracyOnly variant
+
+The body of `getCompFacets` moved into a private `fetchCompFacets(key)` and the export now returns `compFacetsCached.get(options.accuracyOnly ? "accuracy" : "normal")`. The exported signature `getCompFacets(options?: { accuracyOnly?: boolean })` is unchanged (confirmed). Keying on the two-valued string means the accuracy and normal variants cache independently — important, since they tally different competition subsets from the same scan.
 
 ```
-                      gradeOverlapScoped(xmlMaster, xmlAnalyst, tol, name)
-                                      |
-         canonicaliseTeams(FULL) -> scopeToOverlap -> deriveOverlapWindow
-                                      |
-             compareInstances + computePlayerAccuracyByScope (scoped)
-                                      |
-      summary + category/team breakdown + player_accuracy  (one column set)
-         ^save        ^update        ^propagate(per row)      ^backfill(per row)
+getCompFacets(accuracyOnly?) ──► compFacetsCached.get("accuracy"|"normal")
+                                        │ miss
+                                        ▼
+                                 fetchCompFacets(key)  (paged full-table scan)
+   fullSync ───────────────┐
+   incrementalSync ────────┤
+   resyncCompetitions ─────┼──► compFacetsCached.invalidate()  (map.clear)
+   purgeExcludedCompetitions (removed>0) ┘
 ```
 
-Save grades from the raw source rather than `input.result.summary`, so the stored value no longer reflects the on-screen Range. Update calls the same helper and, only when a future caller omits `xmlAnalyst` entirely (`=== undefined`) AND the grade is null, re-fetches the stored `xml_analyst`/`file_name_master`/`tolerance` to avoid blanking a previously-good row; the sole current caller (`handleUpdateCheck`) always passes the analyst XML, so this branch is defensive. All conditional `if (input.X !== undefined) row.Y = ...` metadata writes are preserved verbatim, as is `xml_master: input.xmlMaster`. Propagate grades each sibling against the corrected master through the same helper and persists `xml_master: xmlMaster`, so a master correction can no longer silently rewrite siblings back to full-game scope. Backfill grades each row from stored XML and writes the full column set in one update, so a row is either fully overlap-scoped or untouched — never a mix of overlap `player_accuracy` with stale full-game summary. Because the function is pure in `(xml, tolerance, fileName)`, re-running backfill yields identical values (idempotent), and `recomputeAllPlayerAccuracy` is just `backfill(force=true)`.
+Every function that writes `comp_fixtures` contents invalidates the cache. The underlying writer is `syncOne`'s delete+insert, reached only through `fullSync`, `resyncCompetitions`, and `incrementalSync`, each of which invalidates at the end (confirmed — all five `syncOne` call sites traced). `purgeExcludedCompetitions` deletes directly and invalidates when `removed > 0`; a zero-removal run leaves the table and the facets unchanged, so skipping the invalidate there is correct, not a gap. Allocation writes target the separate `comp_fixture_assignments` table and do not touch the facet columns, so they correctly do not invalidate.
 
-### Failure modes: fail to null, never fail to full-game
+The cache hands back a shared read-only instance, so the three caller pages must only read / `setState` the arrays — an in-place sort/push would corrupt the shared entry per the `cache.ts` contract. The code comment asserts this holds for the current callers; it is the one invariant a future caller could silently break.
 
-A null grade is reachable only when the source is unparsable or the master parses empty. Every path treats null the same way: write null accuracy columns, `console.warn`, and (for the bulk paths) skip-and-continue — none falls back to the range-dependent `input.result`, which is what preserves the "always overlap" invariant. Backfill keeps the preserved per-row fetch guard first (`if (xmlErr || !xmlRow) { skipped; continue }`), so a per-row fetch error is counted and skipped rather than aborting the whole run; the three skip branches (fetch error, null grade, update error) all increment `skipped`, call `onProgress`, and continue, and only the Supabase update error path retains the existing contract. Propagate likewise warns-and-continues on a null row while still throwing on a Supabase update error.
+The SKIP decisions are sound and documented. `getUnreadCount` stays uncached so Realtime plus the Change-1 trigger remain authoritative — caching it would reintroduce the staleness Change 1 is designed to avoid. `getRolePermissions` is already loaded once per session by `AuthContext`, and the allocation reads change within a session, so neither is a safe cache target. These are documented SKIPs, which the brief treats as acceptable rather than findings.
 
-### Scope discipline and the removed helper
+## Master-timeline download fetches only xml_master
 
-Core matching is untouched: `xml-compare.ts` and `player-accuracy.ts` show no diff against `main`, and the API layer reuses `compareInstances`/`canonicaliseTeams`/`computePlayerAccuracyByScope` on filtered inputs only. The now-unused `const master = instancesFromRaw(xmlMaster)` in propagate was removed, keeping `instancesFromRaw` otherwise referenced. `computeStoredPlayerAccuracy` was removed entirely (zero remaining references in the worktree) rather than kept as the plan's "thin wrapper"; since it was never exported this is a clean simplification, and the verification doc records it.
+```
+downloadMasterTimeline:
+  raw = xmlById.get(first.id)?.xml_master      (warm cache, unchanged, tried first)
+  if (!raw) raw = await getSavedMasterXml(first.id)   ◄── was getAccuracyChecksXml([first.id])
+  instancesFromRaw(raw) ─► serializeInstances / serializeInstancesToJson
+```
 
-### catch/catches already in the base
+`getSavedMasterXml` selects `xml_master` only and returns `data?.xml_master ?? null` (confirmed, accuracyChecks.ts). `getAccuracyChecksXml` selects `id, xml_master, xml_analyst` and the download read `.get(first.id)?.xml_master` from it. Both read the same `xml_master` column for the same id, so `raw` is the same string on either path; the dropped `xml_analyst` was never consumed by the download. Since `raw` flows unchanged into `instancesFromRaw` and the serializers, the exported XML and JSON are byte-identical — the before/after file diff remains the author's noted manual confirmation, but it follows from identical input.
 
-The diff makes no change to `xml-compare.ts`. `git show main:...xml-compare.ts` confirms `.replace(/\bcatches\b/g, "catch")` in `baseAction` and the `catch`/`catches`/`claims`/`saves` cross-synonym map are already on `main`, so the overlap-scoped stored path inherits the "treat catch and catches as the same exact stat" behaviour through `compareInstances` → `sameBaseAction` with no API-layer change. `cross-exact.test.ts` (unchanged) already asserts master `Catch` vs analyst `Catches` and the reverse score exact, alongside no-regression cases (short vs long passes stay non-exact), so there is no risk of this normalisation merging unrelated stats.
+The warm-cache path (`xmlById.get(first.id)?.xml_master`) is unchanged and still tried first (confirmed, diff). The other `getAccuracyChecksXml` caller — the per-check player-accuracy fallback that needs both blobs — is untouched, and `getAccuracyChecksXml`'s signature and behavior are unchanged, so no existing caller breaks (confirmed). `getSavedMasterXml` also has a pre-existing internal caller in `mergeAccuracyChecks`; its signature is unchanged, so that path is unaffected.
 
-### Verification evidence
+## Verification evidence
 
-`tsc --noEmit` is clean (exit 0) over the whole project per the verification doc. The vitest "No test suite found" symptom is the documented worktree artifact: the worktree's `node_modules` is a junction pointing outside the Turbopack root, which breaks both vitest discovery (all eight test files report it, including known-good pre-existing ones) and the Turbopack build in the worktree. The coder reproduced a clean `npm run build` and 7/7 passing `overlap-window.test.ts` by copying the files into the main tree (real `node_modules`) and then restored it, leaving no residual change. Given tsc is clean and the artifact signature is as documented, that symptom is not a real failure, so no spot-check run was warranted.
+The recorded evidence is internally consistent and transparent about its one limitation. In the worktree, `tsc --noEmit` ran clean (exit 0) and `npm run build -- --webpack` generated all 36 pages with the in-build TypeScript check passing — both against the edited code, covering type-safety and compilation of all three changes. The Turbopack build panicked and the jsdom vitest run reported "No test suite found", both attributed to the worktree being a filesystem junction; the author re-ran the full vitest suite in the main tree (9 suites / 92 tests passing) to show the test files are themselves valid. The main tree does not contain the edits, so that run does not validate the new behavior — but the changed files carry no dedicated behavioral tests, so a worktree run would not have exercised the new badge/cache/download paths beyond what `tsc` and the webpack build already confirm. The `createKeyedCache` mechanism Change 2 relies on is covered by the passing `cache.test.ts`. The behavioral proofs are static walkthroughs, independently re-traced against the code above.
 
 </details>
 
 <details>
-<summary>File map</summary>
+<summary>Files changed</summary>
 
-- `lib/comparison/overlap-window.ts` (new) — pure shared window helper: `deriveOverlapWindow`, `inOverlap`, `scopeToOverlap`; no DOM/Supabase.
-- `lib/comparison/overlap-window.test.ts` (new) — 7 pure-logic tests: window selection/tie-break, inclusive bounds, empty-side, page-parity oracle, synthetic `[1200,1800]` grading effect, full-then-scope label parity.
-- `lib/api/accuracyChecks.ts` — adds `gradeOverlapScoped`; reroutes save/update/propagate/backfill through it; removes `computeStoredPlayerAccuracy` and the unused propagate master parse.
-- `app/accuracy-compare/page.tsx` — `analystWindow` memo repointed at `deriveOverlapWindow`; `source` field dropped; no other live-view change.
-- `lib/comparison/xml-compare.ts`, `player-accuracy.ts`, `cross-exact.test.ts` — unchanged vs `main` (catch/catches already present on base).
+- `components/layout/Sidebar.tsx` — badge effect keyed on `[user]`; subscribes to new read-refresh event alongside Realtime.
+- `lib/api/messages.ts` — adds pure `onUnreadShouldRefresh` / `notifyUnreadChanged` event; `markConversationRead` fires it on success.
+- `lib/api/compFixtures.ts` — `getCompFacets` wrapped in `createKeyedCache`; invalidation added to the four comp-sync mutations.
+- `app/accuracy-checks/page.tsx` — download cold-path fallback switched to `getSavedMasterXml` (master-only fetch).
+- `.agents/tasks/plan.md`, `.agents/tasks/implementation-note.md` — planning/record docs (not production code).
 
-Full diff: `git diff main` in `c:\Users\AndyDin\reporting-dashboard\.worktrees\overlap-scope` (plus the two untracked new files under `reporting-ui/lib/comparison/`).
+Full working-tree diff: `git diff` in `c:\Users\AndyDin\reporting-dashboard\.worktrees\req-reduction` (branch `perf/request-reduction`).
 
 </details>

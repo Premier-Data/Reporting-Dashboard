@@ -31,6 +31,7 @@ import type { TrendPoint } from "./AccuracyTrendChart";
 import {
   getAccuracyChecksMeta,
   getAccuracyChecksXml,
+  getSavedMasterXml,
   summariseByAnalyst,
   deleteAccuracyCheck,
   restoreAccuracyCheck,
@@ -1141,8 +1142,10 @@ export default function AccuracyChecksPage() {
     try {
       let raw = xmlById.get(first.id)?.xml_master ?? null;
       if (!raw) {
-        const fetched = await getAccuracyChecksXml([first.id]);
-        raw = fetched.get(first.id)?.xml_master ?? null;
+        // Master-only fetch: the download never uses xml_analyst, so pull just
+        // xml_master (halves egress vs getAccuracyChecksXml, which also selects
+        // the large analyst blob). Same xml_master string → byte-identical file.
+        raw = await getSavedMasterXml(first.id);
       }
       const instances = instancesFromRaw(raw);
       if (instances.length === 0) {

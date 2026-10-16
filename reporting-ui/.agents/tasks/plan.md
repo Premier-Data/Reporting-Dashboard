@@ -1,193 +1,55 @@
-# Implementation Plan — client-side cache for meta/list Supabase fetches
+# Implementation Plan — Supabase request-volume reduction (3 behavior-preserving changes)
 
-Follows the approved design (`.agents/tasks/design.md`) and its APPROVED review
-(`.agents/tasks/design-review.md`). All paths are in the worktree
-`c:\Users\AndyDin\reporting-dashboard\.worktrees\meta-cache\reporting-ui`.
-The main tree at `...\reporting-dashboard\reporting-ui` must NOT be touched.
+Worktree root (all paths below are inside it): `c:\Users\AndyDin\reporting-dashboard\.worktrees\req-reduction\reporting-ui`
 
-Scope recap (do not exceed it): touch only `lib/api/cache.ts` (new),
-`lib/api/cache.test.ts` (new), `lib/api/accuracyChecks.ts`, and
-`lib/api/disputes.ts`. Exported function signatures stay IDENTICAL — caching is
-added INSIDE the existing functions; only new `invalidate…Cache()` functions are
-added to the module exports. Cache the Promise (not the resolved value) and
-reset the slot to `null` on failure, mirroring `lib/api/fixtureMap.ts` /
-`lib/api/clubConfig.ts`. `getAccuracyChecksForAnalyst`, `getAllAccuracyChecks`,
-`getDisputesForCheck`, and all single-row/XML fetches are NOT cached (design §1,
-§6). Build/test commands are run from the worktree root with `npm` (scripts:
-`"test": "vitest --run"`, `"build": "next build"`, `"lint": "eslint"`; vitest
-`include: ["**/*.test.ts","**/*.test.tsx"]`, jsdom env).
+## Context discovered during exploration
 
-The order is dependency-driven: the pure helper and its test land first (item 1,
-2), then each module is wired on top of it (items 3–6), then full verification
-(item 7). Every item leaves the tree buildable.
+- Static-export, client-only Supabase (anon key) Next.js 16 app. Request VOLUME drives log ingestion, so the win is removing redundant Supabase REST reads / repeated Realtime subscribes.
+- Build/test commands (from `package.json`): build = `npm run build` (`next build`), tests = `npx vitest --run` (alias `npm test`), lint = `npm run lint`. Vitest is already set up (`vitest@3`, `jsdom@29`); existing test example: `lib/api/cache.test.ts`.
+- Existing cache mechanism lives in `lib/api/cache.ts`: `createCache` (single-value: populate-once, dedupe-concurrent, reset-on-error, `invalidate`) and `createKeyedCache`. Already used in `lib/api/accuracyChecks.ts` (`metaCached`, `deletedMetaCached`) and `lib/api/disputes.ts` (`allDisputesCached`, `openCountsCached`), each paired with an `invalidate()` on the relevant mutation. Cached results are READ-ONLY (shared instance) — callers must not mutate in place.
+- AGENTS.md rule: before using any Next.js API, read the relevant guide under `node_modules/next/dist/docs/`. The only Next.js APIs touched here are already-imported client hooks in `Sidebar.tsx` (`usePathname`, `useRouter` from `next/navigation`); Change 1 REMOVES a dependency on `usePathname` for one effect. If the implementer adds/changes any `next/*` import or navigation API, read the matching doc under `node_modules/next/dist/docs/` first.
+
+### The investigation reports referenced in the brief do NOT exist
+`.agents/tasks/log-ingestion-report.md` and `.agents/tasks/xml-dedup-design-report.md` are absent on disk. This plan is grounded only in code actually read. The brief is the source of truth.
 
 ---
 
-- [ ] 1. Create the pure, Supabase-free cache helper module.
-      Add `createCache<T>(fetcher)` (single-value: populate-once, dedupe
-      concurrent callers, reset slot to `null` on reject then rethrow) and
-      `createKeyedCache<T>(fetcher, keyFn = s => s)` (one entry per normalized
-      key via a `Map<string, Promise<T>>`, `map.delete(key)` on reject,
-      `invalidate()` = `map.clear()`), both returning `{ get, invalidate }`.
-      Copy the two function bodies VERBATIM from design §5. No imports; no React,
-      no `localStorage`/`IndexedDB`, no TTL. `createKeyedCache` is built now even
-      though no production code wires it yet (future per-analyst adoption).
-      Files: lib/api/cache.ts
-      Verify: `npm run build` from the worktree root compiles (the module is
-      pure TS and will be covered by tests in the next item).
+# Changes
 
-- [ ] 2. Add the Vitest unit test for the cache helper.
-      Co-located `*.test.ts` (matches `lib/comparison/overlap-window.test.ts`).
-      Drive each helper with a counting/throwing stub `fetcher` — no network.
-      `createCache`: (a) populate once — two sequential `get()`s call fetcher
-      exactly once and resolve to the same value; (b) dedupe concurrent — two
-      `get()`s before the first resolves call fetcher once and resolve to the
-      same instance; (c) `invalidate()` forces a re-fetch (fetcher called twice);
-      (d) error does not poison — a fetcher that rejects once then succeeds:
-      first `get()` rejects, second re-calls and resolves.
-      `createKeyedCache`: (a) key isolation — `get("a")`/`get("b")` call fetcher
-      once per distinct key; (b) normalization collapses keys — with
-      `keyFn = s => s.trim().toLowerCase()`, `"Jane"`, `" jane "`, `"JANE"` call
-      fetcher once; (c) `invalidate()` clears all keys (2 before + 2 after = 4
-      calls); (d) error does not poison a key — first fetch rejects, second
-      re-calls and resolves. Cover all eight cases from design §5.
-      Files: lib/api/cache.test.ts
-      Verify: `npm test` — the new `lib/api/cache.test.ts` suite passes along
-      with the existing suites.
+- [ ] 1. **Set up the sidebar unread-badge fetch + Realtime subscription ONCE per user (dep `[user]`, not `[user, pathname]`), and refresh the count explicitly on the read action instead of on every navigation.**
+      Current state (read): `components/layout/Sidebar.tsx` has a `useEffect(..., [user, pathname])` that calls `getUnreadCount(uid)` (a Supabase REST read of `conversation_members` + `messages`) and opens a `subscribeToAllMessages(refresh)` Realtime channel on EVERY route change. The sidebar renders on every authenticated page, so this fires per navigation app-wide, and the Realtime channel is torn down + reopened each time. `lib/api/messages.ts` `subscribeToAllMessages` already fires `refresh` on any new message (live update path), and `getUnreadCount` recomputes the total from `last_read_at` watermarks. The ONLY reason the count drops to zero after reading today is that opening/reading a conversation calls `markConversationRead` (inside `getMessages`, in `app/messages/page.tsx` `openConversation`), updating `last_read_at`, and the subsequent `pathname` change re-runs the effect so `getUnreadCount` re-reads the lowered count.
+      Edit: In `Sidebar.tsx`, change the effect dependency array from `[user, pathname]` to `[user]` so the fetch + subscription are set up once per user and torn down on user change/unmount. Then restore the clears-after-read behavior WITHOUT a per-nav poll by adding a lightweight global refresh trigger: export a tiny event mechanism from `lib/api/messages.ts` (e.g. a module-level `Set<() => void>` of listeners with `onUnreadShouldRefresh(cb): () => void` to subscribe and `notifyUnreadChanged()` to fire all listeners — pure, Supabase-free, no new deps). In `Sidebar.tsx`, inside the same `[user]` effect, subscribe the existing `refresh` to `onUnreadShouldRefresh` (unsubscribe in cleanup). Call `notifyUnreadChanged()` from `markConversationRead` in `lib/api/messages.ts` AFTER a successful read-watermark update (and also, defensively, after `sendMessage` resolves, since sending does not change your own unread but keeps the signal centralized — optional; only add if it does not double-count). This makes the badge refresh exactly when messages are marked read, replacing the per-navigation refetch.
+      Keep `subscribeToAllMessages` as the LIVE path (unchanged) so new inbound messages still bump the badge. Keep `getUnreadCount` uncached (see item 3 — do NOT cache it; Realtime + the explicit trigger must stay authoritative).
+      Files: `components/layout/Sidebar.tsx`, `lib/api/messages.ts`.
+      PROOF OBLIGATIONS the implementer MUST satisfy (do not assume from reading — verify at runtime or with a test):
+        (a) **Initial count correct**: on first mount after login the badge shows the same number it shows today. Verify: load as a user with unread messages; badge matches a manual `getUnreadCount`.
+        (b) **Live Realtime update**: a new inbound message (another user sends to you) increments the badge WITHOUT navigating. Verify at runtime with two sessions, or unit-test that `subscribeToAllMessages`'s callback path still calls `refresh`.
+        (c) **Clears after read**: opening/reading a conversation drops the badge to the new lower count without needing a route change. Verify at runtime: open a thread with unread messages and confirm the badge decrements; confirm it does so because `markConversationRead` → `notifyUnreadChanged` → `refresh`, not because of navigation.
+        (d) **No per-navigation refetch**: navigating between unrelated pages (e.g. Dashboard → Fixtures) issues NO new `conversation_members`/`messages` reads and does NOT reopen a Realtime channel. Verify at runtime via the Network/Realtime panel (mark this "verify during implementation").
+      If removing `pathname` cannot preserve clears-after-read with the explicit-trigger approach (e.g. a read path that does not route through `markConversationRead`), fall back to the MINIMAL variant: keep a targeted refresh only when LEAVING a conversation (not on every route) and document why in a code comment.
+      Verify: `npx vitest --run` passes (add/adjust a `messages`-targeted test for the trigger if feasible); `npm run build` succeeds; then the runtime checks (a)–(d) above.
 
-- [ ] 3. Wire the two meta caches into `accuracyChecks.ts` and add their
-      invalidators. Rename the current bodies of `getAccuracyChecksMeta` and
-      `getDeletedAccuracyChecksMeta` to inner `fetchAccuracyChecksMeta()` /
-      `fetchDeletedAccuracyChecksMeta()` (verbatim — keep the paging loop and the
-      single select respectively). Add module-scope
-      `const metaCached = createCache(fetchAccuracyChecksMeta)` and
-      `const deletedMetaCached = createCache(fetchDeletedAccuracyChecksMeta)`
-      (import `createCache` from `@/lib/api/cache`). Re-implement the two public
-      functions to `return metaCached.get()` / `deletedMetaCached.get()` with
-      their ORIGINAL exported signatures (`(): Promise<AccuracyCheckMeta[]>`).
-      Export `invalidateAccuracyChecksMetaCache()` and
-      `invalidateDeletedAccuracyChecksMetaCache()` that call the matching
-      `.invalidate()`. Do NOT cache `getAccuracyChecksForAnalyst` or
-      `getAllAccuracyChecks`.
-      Files: lib/api/accuracyChecks.ts
-      Verify: `npm run build` compiles (public signatures unchanged, so all
-      callers still typecheck).
+- [ ] 2. **Cache `getCompFacets` behind the existing `lib/api/cache.ts` pattern and invalidate it on every comp-sync mutation.** (This is Change 2(c) — the one safe, high-value cache. See the SKIP notes below for 2(a) and 2(b).)
+      Current state (read): `lib/api/compFixtures.ts` `getCompFacets({accuracyOnly?})` pages the ENTIRE `comp_fixtures` table (selecting `sport,season,competition`) in 1000-row chunks and tallies client-side — on EVERY mount. It is called on mount by THREE pages: `app/comp-fixtures/page.tsx` (`refreshFacets`), `app/accuracy-fixture/page.tsx`, and `app/fixture-review/page.tsx`. The data only changes when the comp table is re-synced. There are TWO variants by the `accuracyOnly` flag, so a keyed cache keyed on that flag is required.
+      Edit: In `compFixtures.ts`, `import { createKeyedCache } from "@/lib/api/cache"`. Rename the current body to a private `fetchCompFacets(key: string)` (or wrap it), create `const compFacetsCached = createKeyedCache(fetchCompFacets, (k) => k)` keyed by the string `"accuracy"` vs `"normal"` derived from `options.accuracyOnly`, and make the exported `getCompFacets` call `compFacetsCached.get(...)`. Keep the exported signature `getCompFacets(options?: { accuracyOnly?: boolean })` IDENTICAL. Because callers currently receive a fresh object each call, and the cache hands back a shared READ-ONLY instance, confirm no caller mutates the returned `sports`/`years` arrays in place (they read/`setState` only — verified in the three pages). Add `compFacetsCached.invalidate()` at the end of EACH mutation that changes `comp_fixtures` contents: `fullSync`, `incrementalSync`, `resyncCompetitions`, and `purgeExcludedCompetitions` (all in `compFixtures.ts`). Place the invalidate call so it runs on success of the write.
+      Files: `lib/api/compFixtures.ts`.
+      SKIPPED reads (document in a code comment and in the PR):
+        - **2(a) `getUnreadCount`** — SKIP caching. Its value must stay live (Realtime + the Change-1 explicit trigger update it); caching would make the badge stale. Change 1 already removes its per-navigation refetch, which is the actual volume win.
+        - **2(b) `getRolePermissions`** — SKIP caching. Verified it is already loaded ONCE per session: `components/auth/AuthContext.tsx` calls it in `reloadPermissions`, invoked on mount, on login, and only otherwise on explicit `reloadPermissions`. The only other caller is `app/permissions/page.tsx` (the admin editor itself, which must read fresh after `setRolePermission`). A module cache would add staleness risk after `setRolePermission` for near-zero volume benefit.
+        - **`getCompAllocationGames` / `getAssignmentsForFixtures`** — SKIP caching. Allocations DO change within a session via `assignCompFixture`/`unassignCompFixture` on the comp-fixtures page; caching risks showing stale allocations. Only `getCompFacets` (sport/season/competition facets) is session-static and safe.
+      Verify: `npx vitest --run` passes (add a `compFixtures` facet-cache test mirroring `cache.test.ts`: populate-once, and invalidate-after-sync forces re-fetch, using a mocked fetcher); `npm run build` succeeds. Runtime (verify during implementation): visiting comp-fixtures then fixture-review then accuracy-fixture issues the full-table facet scan at most once per session until a sync runs.
 
-- [ ] 4. Wire the two dispute caches into `disputes.ts` and add their
-      invalidators. Rename the bodies of `getAllDisputes` and
-      `getOpenDisputeCounts` to inner `fetchAllDisputes()` /
-      `fetchOpenDisputeCounts()` (verbatim — keep the paging loops and the
-      `accuracy_checks!inner(deleted_at)` filters). Add module-scope
-      `const allDisputesCached = createCache(fetchAllDisputes)` and
-      `const openCountsCached = createCache(fetchOpenDisputeCounts)` (import
-      `createCache` from `@/lib/api/cache`). Re-implement the public functions to
-      `return allDisputesCached.get()` / `openCountsCached.get()` with their
-      ORIGINAL signatures (`(): Promise<Dispute[]>` and
-      `(): Promise<Record<number, number>>`). Export
-      `invalidateAllDisputesCache()` and `invalidateOpenDisputeCountsCache()`.
-      `disputes.ts` keeps importing only `@/lib/supabase` plus the new
-      `@/lib/api/cache` — it must NOT import from `accuracyChecks.ts` (one-way
-      dependency, no cycle). Do NOT cache `getDisputesForCheck`.
-      Files: lib/api/disputes.ts
-      Verify: `npm run build` compiles.
-
-- [ ] 5. Add invalidation calls to every `accuracy_disputes` mutation in
-      `disputes.ts`, per the design §2 dispute matrix. In every case fire BOTH
-      `invalidateAllDisputesCache()` and `invalidateOpenDisputeCountsCache()`
-      immediately AFTER the write's `if (error) throw` guard (so a failed write
-      never clears a still-valid cache):
-      - `createDispute` — insert branch: after the INSERT's error guard.
-      - `createDispute` — update/restore branch: after the UPDATE's error guard.
-      - `createDispute` — empty-patch early return (`Object.keys(patch).length
-        === 0` → `return existingDispute`): NO invalidation (no write).
-      - `resolveDispute`: after its UPDATE error guard.
-      - `deleteDispute`: after its UPDATE (soft-delete) error guard.
-      - `restoreDispute`: after its UPDATE (restore) error guard.
-      These are the 5 write sites from the review table (lines ~108, 122, 249,
-      271, 287) plus the deliberate no-write branch. No check caches are touched
-      here (dispute mutations never change M/D).
-      Files: lib/api/disputes.ts
-      Verify: `npm run build` compiles; `npm test` still passes.
-
-- [ ] 6. Add invalidation calls to every `accuracy_checks` mutation in
-      `accuracyChecks.ts`, per the design §2 check matrix, including the
-      cross-table dispute clears. First add the one-directional import
-      `import { invalidateAllDisputesCache, invalidateOpenDisputeCountsCache }
-      from "@/lib/api/disputes";` (and use the local meta invalidators from
-      item 3). Then wire each mutation to the EXACT caches below (M = meta,
-      D = deleted meta, GD = all disputes, OC = open counts), following the
-      placement rule — fire after each committed write and before any later step
-      that can throw, using `finally`/unconditional-return where a later step can
-      throw after an earlier commit:
-      - `saveAccuracyCheck` (INSERT): clear M after the insert error guard.
-      - `updateAccuracyCheck` (UPDATE one row): clear M after the update error
-        guard.
-      - `propagateMasterCorrection` (per-row loop that THROWS on `upErr`): wrap
-        the loop in `try { … } finally { invalidateAccuracyChecksMetaCache(); }`
-        so a mid-loop throw after committing rows still clears M. (Only M.)
-      - `renameMaster` (UPDATE `file_name_master`): clear M after the update
-        error guard. (Only M.)
-      - `deleteMaster` (soft-delete one row): after the update error guard clear
-        M, D, GD, OC (cross-table — the row's disputes drop out of GD/OC).
-      - `mergeMasters`: clear M immediately after Step 3's
-        `.update({file_name_master, xml_master})` `if (error) throw` guard (NOT
-        at function end — a Step-4 `loadErr` throw must not leave M stale). One
-        clear suffices because nothing reads M between Step 3 and return. (Only
-        M; merge touches no deleted-ness or disputes.)
-      - `fixStaleMasterTotals` (resilient loop, `continue` on per-row error,
-        never throws out): clear M once on the normal return, unconditionally
-        (like backfill — review NIT #3). (Only M.)
-      - `backfillPlayerAccuracy` (resilient loop, always returns normally): clear
-        M on the unconditional normal `return { updated, skipped }` — do NOT gate
-        on `updated > 0`. This also covers `recomputeAllPlayerAccuracy` (thin
-        wrapper), so add NO separate clear there. (Only M.)
-      - `deleteAccuracyCheck` (soft-delete): after the update error guard clear
-        M, D, GD, OC (cross-table).
-      - `restoreAccuracyCheck` (restore): after the update error guard clear
-        M, D, GD, OC (cross-table).
-      - `purgeAccuracyCheck` (hard DELETE, CASCADE): after the delete error guard
-        clear M, D, GD, OC (CASCADE removes child disputes).
-      This covers all 12 check write sites from the review table. The four
-      cross-table mutations (`deleteMaster`, `deleteAccuracyCheck`,
-      `restoreAccuracyCheck`, `purgeAccuracyCheck`) are exactly the ones that
-      clear GD+OC in addition to the check caches.
-      Files: lib/api/accuracyChecks.ts
-      Verify: `npm run build` compiles with no import cycle (tsc would flag a
-      broken/cyclic import); `npm test` still passes.
-
-- [ ] 7. Full verification pass and matrix spot-checks.
-      Run the project's real commands and the design §5 placement/cross-module
-      checks:
-      - `npm run build` (Next.js build / tsc) from the worktree root — succeeds,
-        confirming unchanged public signatures typecheck across all callers and
-        the `accuracyChecks → disputes` import adds no cycle.
-      - `npm test` — all suites pass, including the new `lib/api/cache.test.ts`.
-      - `npm run lint` — no new lint errors in the four touched files.
-      - Cross-table wiring check (review Finding #6): confirm `deleteMaster`,
-        `deleteAccuracyCheck`, `restoreAccuracyCheck`, and `purgeAccuracyCheck`
-        each CALL both `invalidateAllDisputesCache` and
-        `invalidateOpenDisputeCountsCache` (not just that the import line exists),
-        and that `disputes.ts` imports only `@/lib/supabase` and `@/lib/api/cache`.
-      - Placement check (review Finding #2): confirm `mergeMasters` clears M
-        right after Step 3's `if (error) throw`; `backfillPlayerAccuracy` clears
-        M on its unconditional return; `propagateMasterCorrection` clears M in a
-        `finally`.
-      Files: none (verification only)
-      Verify: `npm run build`, `npm test`, and `npm run lint` all succeed and the
-      two spot-checks above hold.
+- [ ] 3. **Repoint the master-timeline download to fetch ONLY `xml_master` (via `getSavedMasterXml`) instead of both blobs via `getAccuracyChecksXml`.**
+      Current state (read): `app/accuracy-checks/page.tsx` `downloadMasterTimeline` (~L1142) does `let raw = xmlById.get(first.id)?.xml_master ?? null;` and, when the cached XML is absent, falls back to `const fetched = await getAccuracyChecksXml([first.id]); raw = fetched.get(first.id)?.xml_master ?? null;` — `getAccuracyChecksXml` (in `lib/api/accuracyChecks.ts`) selects `id, xml_master, xml_analyst`, so it pulls the (large) analyst blob the download never uses. `getSavedMasterXml(checkId)` (same file, ~L1304) already selects ONLY `xml_master` and returns the raw string or null — exactly what the download needs. `getAccuracyChecksXml`'s OTHER caller is the per-check player-accuracy fallback effect (~L1017) which needs BOTH blobs; leave it untouched.
+      Edit: In `app/accuracy-checks/page.tsx`, in `downloadMasterTimeline` only, replace the `getAccuracyChecksXml([first.id])` fallback with `raw = await getSavedMasterXml(first.id);`. Add `getSavedMasterXml` to the existing `@/lib/api/accuracyChecks` import in this file. Do NOT change `getAccuracyChecksXml` or `getSavedMasterXml` signatures/behavior. This halves egress for the download (master-only, no analyst blob).
+      Files: `app/accuracy-checks/page.tsx` (download caller only). No change needed to `lib/api/accuracyChecks.ts` since `getSavedMasterXml` already serves this.
+      PROOF OBLIGATION: the downloaded file is byte-identical to today. `downloadMasterTimeline` passes `raw` through `instancesFromRaw(raw)` → `serializeInstances`/`serializeInstancesToJson`, so as long as `getSavedMasterXml(first.id)` returns the SAME `xml_master` string that `getAccuracyChecksXml([first.id]).get(first.id).xml_master` returned, the output is identical. Verify during implementation: download XML (and JSON) for a master group before and after and diff the files — they must match. Also confirm the warm-cache path (`xmlById.get(first.id)?.xml_master`) is unchanged and still used first.
+      Verify: `npm run build` succeeds; `npx vitest --run` passes; runtime diff of the exported XML and JSON files (identical before/after).
 
 ---
 
-## Notes / assumptions
+# Suggested implementation order
+1 → 2 → 3. They are independent (different files/concerns) and each leaves the codebase buildable on its own, but Change 1 is the biggest volume win and touches the most behavior, so land and verify it first. After all three: run `npm run lint`, `npx vitest --run`, and `npm run build`, then perform the runtime proof checks for items 1 and 3.
 
-- Design §4 shared-array-reference invariant: callers get the same array
-  instance on cache hits. The two live consumers (`app/accuracy-checks/page.tsx`,
-  `app/disputes/page.tsx`) only `map`/`filter`/sort-on-copy, so no defensive
-  `.slice()` is added (matches design, review Finding #5). Do not introduce an
-  in-place sort/splice on a cached result in these modules.
-- No Next.js API surface is added — these are plain JS module caches in the
-  existing `lib/api/*` data layer (design "No new Next.js API" section), so the
-  AGENTS.md Next.js-docs rule imposes no additional reading for this change.
-- The `createKeyedCache` helper is implemented and tested but intentionally NOT
-  wired to any production fetch (`getAccuracyChecksForAnalyst` is dead code —
-  design §1 "Keyed cache (dropped)"); no mutation gets a per-analyst invalidator.
+# Out of scope (do not touch)
+Comparison engine, grading, DB schema, the 2–5s pollers (external .NET API / Cloudflare Worker, not Supabase), and any files beyond: `components/layout/Sidebar.tsx`, `lib/api/messages.ts`, `lib/api/auth.ts` (expected: no change — 2(b) skipped), `lib/api/compFixtures.ts`, `lib/api/cache.ts` (reuse only), `app/accuracy-checks/page.tsx`, `lib/api/accuracyChecks.ts` (expected: no change — `getSavedMasterXml` already exists). Keep all exported signatures stable.
