@@ -17,6 +17,7 @@ import {
   BarChart3,
   Users,
   Activity,
+  ExternalLink,
 } from "lucide-react";
 
 import { useRouter } from "next/navigation";
@@ -446,8 +447,11 @@ function GameRow({
           : "border-white/10 bg-white/[0.04] hover:bg-white/[0.06]"
       }`}
     >
-      {/* Status strip (live clock / final / upcoming). */}
-      <div className="flex items-center justify-center gap-1.5 border-b border-white/10 bg-white/[0.03] py-1.5">
+      {/* Status strip (live clock / final / upcoming). The status badge stays
+          centred; the PlayHQ fixture link (when the feed provides a url) sits
+          at the right edge, positioned absolutely so it doesn't offset the
+          centred badge. */}
+      <div className="relative flex items-center justify-center gap-1.5 border-b border-white/10 bg-white/[0.03] py-1.5">
         {live && (
           <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
         )}
@@ -456,6 +460,19 @@ function GameRow({
         >
           {live && clockLabel ? clockLabel : badge.label}
         </span>
+        {game.url && (
+          <a
+            href={game.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title="View this fixture on PlayHQ"
+            aria-label="View this fixture on PlayHQ"
+            className="absolute right-2 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium text-slate-400 transition hover:bg-white/10 hover:text-sky-300"
+          >
+            PlayHQ <ExternalLink size={11} className="shrink-0" />
+          </a>
+        )}
       </div>
 
       {/* Scoreboard: [home block] | [centre schedule] | [away block].
