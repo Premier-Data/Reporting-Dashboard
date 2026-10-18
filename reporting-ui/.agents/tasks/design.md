@@ -1,765 +1,876 @@
-# Design: client-side cache for blob-free meta/list fetches (Supabase egress)
+# Design: Round-Summary board on the Push Activity page
 
 ## Overview
 
-Supabase egress is over the Free-plan cap. Profiling identified the remaining
-driver as REPEAT full-table fetches of the blob-free "meta/list" queries that
-fire every time a user revisits Accuracy History / leaderboards / analyst
-history / deleted-checks / dispute lists. Each of those views re-pages the whole
-`accuracy_checks` (or `accuracy_disputes`) table over the wire on every mount,
-even when nothing changed since the last visit.
+The Push Activity page (`reporting-ui/app/push-log/page.tsx`) today renders the
+raw TT push log — one row per push the Worker sent, newest first, sortable and
+filterable. In peak NTFL season there are 40+ divisions (grades) with 4–6
+fixtures each per round, so a single round produces hundreds of log rows and the
+operator cannot tell "what is the current scoreline for every fixture in the
+round" at a glance.
 
-This design adds a **module-level, in-memory, promise-deduped cache** in front of
-exactly those list fetches, mirroring the proven in-repo pattern in
-`lib/api/clubConfig.ts` and `lib/api/fixtureMap.ts` (a module-scoped
-`let cache: Promise<T> | null`, an `ensure…Cache()` that populates once and
-reuses, and an `invalidate…Cache()` called from every write — with the fetch's
-`.catch` resetting the cache to `null` so a failed fetch never poisons it).
-Revisiting a cached view then reuses the already-fetched array instead of
-re-paging the table.
+This feature adds a **summary board above the existing log**: for every division
+the Worker knows about, show that division's **most-recent relevant round** with
+**all** of its fixtures, each annotated with its **latest pushed score** (or a
+muted "not pushed yet" when the push log carries no entry for it).
 
-The non-negotiable acceptance criterion is **behavior-preserving correctness**:
-the data shown must stay correct, so every mutation that changes an underlying
-row MUST invalidate the caches that could now be stale. The design treats a
-smaller, provably-correct cache as strictly better than a broad one that risks
-staleness. Where a mutation's invalidation can't be cleanly wired, the design
-does NOT cache the fetch it would make stale (none of the in-scope fetches hit
-that case — see the invalidation matrix).
+The crucial constraint that shapes the whole design: **the push log only
+contains fixtures that have already been pushed (gone live).** To show *every*
+fixture in a round — including upcoming ones that have never been pushed — the
+full fixture list must come from the grade **games feed**, not the push log. The
+Worker is the only component that already (a) enumerates every registered grade
+(`KNOWN_GRADE_IDS` / `DEFAULT_GRADE_IDS`), (b) can fetch each grade's games via
+`fetchGradeGames` behind the edge cache, and (c) owns the `PUSH_LOG` KV. So the
+**Worker assembles the summary** in a new `GET /api/round-summary` endpoint and
+the **frontend just renders it**. This keeps the browser making one cheap call
+and puts the fan-out, caching, and join where the data and secrets already live.
 
-Only two files change for the mechanism-plus-wiring, plus one optional small
-pure helper module and its test:
+A previous attempt derived the summary from the push log alone; it was reverted
+because a push-log-only summary can never show a not-yet-pushed fixture. This
+design is the grade-feed-backed replacement and must **not** reintroduce any
+push-log-derived summary.
 
-- `lib/api/accuracyChecks.ts` — cache `getAccuracyChecksMeta()` and
-  `getDeletedAccuracyChecksMeta()`; add `invalidate…` calls to every check-row
-  mutation. **`getAccuracyChecksForAnalyst(name)` is NOT cached** in this task:
-  a worktree-wide grep (`**/*.{ts,tsx}`) finds the function declared here and
-  referenced nowhere else, so it is dead code today — caching it would reduce
-  zero present egress while wiring a keyed-map invalidation into ~8 mutation
-  sites for a fetch nothing reads. Per the task's "a smaller, provably-correct
-  cache is better" stance, we drop it from scope (see §1 "Keyed cache (dropped)"
-  and the revision note at the end). The keyed-cache primitive is still
-  specified and unit-tested in §5 so a future analyst-history view can adopt it
-  in one line without re-deriving the mechanism.
-- `lib/api/disputes.ts` — cache `getAllDisputes()` and
-  `getOpenDisputeCounts()`; add `invalidate…` calls to every dispute-row
-  mutation; AND invalidate the dispute caches from the two check-row mutations
-  that can change a dispute's visibility (soft-delete / restore of a check — see
-  the matrix for why).
-- `lib/api/cache.ts` (NEW, optional-but-recommended) — a tiny PURE, generic
-  `createCache(fn)` / `createKeyedCache(fn)` helper so the mechanism is
-  unit-testable without Supabase. See §5.
-- `lib/api/cache.test.ts` (NEW) — Vitest unit tests for the pure helper.
+## Technology stack (locked)
 
-No UI component, comparison engine, grading path, DB schema, or on-demand/XML
-fetch changes. Exported function signatures are IDENTICAL — caching is added
-INSIDE the existing functions (via the helper, or an inline module-level cache),
-and new `invalidate…` functions are exported for the mutations to call.
-
-### Technology stack (locked)
-
-- TypeScript, same module style as the existing `lib/api/*` data layer.
-- Supabase JS client (`@/lib/supabase`) for all data access — unchanged.
-- Module-level in-memory cache (a `let` binding at module scope), exactly as
-  `clubConfig.ts` / `fixtureMap.ts` already do. NO external cache library, NO
-  React Query, NO `localStorage`/`IndexedDB`, NO TTL (see correctness Q2).
-- Vitest (`npm test` → `vitest --run`) for the pure-helper unit test, co-located
-  as `lib/api/cache.test.ts` (matches the repo's co-located `*.test.ts`
-  convention, e.g. `lib/comparison/overlap-window.test.ts`).
-
-### No new Next.js API (AGENTS.md confirmation)
-
-Per the AGENTS.md rule, before using any Next.js API I confirmed what this task
-needs. This change is **purely a client-side data-layer concern**: it adds
-module-scoped variables and plain functions inside existing `lib/api/*` modules
-that already run in the browser via the Supabase client. It introduces **no**
-Next.js API surface — no Server Components, Server Actions, Route Handlers,
-`fetch` cache options, `unstable_cache`, `revalidate*`, middleware, or
-`next/*` imports. The caches are ordinary JS module state. Therefore no guide
-under `node_modules/next/dist/docs/` governs this change, and none is required
-to implement it. (The directory exists and was located; nothing in it applies.)
+- **Worker:** TypeScript on Cloudflare Workers, single file
+  `playhq-worker/src/index.ts`. No new dependencies. No `wrangler.toml` change —
+  caching reuses `caches.default` exactly like the existing grade-games and live
+  endpoints. Reuses in-file primitives: `fetchGradeGames`, `competitionLabel`,
+  the grade-games `caches.default` cache pattern, `PUSH_LOG` KV + `PUSH_LOG_KEY`,
+  `scheduledKickoffMs`, `UUID_RE`, `corsHeaders`, `json`, `UpstreamError`,
+  `mapPool`, `DEFAULT_GRADE_IDS`.
+- **Frontend:** the page is already a `"use client"` component that fetches
+  through a plain browser `fetch` and polls with `useEffect` + `setInterval`
+  (the community-library-style client fetching the Next 16 docs describe for
+  Client Components — confirmed in `node_modules/next/dist/docs/01-app/
+  01-getting-started/06-fetching-data.md` and `.../03-api-reference/01-directives/
+  use-client.md`). No Server Component data fetching, `use cache`, or route
+  handler is involved, so none of the Next 16 server-caching semantics apply
+  here. New fetcher uses `cache: "no-store"` exactly like the existing
+  `getPushLog`. New pure helpers live in a small co-located `*.test.ts`-tested
+  module; tests run under the existing `vitest` setup (`npm test`).
+- **Scope:** Worker = `src/index.ts` only (new endpoint + new pure helpers).
+  Frontend = `lib/api/playhq.ts` (new fetcher + types), `app/push-log/page.tsx`
+  (new summary section above the unchanged log), and one new pure-helper module
+  + its test. The existing log table, its filters, sorting, polling, the
+  comparison engine, and all unrelated files stay untouched.
 
 ---
 
-## Background: the exact fetches, read from source
+## Part 1 — Worker: `GET /api/round-summary`
 
-All line references are to the worktree sources as they stand.
+### 1.1 Route placement and shape
 
-### `lib/api/accuracyChecks.ts`
+Add the handler in the `fetch` router in `src/index.ts`, matching
+`url.pathname === "/api/round-summary"` (an exact-string match is enough — no
+params — consistent with the existing `/api/push-log` and `/api/push` checks).
+Place it next to the other `/api/...` string-matched routes (e.g. just after the
+`/api/push-log` block) and before the final `fixtures/:id/(live|status...)`
+regex so it is reached first.
 
-- **`getAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]>`** — pages the whole
-  active table (`deleted_at IS NULL`, `pageSize=1000`, `created_at desc`),
-  selecting `ACCURACY_CHECK_META_COLUMNS` (blob-free: no `xml_master`/
-  `xml_analyst`). Backs Accuracy History + leaderboards. **Biggest driver.**
-- **`getDeletedAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]>`** — single
-  select of soft-deleted rows (`deleted_at IS NOT NULL`, `deleted_at desc`),
-  same blob-free columns. Backs the "Deleted checks" review.
-- **`getAccuracyChecksForAnalyst(analystName): Promise<AccuracyCheckMeta[]>`** —
-  blob-free, `ilike("analyst_name", analystName.trim())`, `deleted_at IS NULL`,
-  `created_at asc`. It is **PARAMETERIZED** and would be a keyed cache IF it
-  were called — but a worktree-wide grep (re-run for this revision) shows it has
-  **zero callers**: the only hits are its own definition and doc-comment
-  mentions. It is dead code and is **NOT cached** in this task. Caching an
-  uncalled fetch reduces no egress and cannot show stale data, but it WOULD add
-  an `invalidateAccuracyChecksForAnalystCache()` call to every check mutation
-  for no benefit, so it is dropped (the earlier design's "Backs analyst history
-  → keyed cache" framing was wrong — the fetch backs nothing today). The keyed
-  primitive remains documented/tested in §5 for a future caller.
-- `getAllAccuracyChecks()` — dead code per the task; **NOT cached.**
-- Single-row / on-demand / XML fetches — `getAccuracyCheckById`,
-  `getSavedMasterXml`, `getAccuracyChecksXml`, `getSavedMasters`,
-  `getMasterCheckSiblings`, `countActiveGroupSiblings`,
-  `diagnoseMasterConsistency` — **NOT cached** (single-row, XML blobs, or
-  admin-only diagnostics; out of the task's list).
+It is a `GET`-only, CORS-wrapped, JSON endpoint:
 
-### `lib/api/disputes.ts`
+- Method/OPTIONS/CORS handling is already done at the top of `fetch` (OPTIONS →
+  204 with `cors`; non-GET → 405). The handler only runs for GET, and returns
+  via the shared `json(body, status, cors)` helper so `Access-Control-Allow-*`
+  headers match every other endpoint.
+- It **never throws out**: per-grade failures are swallowed (that grade is
+  skipped), and the top-level body is whatever succeeded. A total failure still
+  returns `200` with `{ rounds: [] }` rather than a 5xx, because an empty board
+  is a valid "nothing to show yet" state for the operator and must not surface as
+  a red error banner. (The frontend still handles non-200 defensively.)
 
-- **`getAllDisputes(): Promise<Dispute[]>`** — pages ALL disputes
-  (`pageSize=1000`), excluding soft-deleted disputes AND disputes on
-  soft-deleted checks (via `accuracy_checks!inner(deleted_at)` + two `.is(…,
-  null)` filters). Backs the global Disputes page.
-- **`getOpenDisputeCounts(): Promise<Record<number, number>>`** — pages all
-  `status='open'`, non-deleted disputes on non-deleted checks; tallies per
-  `check_id`. Backs the history open-dispute badges.
-- `getDisputesForCheck(checkId)` — single-check, on-demand; **NOT cached** (not
-  in the task's list; small and per-check — caching it adds a second keyed map
-  for little egress benefit and more invalidation surface). Documented as a
-  deliberate skip.
+### 1.2 Response JSON contract (authoritative)
 
-**Cross-table dependency to note now (drives the matrix):** both
-`getAllDisputes()` and `getOpenDisputeCounts()` are filtered by the parent
-check's `deleted_at` (`accuracy_checks!inner(deleted_at)`). So **soft-deleting
-or restoring an accuracy check changes which disputes these two fetches return**,
-even though no dispute row changed. That cross-table coupling is handled
-explicitly in the invalidation matrix (check soft-delete/restore invalidate the
-dispute caches too).
-
----
-
-## 1. Cache mechanism (mirrors clubConfig / fixtureMap)
-
-### Single-value caches (the array fetches)
-
-For `getAccuracyChecksMeta`, `getDeletedAccuracyChecksMeta`, `getAllDisputes`,
-and `getOpenDisputeCounts`, use the exact `clubConfig`/`fixtureMap` shape: a
-module-scoped promise that is populated once and reused, resetting itself to
-`null` on failure so a rejected fetch never poisons the cache.
-
-Reference pattern being mirrored (`fixtureMap.ts`):
-
-```ts
-let cache: Promise<Map<string, number | null>> | null = null;
-export function ensureFixtureMapCache() {
-  if (!cache) {
-    cache = loadMap().catch((e) => { cache = null; throw e; });
-  }
-  return cache;
-}
-export function invalidateFixtureMapCache(): void { cache = null; }
-```
-
-Applied here (illustrative, for `getAccuracyChecksMeta`). The PUBLIC signature
-is unchanged; the existing body becomes an inner `fetch…` and the public
-function returns the cached promise:
-
-```ts
-// module scope
-let metaCache: Promise<AccuracyCheckMeta[]> | null = null;
-
-async function fetchAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
-  // ← the CURRENT getAccuracyChecksMeta body verbatim (the paging loop).
-}
-
-export function getAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
-  if (!metaCache) {
-    metaCache = fetchAccuracyChecksMeta().catch((e) => {
-      metaCache = null; // don't poison the cache — next call retries
-      throw e;
-    });
-  }
-  return metaCache;
-}
-
-export function invalidateAccuracyChecksMetaCache(): void {
-  metaCache = null;
+```jsonc
+// GET /api/round-summary  →  200
+{
+  "generatedAt": "2026-10-03T06:12:00.000Z", // ISO; when the board was assembled
+  "rounds": [
+    {
+      "gradeId": "be950883-7630-4df5-81e4-a5bba0f24cb6", // full grade UUID
+      "competition": "NTFL Men's Premier",  // competitionLabel(game.url)
+      "round": "Round 3",                    // roundObj.name verbatim
+      "roundShort": "R3",                    // shortRound(round) — see 1.6
+      "roundNum": 3,                          // parsed integer, or null if none
+      "fixtures": [
+        {
+          "id": "a4c47814-bd91-45d5-93e8-227f9c0d72ba", // FULL fixture UUID
+          "match": "Waratah vs Nightcliff",  // home vs away, grade suffix stripped
+          "scheduled": "2026-10-03T20:00:00", // "<date>T<time>" or null
+          "status": "UPCOMING",               // REST status verbatim ("" → "UPCOMING")
+          "score": "3.4 (22) - 2.5 (17)",     // latest pushed score string, or null
+          "ok": true,                          // latest push accepted? or null
+          "ttId": 32656,                       // TT fixtureUid from the push entry, or null
+          "lastPushTs": "2026-10-03T20:41:03.004Z" // ISO of the latest push, or null
+        }
+        // ...all fixtures in this round for this grade
+      ]
+    }
+    // ...one entry per grade that resolved, sorted by competition then roundNum
+  ],
+  "errors": [ // grades that failed to fetch; non-fatal, for observability
+    { "gradeId": "6c2c7212-d1b7-48bb-acee-0fd75ce1984f", "error": "rate_limited" }
+  ]
 }
 ```
 
-Caching the **Promise** (not the resolved array) dedupes concurrent callers: two
-views mounting at once share one in-flight request. On resolve, every caller
-awaits the same array.
+Notes on the contract:
 
-> **Shared-reference note (applies to every list cache).** Callers receive the
-> SAME array instance on cache hits. The existing consumers of these fetches
-> treat the result as read-only (map/filter/sort into new arrays — e.g.
-> `summariseByAnalyst`, `countMasterChecks`, `disputeKeySet` all build new
-> structures and never mutate the input). This is behavior-preserving as long as
-> no caller mutates the returned array in place. The design does not change any
-> caller; this invariant is documented so a future caller does not introduce an
-> in-place sort/splice on a cached array. (If that risk is deemed material, the
-> cache can hand back a shallow copy `arr.slice()` on read; NOT done by default
-> because the existing callers are all non-mutating and the copy adds per-hit
-> cost. Stated as the known, bounded trade-off.)
->
-> **Enforcement decision (Finding #5).** Verified against the two live consumers:
-> `app/accuracy-checks/page.tsx` and `app/disputes/page.tsx` assign the fetched
-> array into React state and `map`/`filter` it (plus `summariseByAnalyst` /
-> `countMasterChecks` / `disputeKeySet`, which all build NEW structures); none
-> sorts or splices the result in place. The invariant therefore holds today and
-> is left protected by this documented contract rather than a defensive copy —
-> adding `.slice()` at every cache boundary would cost an array copy on each
-> hit for a risk no current caller realizes. **Rule for future callers:** if a
-> caller ever needs to sort/splice a cached result in place, it MUST copy first
-> (`[...result]` / `result.slice()`); do not mutate the shared instance. If that
-> ever becomes a real hazard, the single-line fix is to return `result.slice()`
-> from the cache getter. No correctness change is needed now.
+- `roundNum` is `number | null`: the parsed integer from the round name, or
+  `null` for a round whose name carries no number (finals: "Grand Final",
+  "Preliminary Final"). This is a deliberate divergence from the legacy
+  frontend `roundNum` helper in `page.tsx`, which returns the sentinel `9999`
+  for unparseable names — that sentinel is a sort hack local to the log table
+  and is **not** reused here (the board never does arithmetic on `roundNum`;
+  the selection math uses an explicit `hasNum` flag — see 1.7/1.9). Keeping the
+  JSON honest (`null`, not `9999`) means the frontend never has to special-case
+  a magic number.
+- `rounds` sort is fully specified (no numeric comparison of `null`):
+  1. by `competition` ascending (locale compare);
+  2. then numbered rounds (`roundNum !== null`) before null-number rounds;
+  3. within numbered rounds, by `roundNum` ascending;
+  4. within null-number rounds, by `round` name ascending (locale compare).
+  This ordering is a pure comparator so it is deterministic and testable; it
+  never evaluates `null < number`.
+- `fixtures` within a round are sorted by `scheduled` ascending (nulls last),
+  then by `match` as a stable tiebreak, so the board order is deterministic and
+  does not jitter between polls.
+- When a fixture has never been pushed (or its entry aged out of the 100-entry
+  cap), `score`, `ok`, `ttId`, and `lastPushTs` are all `null`. `ttId` may also
+  be `null` on a pushed fixture whose entry recorded `ttId: null` (unmapped) —
+  so `ttId === null` means "unknown", not "not pushed"; `lastPushTs === null` is
+  the single source of truth for "not pushed yet".
+- `errors` is always present (possibly empty). The frontend ignores it for
+  rendering but it makes a partial board diagnosable from the network tab.
 
-Each of the four single-value fetches gets its own `let …Cache` and matching
-`invalidate…Cache()`:
+### 1.3 Grade enumeration (reuse the exact existing parse)
 
-- `invalidateAccuracyChecksMetaCache()`
-- `invalidateDeletedAccuracyChecksMetaCache()`
-- `invalidateAllDisputesCache()`
-- `invalidateOpenDisputeCountsCache()`
-
-### Keyed cache (the per-analyst fetch) — DROPPED from this task
-
-`getAccuracyChecksForAnalyst(analystName)` is parameterized and would be the one
-keyed cache in this task — a `Map<string, Promise<AccuracyCheckMeta[]>>` keyed
-by the normalized analyst name. **It is not implemented here because the fetch
-has zero callers** (dead code — see Background and Finding #1). Caching it would
-reduce no present egress and, more importantly, would wire
-`invalidateAccuracyChecksForAnalystCache()` into every check mutation
-(`save`, `update`, `propagate`, `merge`, `rename`, `delete`, `restore`, `purge`,
-`fixStaleMasterTotals`, `backfill`) — ~10 call sites — to keep a map nothing
-reads consistent. That is pure scope for no benefit, so the design does NOT add
-it. This also removes column **A** from every row of the invalidation matrix in
-§2 (the matrix below reflects that).
-
-The keyed-cache *primitive* (`createKeyedCache`) is still specified and
-unit-tested in §5, so if a future analyst-history view is built it can be cached
-in one line:
+Reuse the identical parse used by `liveFixtureIds` / `resolveFullGame`:
 
 ```ts
-// FUTURE (not wired now — getAccuracyChecksForAnalyst is uncalled today):
-const analystCached = createKeyedCache(
-  fetchAccuracyChecksForAnalyst,
-  (name) => name.trim().toLowerCase(), // matches ilike(analyst_name, trim())
-);
+const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
+  .split(",").map((s) => s.trim()).filter(Boolean)
+  .filter((id) => UUID_RE.test(id));
 ```
 
-**When adopted, the key MUST be `name.trim().toLowerCase()`** to match the
-query's folding: the fetch does `.ilike("analyst_name", analystName.trim())`,
-which is case-insensitive and trim-insensitive, so `"Jane"`, `" jane "`, and
-`"JANE"` resolve to one row-set and must share one entry. One subtlety for the
-future implementer: `ilike` also treats `%` and `_` in the argument as SQL
-wildcards (the same loose-prefilter caveat the module documents for
-`resolveActiveGroupIds`). This does NOT break the cache: **the key is exactly
-the normalized query argument, so each key maps 1:1 onto whatever row-set the
-query returns for that argument, regardless of ILIKE wildcard behavior** — the
-cache can never be more stale than the query is loose, and no extra
-normalization is required. When adopted, invalidation would clear the WHOLE map
-(`map.clear()`) from every check mutation rather than per-key, because most
-check mutations touch rows for multiple analysts not cheaply known at the call
-site; whole-map clear is provably correct and the map is tiny.
+Using the same list guarantees the board covers exactly the grades the push
+pipeline and live resolution already know about — no drift.
 
----
+### 1.4 Fetching each grade's games (reuse the grade-games edge cache)
 
-## 2. THE INVALIDATION MATRIX (exhaustive)
+For each grade, read games the same way `resolveFullGame` does: check
+`caches.default` for `new Request(\`https://playhq-cache/grade-games/${gradeId}\`)`
+first; on a cache hit parse `body.data`; on a miss call
+`fetchGradeGames(gradeId, env)`. This reuses the **exact same cache key** the
+`/api/grades/:id/games` handler writes, so when the dashboard's Live Scores tab
+has recently loaded a grade, the round-summary endpoint pays zero upstream cost
+for it.
 
-Method: grepped both files for every `supabase.from("accuracy_checks")` and
-`supabase.from("accuracy_disputes")` call and classified each as a READ or a
-WRITE (`.insert` / `.update` / `.delete`). Every WRITE is listed below with the
-caches it must clear. Completeness is argued after the table.
-
-### Caches (short names)
-
-- **M** = accuracy-checks meta (`getAccuracyChecksMeta`)
-- **D** = deleted-checks meta (`getDeletedAccuracyChecksMeta`)
-- **GD** = all disputes (`getAllDisputes`)
-- **OC** = open dispute counts (`getOpenDisputeCounts`)
-
-> There is **no column A**: the per-analyst keyed cache is dropped (its fetch is
-> dead code — see §1). No mutation needs to clear it because nothing populates
-> it. If the keyed cache is adopted later, add column A and clear it (whole-map)
-> on every check mutation that today clears M.
-
-### `accuracy_checks` mutations → caches cleared
-
-| Mutation (fn) | Write it performs | M | D | GD | OC | Why |
-|---|---|---|---|---|---|---|
-| `saveAccuracyCheck` | INSERT active row | ✅ | — | — | — | New active check appears in meta. Not deleted (D), creates no disputes (GD/OC). |
-| `updateAccuracyCheck` | UPDATE summary/analyst/label of one active row | ✅ | — | — | — | Changes meta figures and possibly `analyst_name`; M reflects it. Dispute rows unchanged; deleted-ness unchanged. |
-| `propagateMasterCorrection` | UPDATE many active rows (re-grade) | ✅ | — | — | — | Mass summary change across analysts → clear M. No delete; disputes untouched. |
-| `mergeMasters` | UPDATE source rows' name+XML (Step 3), then re-grade whole dest group (Step 4) | ✅ | — | — | — | Mass name + summary change → M. Invalidate right after Step 3's write guard (see Wiring). Soft-deleted rows untouched; no dispute change. |
-| `renameMaster` | UPDATE `file_name_master` on active group | ✅ | — | — | — | `file_name_master` is a meta column shown in lists → M. |
-| `deleteMaster` | **soft-delete** one active row (sets `deleted_at`) | ✅ | ✅ | ✅ | ✅ | Row leaves active (M) and enters deleted (D). Its disputes drop out of GD/OC because those are `accuracy_checks!inner(deleted_at IS NULL)` filtered — cross-table. |
-| `deleteAccuracyCheck` | **soft-delete** one row | ✅ | ✅ | ✅ | ✅ | Same as above: leaves active, enters deleted, hides its disputes from GD/OC. |
-| `restoreAccuracyCheck` | **restore** (clears `deleted_at`) | ✅ | ✅ | ✅ | ✅ | Row re-enters active (M), leaves deleted (D); its disputes re-appear in GD/OC. Cross-table. |
-| `purgeAccuracyCheck` | hard DELETE (CASCADE deletes its disputes) | ✅ | ✅ | ✅ | ✅ | Row removed from deleted view (D) — purge is called only on already-deleted rows, so M rarely changes, but clearing it is harmless and keeps the rule uniform. CASCADE removes dispute rows → GD/OC. |
-| `fixStaleMasterTotals` | UPDATE `master_total` on rows | ✅ | — | — | — | `master_total` is a meta/leaderboard column → M. Deleted-ness and disputes unchanged. |
-| `backfillPlayerAccuracy` | UPDATE summary cols on many active rows | ✅ | — | — | — | Mass summary change (incl. accuracy/master_total used by leaderboards) → M. Admin-triggered. **Clear unconditionally on normal return** (never gate on the `updated` count — see Wiring). No delete; no dispute change. |
-| `recomputeAllPlayerAccuracy` | thin wrapper → `backfillPlayerAccuracy(force)` | ✅ | — | — | — | Same as backfill. Only needs the wiring once (inside backfill) — see note. |
-
-### `accuracy_disputes` mutations → caches cleared
-
-| Mutation (fn) | Write it performs | M | D | GD | OC | Why |
-|---|---|---|---|---|---|---|
-| `createDispute` — insert branch | INSERT new open dispute | — | — | ✅ | ✅ | A new open dispute changes the global list and the open-count badges. Check rows untouched (M/D). |
-| `createDispute` — update/restore branch | UPDATE existing (reason/category and/or clear `deleted_at` to restore) | — | — | ✅ | ✅ | Re-flagging may restore a soft-deleted dispute (re-adds to GD, and to OC if open) and/or change its reason/category shown in GD. |
-| `createDispute` — empty-patch early return | **NO WRITE** (`patch` empty → `return existingDispute`) | — | — | — | — | Performs no mutation; **gets no invalidation** (clearing here would be needless). |
-| `resolveDispute` | UPDATE `status` → confirmed/denied | — | — | ✅ | ✅ | Leaves the OPEN set (OC) and its status changes in GD. |
-| `deleteDispute` | **soft-delete** (sets `deleted_at`) | — | — | ✅ | ✅ | Drops out of both GD and OC (both filter `deleted_at IS NULL`). |
-| `restoreDispute` | **restore** (clears `deleted_at`) | — | — | ✅ | ✅ | Re-enters GD and (if open) OC. |
-
-### Completeness justification
-
-1. **Enumeration is by write-site, not by name.** Every `.insert`/`.update`/
-   `.delete` against the two tables in both files is in one of the two tables
-   above. The reads (`select` with no write) — `getDisputesForCheck`,
-   `getAllDisputes`, `getOpenDisputeCounts`, `getAccuracyCheck*`,
-   `getSavedMaster*`, `getMasterCheckSiblings`, `countActiveGroupSiblings`,
-   `resolveActiveGroupIds`, `diagnoseMasterConsistency` (read-only, explicitly
-   documented as touching no data), `getAccuracyChecksXml`,
-   `getAllAccuracyChecks` — perform no writes and need no invalidation.
-2. **`recomputeAllPlayerAccuracy` is a wrapper** over `backfillPlayerAccuracy`,
-   so wiring the invalidation INSIDE `backfillPlayerAccuracy` covers both. The
-   invalidation is placed once, on the normal return path, UNCONDITIONALLY — it
-   is NOT gated on `updated > 0`. (A mid-loop clear is unnecessary: nothing reads
-   the cache during the synchronous admin backfill. Clearing even on a
-   zero-update run is harmless — the next read simply re-fetches unchanged data —
-   and keeping it unconditional removes any chance of a committed row-update
-   slipping through without a clear.)
-3. **Cross-table rows (the subtle completeness point).** `getAllDisputes` and
-   `getOpenDisputeCounts` join `accuracy_checks!inner(deleted_at)` and filter
-   `accuracy_checks.deleted_at IS NULL`. Therefore a check's soft-delete,
-   restore, master-level delete, or purge changes which disputes those two
-   fetches return WITHOUT writing any dispute row. The four check mutations that
-   change a check's deleted-ness or remove it (`deleteAccuracyCheck`,
-   `deleteMaster`, `restoreAccuracyCheck`, `purgeAccuracyCheck`) therefore clear
-   **GD and OC in addition to the check cache (M, and D where relevant)**. This is the one place where
-   "check mutations invalidate check caches, dispute mutations invalidate
-   dispute caches" is deliberately widened, and it is required for correctness.
-   Conversely, check mutations that do NOT change deleted-ness
-   (`saveAccuracyCheck`, `updateAccuracyCheck`, `propagateMasterCorrection`,
-   `mergeMasters`, `renameMaster`, `fixStaleMasterTotals`, backfill) do NOT
-   touch GD/OC: the set of disputes and their open-status is unchanged by a
-   re-grade or rename, so clearing the dispute caches there would be needless
-   over-invalidation (correct but wasteful) — omitted deliberately, with this
-   reasoning.
-4. **Dispute mutations never change check caches.** None of
-   `createDispute`/`resolveDispute`/`deleteDispute`/`restoreDispute` writes an
-   `accuracy_checks` row, and neither M nor D derives from dispute data (the
-   badges are overlaid by the UI from OC, which IS invalidated). So dispute
-   mutations clear only GD/OC. Verified: no check-cache field is a function of
-   dispute rows.
-
-5. **`createDispute` has two write branches and one no-write branch.** The
-   function first looks up an existing dispute for the instance/side.
-   (a) If one exists and the computed `patch` is non-empty, it UPDATEs
-   (reason/category and/or `deleted_at = null` to restore) → invalidate GD+OC.
-   (b) If one exists but `patch` is empty, it `return`s the existing row with
-   **no write** → **no invalidation** (there is nothing to make stale; adding a
-   clear here would be needless churn). (c) If none exists, it INSERTs a new open
-   dispute → invalidate GD+OC. So both write branches clear GD+OC and only the
-   empty-patch early return is exempt, matching the "invalidate after a committed
-   write" rule exactly.
-
-### Wiring mechanics
-
-- `accuracyChecks.ts` mutations call the local `invalidate…` functions directly
-  (same module).
-- For the cross-table clears, `accuracyChecks.ts` must clear the dispute caches
-  that live in `disputes.ts`. Import them:
-  `import { invalidateAllDisputesCache, invalidateOpenDisputeCountsCache } from "@/lib/api/disputes";`.
-  (`disputes.ts` does not import from `accuracyChecks.ts` for invalidation, so
-  there is no import cycle: the dependency is one-directional,
-  accuracyChecks → disputes. `disputes.ts` already imports only `@/lib/supabase`.
-  Verified no cycle is introduced.)
-**The placement rule (precise):** *fire the invalidation after any committed
-write on that code path, BEFORE any later step that can throw.* "After the write"
-is not enough on its own — a multi-step mutation can commit an early write and
-then throw in a later step, and if the clear sits only at the end it is skipped
-and leaves a stale cache. The three mutation shapes:
-
-- **Single-write mutations** (`saveAccuracyCheck`, `updateAccuracyCheck`,
-  `renameMaster`, `deleteMaster`, `deleteAccuracyCheck`, `restoreAccuracyCheck`,
-  `purgeAccuracyCheck`, `fixStaleMasterTotals`, and all four dispute mutations):
-  place the `invalidate…` call(s) immediately AFTER that write's
-  `if (error) throw` guard. A failed write throws before the clear, so a still-
-  valid cache is never cleared on failure. (`fixStaleMasterTotals` loops but each
-  iteration is an independent single write; a single clear after the loop is
-  fine because no earlier committed write is followed by a throw — a per-row
-  error is `continue`d, not thrown. For robustness the clear still runs on the
-  normal return regardless of how many rows were fixed.)
-
-- **`mergeMasters` (two writes, Step 3 throws / Step 4 is resilient-but-loads).**
-  Step 3 is a single `.update({file_name_master, xml_master})` on the source ids
-  that THROWS on error; Step 4 reloads the destination group (its `loadErr` path
-  THROWS) then re-grades row by row (per-row errors swallowed). **Invalidate M
-  immediately after Step 3's `if (error) throw` guard** — i.e. the moment the
-  source rows are committed under the destination name/XML. This is mandatory:
-  if the clear were placed only at the end, a run where Step 3 commits but
-  Step 4's reload throws would return via exception with M stale (the moved rows
-  already carry a new name/summary-to-be). Clearing right after Step 3 covers
-  both the moved rows AND the subsequent Step-4 re-grades (one clear suffices;
-  re-clearing after Step 4 is unnecessary because nothing reads M between Step 3
-  and the function returning). `mergeMasters` does not touch deleted-ness or
-  dispute rows, so only M is cleared.
-
-- **`backfillPlayerAccuracy` (resilient loop, always returns normally).** It
-  never throws out of the loop (per-row fetch/update errors are counted and
-  `continue`d), so it always reaches its normal `return`. **Invalidate M on that
-  normal return, unconditionally** — do NOT gate on `updated > 0`. Any committed
-  row update makes M stale; a run that updated nothing clearing M is harmless
-  (next read re-fetches unchanged data). Placing it on the unconditional return
-  guarantees no committed update escapes without a clear. `recomputeAllPlayerAccuracy`
-  inherits this because it is a thin wrapper over `backfillPlayerAccuracy`.
-
-- **`propagateMasterCorrection` (loop that THROWS on any per-row error).** Here a
-  per-row `upErr` throws, so the loop can commit several rows and then throw mid-
-  way. A clear placed only after the loop would be skipped on that throw, leaving
-  M stale for the rows already updated. Two correct options: (a) clear M once
-  immediately BEFORE the loop returns on success AND in a `catch`/`finally` so a
-  mid-loop throw still clears, or (b) wrap the loop so the clear runs on both
-  paths. **Chosen: wrap the clear in a `try { …loop… } finally { invalidate M }`**
-  (or clear in both the success return and before re-throwing). The `finally`
-  form is simplest and provably correct: whether the loop completes or throws
-  after committing some rows, M is cleared exactly once. (This is the same
-  "committed-write-then-later-throw" hazard as `mergeMasters`, handled the same
-  way — any path that may have committed an `accuracy_checks` write must clear M
-  before control leaves the function.)
-
-Summary rule for the implementer: **for every mutation, identify each point at
-which an `accuracy_checks` (or `accuracy_disputes`) write is committed; ensure
-the matching `invalidate…` call(s) run on every control-flow path that reaches
-or passes such a commit — including exception paths — using a `finally` where a
-later step can throw after an earlier commit.**
-
----
-
-## 3. Correctness questions (resolved)
-
-**Q1 — Hard reload / pull-to-refresh re-fetches everything.** The caches are
-module-scoped `let`/`Map` bindings — ordinary JavaScript module state in the
-loaded document. A browser **hard reload** (or a PWA pull-to-refresh that
-reloads the document) tears down and re-evaluates every module, so `metaCache`
-etc. are re-initialized to `null`/empty and the next call re-fetches from
-Supabase. The cache therefore can NEVER block a deliberate full refresh; it only
-affects in-session client-side revisits (navigating back to a view without a
-document reload), which is exactly the egress we want to eliminate. This matches
-the existing `clubConfig`/`fixtureMap` caches, which rely on the same reload
-semantics. **Verified against the repo's pull-to-refresh implementation:**
-`components/pwa/usePullToRefresh.ts` triggers a refresh by calling
-`window.location.reload()` (a full document reload), which discards the JS
-context and re-initializes all module caches to empty — so a deliberate
-pull-to-refresh always re-fetches and the cache can never block it. (I confirmed
-the caches hold no persistence layer —
-no `localStorage`/`IndexedDB`/service-worker cache is involved, so there is no
-cross-reload survival to reason about.)
-
-**Q2 — Cross-tab / cross-user staleness; TTL?** A module cache is per
-JS-context (per tab). User A's mutation invalidates only A's tab; another admin's
-already-open tab keeps its cache until that tab reloads or performs its own
-mutation. **Decision: accept this, no TTL** — identical to the existing
-`clubConfig`/`fixtureMap` caches, which have no TTL and the same cross-tab
-behavior, and which the app already ships with. Adding a TTL would reintroduce
-periodic full-table fetches (the exact egress we are cutting) for a staleness
-window that the existing caches already tolerate app-wide. There is no concrete
-correctness requirement for sub-reload cross-tab freshness here (these are
-admin/analyst review views, not real-time dashboards; the data changes on
-deliberate admin actions, and the acting tab is always fresh). If a future
-requirement demands cross-tab freshness, the right tool is the Supabase Realtime
-subscription the repo already uses (`subscribeToAccuracyCheck`) to call the
-`invalidate…` functions on remote changes — NOT a polling TTL. Documented as the
-future path; not built now (out of scope, and would add egress).
-
-**Q3 — A failed fetch must not poison the cache.** Mirrored exactly from
-`ensureClubConfigCache`'s `.catch`: the single-value caches assign
-`cache = fetch().catch(e => { cache = null; throw e; })`, so a rejected fetch
-resets the slot to `null` and still rejects the awaiting callers; the next call
-retries. The keyed primitive (`createKeyedCache`, specified for future use)
-does the same with `map.delete(key)` in its `.catch`. Net effect: a transient
-Supabase error yields a normal rejection to
-the current callers and a clean retry on the next call — never a permanently
-cached rejected promise.
-
-**Q4 — Extract a pure, unit-testable helper?** **Yes — recommended, and this is
-the unit-test target.** The Supabase coupling makes the cached FETCH functions
-impractical to unit-test directly (they'd need a mocked PostgREST client), but
-the cache *mechanism* (populate-once, dedupe-concurrent, reset-on-error,
-keyed-by-normalized-key, invalidate) is pure control flow independent of
-Supabase. Extracting it into `lib/api/cache.ts` as `createCache(fn)` /
-`createKeyedCache(fn, keyFn)` lets us unit-test the mechanism against a trivial
-counting/throwing stub `fn`, which is where the real risk lives (does a reject
-reset the slot? do concurrent callers share one call? does invalidate force a
-re-call? does the keyed version isolate keys?). The two data modules then wrap
-their existing fetch bodies with the helper. If, for any reason, the helper is
-judged to add indirection the team dislikes, the inline per-module pattern (§1)
-is the equally-correct fallback and the fetch bodies can be smoke-tested only
-via integration — but the pure helper is preferred precisely because it makes
-the one risky part testable. See §5 for the helper contract and tests.
-
----
-
-## 4. Edge cases
-
-- **Empty results** cache normally (an empty array is a valid cached value); the
-  next read reuses `[]` until an invalidation. Correct: an empty table stays
-  empty until a mutation.
-- **Concurrent first callers** share one in-flight promise (promise-dedupe), so
-  two views mounting together make ONE request, not two.
-- **Mutation while a fetch is in flight:** `invalidate()` sets the slot to
-  `null`; the in-flight promise still resolves for its current awaiters (with
-  possibly pre-mutation data), but the NEXT call — including the component's
-  post-mutation refetch — sees `null` and starts a fresh fetch. Since UIs
-  refetch AFTER awaiting their mutation (the mutation resolves, then the view
-  reloads its list), the post-mutation read always gets fresh data. This matches
-  the existing caches' semantics.
-- **Resilient / multi-step mutations** (`mergeMasters`, `backfillPlayerAccuracy`,
-  `propagateMasterCorrection`): the invalidation is placed per the precise
-  placement rule in §2 "Wiring mechanics" — after a committed write and before
-  any later step that can throw (immediately after `mergeMasters` Step 3; on the
-  unconditional normal return of `backfillPlayerAccuracy`; in a `finally` around
-  `propagateMasterCorrection`'s throwing loop). Any changed row makes M stale,
-  and a wholly-failed run clearing M merely forces a harmless re-fetch of
-  unchanged data. This is the finding-#2 fix: a committed early write followed by
-  a later throw can never skip the clear.
-- **Purge of an already-deleted check:** clearing M is a no-op in practice
-  (the row wasn't in the active meta cache) but keeps the rule uniform and is
-  harmless; D/GD/OC do change (the row leaves the deleted view and its disputes
-  are CASCADE-removed).
-
----
-
-## 5. Shared helper contract + testing
-
-### `lib/api/cache.ts` (new, pure, no Supabase import)
+Crucially, on a miss the round-summary handler must **also populate that shared
+cache**. This is a **deliberate NEW write** — a conscious enhancement, *not* a
+reuse of `resolveFullGame` (which only ever reads the cache). The pattern it
+actually mirrors is the `/api/grades/:id/games` handler's write, and it must
+reproduce that handler's expressions **byte-for-byte** so the two writers produce
+interchangeable cache entries under the one shared key:
 
 ```ts
-/** Single-value cache: populate once, dedupe concurrent callers, reset on error. */
-export function createCache<T>(fetcher: () => Promise<T>): {
-  get: () => Promise<T>;
-  invalidate: () => void;
-} {
-  let cache: Promise<T> | null = null;
+// identical to the /api/grades/:id/games handler
+const ttl = Math.max(0, Number(env.CACHE_TTL_SECONDS ?? "90") || 90);
+const listTtl = Math.min(ttl, 60) || 60;
+const bodyText = JSON.stringify({ gradeId, count: data.length, data });
+const toCache = new Response(bodyText, {
+  headers: {
+    "Content-Type": "application/json",
+    "Cache-Control": `public, max-age=${listTtl}`,
+  },
+});
+ctx.waitUntil(cache.put(new Request(`https://playhq-cache/grade-games/${gradeId}`), toCache));
+```
+
+Note the `|| 90` and `|| 60` fallbacks and the `{ gradeId, count, data }` key
+order — these match the existing handler exactly so a cache entry written by
+either endpoint reads back identically (and debugging stays unconfusing). The
+effect: the first grade fetched by the board warms the cache for the Live Scores
+tab and vice-versa, instead of each endpoint re-fetching. The write is
+best-effort (`ctx.waitUntil`) and never blocks the response. Because this is new
+code rather than reuse, the implementation reviewer should expect it and not flag
+it as accidental drift from `resolveFullGame`.
+
+Per-grade failure handling: wrap each grade's fetch in `try/catch`. On
+`UpstreamError` push `{ gradeId, error: err.message }` to `errors` and `continue`;
+on any other throw push `{ gradeId, error: "fetch_failed" }` and `continue`.
+One bad grade never aborts the others. The enumerable `error` tokens are exactly:
+`rate_limited | forbidden | not_found | upstream_error` (verbatim from the
+`UpstreamError` throws in `fetchGradeGames` — 429/403/401/404/502) and
+`fetch_failed` (the catch-all for any non-`UpstreamError` throw). The frontend
+treats `errors[]` as opaque/observability-only and does not branch on these
+tokens.
+
+### 1.5 Cost-bounding for 40+ grades (the critical resilience decision)
+
+A naive `await fetchGradeGames` in a `for` loop over 40 grades, each paginating
+up to 50 pages with a 12 s per-request timeout, can blow the Worker CPU/wall
+budget. Two viable approaches:
+
+- **(A) Sequential with cache** — simple, but worst-case 40 × (cold fetch) is
+  too slow when the cache is cold (e.g. right after a deploy).
+- **(B) Bounded concurrency pool** — reuse the existing `mapPool(items, limit,
+  fn)` helper (already in the file, already used by `liveFixtureIds`) to fetch
+  grades with at most `N` in flight.
+
+**Chosen: (B), `mapPool` with `limit = 6`.** Rationale: `mapPool` is in-file,
+dependency-free, already settles every result so one rejection can't abort the
+batch, and bounds the simultaneous upstream load so a cold board doesn't fan out
+40 paginated fetches at once. `limit = 6` keeps at most 6 grades' pagination
+chains active while cutting cold-board latency ~6× versus sequential. Warm boards
+mostly hit the edge cache and return near-instantly regardless.
+
+**Concurrency vs total subrequests — the real ceiling:** `limit = 6` bounds
+*concurrency*, not the *total* number of subrequests. A fully cold board over 40
+grades still issues, in total, `Σ(pages per grade)` subrequests (each
+`fetchGradeGames` follows up to 50 pagination pages, though real NTFL grades are
+1–2 pages), funnelled 6-at-a-time through the pool. Cloudflare's per-invocation
+subrequest limit (50 on the free plan, 1000 on paid) is the hard ceiling, and
+40 grades × ~1–2 pages ≈ 40–80 subrequests would **exceed the free-plan 50**
+only on a fully cold board at peak scale. This is mitigated in three independent
+ways and is acceptable: (1) the shared grade-games edge cache means boards are
+almost never fully cold — a grade loaded by the Live Scores tab or a prior board
+poll within 60 s is a cache hit costing zero subrequests; (2) the 45 s board
+cache means only ~1 assembly per 45 s does any fetching at all; (3) the deploy
+target is the paid plan (1000 subrequests), under which even a worst-case cold
+40-grade board is comfortably within budget. If a free-plan deployment at 40+
+grades is ever required, raise the board cache TTL and/or stagger grade fetches
+across invocations — noted, not needed now. The design asserts safety on the
+paid-plan budget with warm-cache dominance, not on concurrency alone.
+
+The per-grade function passed to `mapPool` does the cache-read → fetch →
+cache-write → build-one-round work and returns either a `RoundSummary` object or
+a sentinel error record; the caller collects fulfilled non-null results into
+`rounds` and error records into `errors`. Because `mapPool` never rejects, the
+assembly can't throw from a single grade.
+
+The push-log KV is read **once** for the whole request (not per grade) — see 1.7.
+
+### 1.6 Competition label and round naming
+
+- **Competition:** `competitionLabel(game.url)` on any game of the grade (they
+  all share the grade's comp slug). Reuse verbatim; it already prettifies
+  unknown slugs so the board scales to 40+ comps with no new label entries.
+- **Round name:** `String((game.round ?? {}).name ?? "")` — the same
+  `roundObj.name` the push pipeline records.
+- **Round short + number:** extract with pure helpers named **`shortRound(name)`**
+  (the same name and exact branch order as the existing `app/push-log/page.tsx`
+  helper — reprinted in §1.9) and **`roundNumOf(name)`** (first `\d+` →
+  `number | null`, no `9999` sentinel). The Worker computes `roundShort` once per
+  division and ships it as a field, so the frontend renders `division.roundShort`
+  directly rather than keeping its own summary copy (the legacy log-table
+  `shortRound`/`roundNum` in `page.tsx` stay untouched). The abbreviation set is
+  R3, GF, PF, SF, QF, EF; the branch order matters (prelim/semi/qualif/elim are
+  tested before any generic "final") — see the reprinted body in §1.9.
+
+### 1.7 LATEST ROUND per grade (correctness-critical — precise rule)
+
+**Goal:** pick the round the operator means by "the current round" — the one
+being played now or most recently — **not** a far-future round that merely
+exists in the season fixture list, and not a long-past round.
+
+PlayHQ's NTFL REST feed is the hard case: a game stays `status: "UPCOMING"` (or
+empty) right up until it flips to `FINAL`; it never reports `IN_PROGRESS`. So
+status alone cannot identify "the live round". Scheduling date is the reliable
+signal, and `scheduledKickoffMs({date, time})` already converts a grade-feed
+schedule to an epoch (Darwin offset, Worker-safe).
+
+**Inherited single-offset assumption (flagged):** `scheduledKickoffMs` hardcodes
+the NTFL `+09:30` (Australia/Darwin, no DST) offset — the existing helper already
+documents this and that a DST-observing grade would need a per-fixture
+`schedule.timezone → offset` lookup. The latest-round selection **inherits** this
+assumption: for a non-Darwin grade among the 40+, every kickoff epoch could be off
+by the offset delta (hours), which in the worst case shifts the tier A/B
+"started/imminent" boundary around the `LOOKAHEAD_MS` window. This is acceptable
+for now because (a) the registered grades are NTFL/NT-region (Darwin-zoned) and
+(b) a few hours' skew only matters within the narrow 6 h lookahead on the exact
+morning of a round; it never picks a far-future or far-past round. If a
+DST-observing or non-Darwin grade is ever added, the fix is localised to
+`scheduledKickoffMs` (per the existing code comment), and the selection rule
+needs no change. This is a known, bounded limitation, not a correctness bug for
+the current grade set.
+
+**Rule — "the current round is the latest round that has STARTED; only if none
+has started yet does the board look ahead to the one about to start, then to the
+first upcoming round":**
+
+1. Group the grade's games by round name. For each round compute:
+   - `roundNum = roundNumOf(name)` → `number | null` (null for finals/unnumbered);
+   - `hasNum = roundNum !== null`;
+   - `earliestKickoff` = the minimum of its fixtures' `scheduledKickoffMs`
+     values (ignoring `null`s); `null` if the round has no dated fixture.
+2. Let `now = Date.now()`. Define a small lookahead `LOOKAHEAD_MS = 6 h` (one
+   match-day slot) so that on the morning of a round's first bounce — before any
+   kickoff epoch is `<= now` — the board can still roll forward to that round.
+3. **Ordering of rounds** (a single pure comparator `compareRounds`, reused for
+   both "highest" and "smallest" below): numbered rounds order *before* unnumbered
+   ones; two numbered rounds order by `roundNum`; two unnumbered rounds order by
+   name (locale compare). "Highest" = last in this order; "smallest" = first.
+   This never compares `null` as a number — the `hasNum` flag decides placement —
+   which is what resolves the `9999`-vs-`null` hazard from the JSON contract.
+4. **Three-tier selection** (first tier that yields a round wins):
+   - **Tier A — started:** among rounds whose `earliestKickoff` is non-null and
+     `<= now`, pick the **highest** (per step 3). This is the round currently in
+     play or most recently played — the operator's "current round".
+   - **Tier B — imminent:** if no round has started, among rounds whose
+     `earliestKickoff` is non-null and `<= now + LOOKAHEAD_MS`, pick the
+     **highest**. This fires only on the morning of a new round before its first
+     bounce, rolling the board forward at most 6 h early.
+   - **Tier C — first upcoming:** if no round is started or imminent (pre-season,
+     or every remaining round is >6 h away), pick the **smallest** round that has
+     any dated fixture (`earliestKickoff` non-null). This shows the season/next
+     opener rather than nothing.
+5. **Undated fallback:** if *every* round is date-less (`earliestKickoff` null
+   for all), none of tiers A–C can fire; fall back to the **highest** round by
+   step 3 (best-effort for an undated feed). Rounds with a `null`
+   `earliestKickoff` are otherwise invisible to tiers A–C (they cannot be
+   "started"/"imminent"/"upcoming" without a date).
+
+The key correctness point versus the previous draft: tiers A and B are
+**separate**. When two consecutive rounds are both within the 6 h window (a split
+weekend where round N's late games and round N+1's early games overlap), tier A
+only considers rounds that have *actually* started (`earliestKickoff <= now`), so
+it selects N (started) and does **not** silently jump to N+1 (whose earliest
+kickoff is still in the future). N+1 is chosen only once tier A finds nothing
+started — i.e. genuinely before N+1 begins and after N is fully in the past
+relative to the window. This makes the stated goal ("latest round that has
+started, else the next to come") and the implementation agree.
+
+**Why this rule over the alternatives:**
+
+- *Highest round with any non-UPCOMING game* fails for NTFL, where nothing is
+  non-UPCOMING until FINAL — mid-round (games scheduled, none final yet) it would
+  pick last week.
+- *Highest round that exists* is exactly the far-future bug the task warns
+  against (a full season is in the feed on day one).
+- *Date-of-today exact match* breaks when a round spans Fri–Sun or is split
+  across weekends, and shows nothing on a bye week.
+
+The three-tier "started → imminent → first upcoming" rule is robust to the NTFL
+status quirk, to multi-day rounds, and to pre-season, and degrades sensibly when
+dates are missing.
+
+**Edge cases the rule handles explicitly:**
+
+- *Pre-season / all future:* no round started or imminent → tier C → first
+  upcoming round.
+- *Mid-round, nothing final yet:* the current round's earliest kickoff is
+  `<= now` → tier A selects it (not last week's), even though every game still
+  reads UPCOMING. This is the core NTFL-quirk regression guard.
+- *Between rounds (round N done, N+1 is days away):* N's earliest kickoff is
+  `<= now` and N+1's is >6 h away → tier A's highest *started* round is N → board
+  shows the just-completed round N with its final scores, which is what an
+  operator checking "did everything push?" wants.
+- *Split weekend / two rounds overlap the 6 h window:* N has started
+  (`earliestKickoff <= now`), N+1 has not → tier A selects N (started); the board
+  does **not** jump to the not-yet-started N+1. It rolls to N+1 only once tier A
+  finds no started round and tier B sees N+1 within 6 h of its first bounce.
+- *Morning of a new round, before its first bounce:* no round has started today
+  → tier A empty → tier B selects the highest round within `now + 6 h` (the new
+  round), rolling the board forward at most 6 h early.
+- *Bye / partial round:* the round still has fixtures with dates, so it
+  participates in tiers A–C normally.
+- *Undated feed:* tiers A–C all empty → step 5 fallback to highest round by the
+  `compareRounds` order.
+
+This selection is implemented as a **pure function**
+`selectLatestRound(games, nowMs)` (see 1.9) so it is fully unit-testable without
+network.
+
+### 1.8 Fixtures in the chosen round + the push-log join
+
+Once the round is selected, take **all** games whose `round.name` equals the
+chosen round's name. For each game build a fixture record:
+
+- `id`: full UUID `String(game.id)`.
+- `match`: `${stripGrade(home.name)} vs ${stripGrade(away.name)}` where
+  `stripGrade` is the same regex the push pipeline uses
+  (`.replace(/\s+(men|women)\s+premier.*$/i, "").trim()`). Home/away come from
+  `competitors.find(c => c.isHomeTeam === true/false)`.
+- `scheduled`: `game.schedule.date ? \`${date}T${time || "00:00:00"}\` : null`.
+- `status`: `String(game.status ?? "")` normalised so `""`/`"NULL"` →
+  `"UPCOMING"` (the NTFL feed uses UPCOMING; an empty status means the same
+  pre-FINAL state). This is a pure helper `displayStatus(raw)`.
+
+`venue` is **deliberately not emitted**. The authoritative §1.2 contract and the
+§2.1 `RoundSummaryFixture` type both omit it, and the feature goal is "latest
+score per fixture per round", for which venue is noise. The fixture builder must
+therefore produce **only** the fields in §1.2 (`id`, `match`, `scheduled`,
+`status`, `score`, `ok`, `ttId`, `lastPushTs`) — no `venue` key. (If venue is
+ever wanted, it would be added to §1.2 and §2.1 together, in a later change.)
+
+**Push-log join rule (correctness-critical):**
+
+Read `PUSH_LOG` KV **once** at the top of the request:
+`const raw = await env.PUSH_LOG?.get(PUSH_LOG_KEY); const log = raw ? JSON.parse(raw) : []`
+(same store/key `recordPushLog` writes and `/api/push-log` reads). Build a
+**latest-per-fixture index** with a pure helper
+`indexLatestPushes(entries): Map<string, PushLogEntry>`:
+
+- Key each entry by its `playhqId` (the full UUID the board's fixture `id` also
+  uses). Entries with an empty `playhqId` are skipped.
+- For a given `playhqId`, keep the entry with the **maximum `ts`** (ISO strings
+  compare lexicographically in time order, but the helper parses with
+  `Date.parse` and compares numerically to be robust to any format drift; ties
+  keep the first seen).
+
+Then for each fixture, `const p = index.get(fixture.id)`:
+
+- `p` present → `score = p.score`, `ok = p.ok`, `ttId = p.ttId ?? null`,
+  `lastPushTs = p.ts`.
+- `p` absent → `score = null`, `ok = null`, `ttId = null`, `lastPushTs = null`.
+
+The join is on the **full UUID** on both sides (the push entry's `playhqId` and
+the grade-feed game's `id`), which is exact and unambiguous — no short-id
+prefix matching needed here.
+
+**100-entry-cap caveat (must be flagged):** `PUSH_LOG` is a ring buffer capped
+at `PUSH_LOG_MAX = 100` (see `recordPushLog`). In peak season a single round
+across 40 grades × 4–6 fixtures is 160–240 pushes, and each fixture is re-pushed
+every live cycle, so the 100 newest entries can easily cover **less than one
+full round**. Consequences the design accepts and surfaces:
+
+- A fixture pushed earlier in the round whose entries have all aged out shows
+  `"not pushed yet"` even though it *was* pushed. This is a **known limitation**,
+  not a bug: the board reflects "what the log still remembers". It is acceptable
+  because the log naturally refills with the newest cycle's pushes, and the most
+  recently active fixtures (the ones an operator is watching) are exactly the
+  ones retained.
+- The board therefore must not be read as an authoritative "has this ever been
+  pushed" ledger; it is "latest remembered score per fixture". The frontend
+  copy ("not pushed yet") and a short footnote make this explicit.
+- *Out of scope for this change* (flagged for the backlog): raising
+  `PUSH_LOG_MAX` or moving to per-fixture KV keys would make the board complete
+  across a full peak round. Not done here because it changes the push-log
+  storage contract and the existing `/api/push-log` reader, which this task
+  scopes out. Noted so the reviewer/operator knows the single lever that removes
+  the caveat.
+
+### 1.9 Pure helpers to extract (Worker) + their unit tests
+
+All selection/join logic is pulled into **exported pure functions** (no I/O, no
+`env`, no `caches`) so they can be unit-tested directly.
+
+**Where the tests live:** the frontend module `lib/round-summary/roundSummary.ts`
+(+ `.test.ts`) is the **tested reference implementation**, run under the
+frontend's already-wired `vitest` (`npm test`). The Worker keeps its own inline
+copies of the same pure helpers in `src/index.ts` (tiny, pure) because the task
+forbids adding a test runner / new config to the Worker. Both copies are pure and
+must be **behaviourally identical**; the frontend test suite pins the behaviour,
+and the implementation reviewer compares the Worker's inline copies against it.
+
+**Avoiding Worker/Next drift (addresses the two-copies risk):** the helpers read
+a **minimal structural input type**, not the strict `PlayHqGame`, so the exact
+same function body type-checks against *both* the frontend's typed
+`PlayHqGame[]` and the Worker's loosely-typed `Array<Record<string, unknown>>`
+(what `fetchGradeGames` returns and the cache's `body.data` carries, cast). The
+input type and the exact field accessors are pinned below so the two copies are
+line-for-line identical:
+
+```ts
+// Minimal shape selectLatestRound reads — satisfied by PlayHqGame AND by the
+// Worker's cast Record<string, unknown> games.
+type RoundInputGame = {
+  round?: { name?: string | null } | null;
+  schedule?: { date?: string | null; time?: string | null } | null;
+};
+
+// Exact accessors used inside the helper (identical in both copies):
+//   const name = game.round?.name ?? "";
+//   const ms   = scheduledKickoffMs(game.schedule);   // the exported helper
+// scheduledKickoffMs already accepts { date?, time? } | null | undefined, so no
+// cast or reshaping is needed on either side.
+```
+
+The helpers are:
+
+1. `selectLatestRound(games: RoundInputGame[], nowMs: number)` →
+   `{ roundName: string; roundNum: number | null } | null` (the 1.7 rule).
+   Reads `game.round?.name ?? ""` and `scheduledKickoffMs(game.schedule)`; builds
+   per-round `{ roundNum, hasNum, earliestKickoff }`; applies the three-tier
+   selection via the shared `compareRounds` comparator. **Unit tests (required):**
+   - all-future season (nothing started/imminent) → tier C first upcoming round.
+   - mid-round, every game UPCOMING, earliest kickoff `<= now` → that round via
+     tier A, not the prior one (the NTFL quirk — the core regression guard).
+   - between rounds, next round >6 h away → tier A returns the just-finished
+     (started) round, not the future one.
+   - morning of a new round, nothing started but next round `<= now + 6 h` →
+     tier B rolls to the new round.
+   - split weekend: round N started (`<= now`) AND round N+1 within 6 h but not
+     started → tier A selects **N**, not N+1 (the Finding-2 guard).
+   - round names without numbers (finals: "Grand Final") → `roundNum: null`,
+     ordered after numbered rounds by the comparator; selected correctly when
+     they are the started/highest round.
+   - all fixtures date-less → step 5 fallback to highest round by `compareRounds`.
+   - empty games array → `null`.
+2. `compareRounds(a, b)` → number (the pure ordering from 1.7 step 3 / the §1.2
+   sort). **Unit tests:** numbered-before-unnumbered; numbered by `roundNum`;
+   two unnumbered by name; symmetry (sign flips on swap).
+3. `indexLatestPushes(entries)` → `Map<playhqId, PushLogEntry>` (the 1.8 join).
+   **Unit tests (required):**
+   - multiple entries for one `playhqId` → max-`ts` wins.
+   - entries for several fixtures → each keyed correctly.
+   - empty/absent `playhqId` entries skipped.
+   - empty input → empty map.
+   - out-of-order timestamps → still picks the latest.
+4. Supporting pure helpers, also tested: `roundNumOf(name)`, `shortRound(name)`
+   (the **same name** as the existing frontend log-table helper — see naming note
+   below), `displayStatus(raw)`, `stripGradeName(name)`, `statusChip(status)`.
+
+**Naming (one name across the boundary):** the round-abbreviation helper is
+called `shortRound` everywhere — it reuses the exact name and logic already in
+`app/push-log/page.tsx` (not a new `roundShort`). The board does not need a
+second frontend copy for rendering: the Worker precomputes `roundShort` as a
+field on each division (via its inline `shortRound`), and the frontend renders
+`division.roundShort` directly. The `shortRound` in the shared helper module
+exists only so the Worker's inline copy has a tested reference; the legacy
+`shortRound` in `page.tsx` (used by the log table) is left **untouched**. The
+Worker's inline `shortRound` must reproduce the existing `page.tsx` branch order
+**exactly** (prelim/semi/qualif/elim are matched before any generic "final" so a
+"Preliminary Final" is not mis-tagged "GF"):
+
+```ts
+function shortRound(round: string | undefined): string {
+  const n = (round ?? "").trim();
+  if (!n) return "";
+  const m = n.match(/round\s*(\d+)/i);
+  if (m) return `R${m[1]}`;
+  if (/grand\s*final/i.test(n)) return "GF";
+  if (/prelim/i.test(n)) return "PF";
+  if (/semi/i.test(n)) return "SF";
+  if (/qualif/i.test(n)) return "QF";
+  if (/elim/i.test(n)) return "EF";
+  return n;
+}
+```
+
+`roundNumOf(name)` is the number extractor used by the selection math: it returns
+`number | null` (the first `\d+` parsed, else `null`) — **not** the frontend log
+table's `9999` sentinel (see the §1.2 note). It is a new, separately-tested
+helper; the legacy `roundNum` in `page.tsx` is left untouched.
+
+### 1.10 Edge cache for the endpoint response
+
+Cache the assembled board at the edge with a short TTL so a roomful of operators
+polling every 5 s collapses to one assembly per window:
+
+- Key: `new Request("https://playhq-cache/round-summary")`.
+- TTL: **45 s** (within the task's 30–60 s band). Rationale: the frontend polls
+  on the existing 5 s cadence; 45 s means at most ~1 cold assembly per 9 polls
+  while still reflecting a new push well inside a minute. Independent of the
+  per-grade grade-games cache (≤60 s), so a board rebuild still benefits from
+  warm grade caches.
+- Read-through pattern identical to the existing endpoints: on hit, return the
+  cached text with `X-Cache: HIT` + `cors`; on miss, assemble, then
+  `ctx.waitUntil(cache.put(key, new Response(bodyText, {headers: {"Cache-Control":
+  "public, max-age=45"}})))` and return with `X-Cache: MISS`. The push-log KV
+  read happens during assembly (miss path) only, so a cache hit costs zero KV
+  reads too. Proof: `indexLatestPushes` runs during assembly and its result is
+  serialised **into** the cached board text (each fixture's
+  `score`/`ok`/`ttId`/`lastPushTs` is already baked in). A hit returns that
+  stored text verbatim — it never re-reads `PUSH_LOG` or re-runs the join; the
+  only cost on a hit is the single `caches.default.match`.
+
+Cache-key summary (all `caches.default`, no `wrangler.toml` change):
+
+| Purpose | Key | TTL |
+|---|---|---|
+| Per-grade games (shared with `/api/grades/:id/games`) | `https://playhq-cache/grade-games/{gradeId}` | `min(CACHE_TTL,60)` s |
+| Assembled board | `https://playhq-cache/round-summary` | 45 s |
+
+### 1.11 Error handling & CORS summary (per operation)
+
+| Operation | Failure | Recoverable? | Caller receives | Logged? |
+|---|---|---|---|---|
+| Parse grade ids | malformed id | yes | id filtered out by `UUID_RE` | no |
+| Per-grade games fetch | `UpstreamError` (429/403/404/502) | yes (skip grade) | grade omitted; `errors[]` entry | no (surfaced in body) |
+| Per-grade games fetch | other throw | yes (skip grade) | grade omitted; `errors[]` entry `fetch_failed` | no |
+| Grade-games cache write | KV/cache put fails | yes | ignored (`waitUntil`, best-effort) | no |
+| Push-log KV read | get/JSON fails | yes | treated as empty log → all fixtures "not pushed yet" | `console.log` once |
+| Round selection | no started/imminent round | yes | tier C (first upcoming) / step 5 undated fallback per 1.7 | no |
+| Whole request | unexpected throw before assembly | yes | `200 { rounds: [], errors: [{gradeId:"*", error}] }` via outer try/catch | `console.log` |
+| Response | — | — | `json(body, 200, cors)` | — |
+
+CORS uses the shared `corsHeaders(env, origin)` on every return path (hit, miss,
+empty, error) so the browser is never blocked. No new env vars; no 5xx is ever
+emitted by this endpoint by design (empty board instead), which keeps the
+frontend's error banner reserved for genuine network/transport failures.
+
+### 1.12 Validation of inputs
+
+The endpoint takes **no** query params or body, so there is no external input to
+validate beyond the already-validated grade-id list (type: UUID via `UUID_RE`,
+limit: the configured grade list length, behavior on failure: filtered out). The
+push-log KV content is treated as untrusted: each entry is read defensively
+(`String(...)`, `?? null`, numeric `Date.parse` compare) so a malformed stored
+entry degrades that one fixture to "not pushed yet" rather than throwing.
+
+---
+
+## Part 2 — Frontend
+
+### 2.1 Fetcher + types in `lib/api/playhq.ts`
+
+Add the new response types and a fetcher mirroring the existing `getPushLog`
+exactly (same `WORKER_BASE`, same `cache: "no-store"`, same abort-signal and
+error style):
+
+```ts
+export type RoundSummaryFixture = {
+  id: string;
+  match: string;
+  scheduled: string | null;
+  status: GameStatus;
+  score: string | null;
+  ok: boolean | null;
+  ttId: number | null;
+  lastPushTs: string | null;
+};
+
+export type RoundSummaryDivision = {
+  gradeId: string;
+  competition: string;
+  round: string;
+  roundShort: string;
+  roundNum: number | null;
+  fixtures: RoundSummaryFixture[];
+};
+
+export type RoundSummary = {
+  generatedAt: string;
+  rounds: RoundSummaryDivision[];
+  errors: { gradeId: string; error: string }[];
+};
+
+/** The round-summary board (all divisions, latest round, latest score), via the Worker. */
+export async function getRoundSummary(signal?: AbortSignal): Promise<RoundSummary> {
+  const res = await fetch(`${WORKER_BASE}/api/round-summary`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) throw new Error(`Failed loading round summary (HTTP ${res.status})`);
+  const body = (await res.json()) as Partial<RoundSummary>;
   return {
-    get() {
-      if (!cache) {
-        cache = fetcher().catch((e) => {
-          cache = null; // never poison the cache
-          throw e;
-        });
-      }
-      return cache;
-    },
-    invalidate() {
-      cache = null;
-    },
+    generatedAt: body.generatedAt ?? "",
+    rounds: Array.isArray(body.rounds) ? body.rounds : [],
+    errors: Array.isArray(body.errors) ? body.errors : [],
   };
 }
-
-/** Keyed cache: one entry per normalized key; invalidate clears the whole map. */
-export function createKeyedCache<T>(
-  fetcher: (arg: string) => Promise<T>,
-  keyFn: (arg: string) => string = (s) => s
-): {
-  get: (arg: string) => Promise<T>;
-  invalidate: () => void;
-} {
-  const map = new Map<string, Promise<T>>();
-  return {
-    get(arg) {
-      const key = keyFn(arg);
-      let p = map.get(key);
-      if (!p) {
-        p = fetcher(arg).catch((e) => {
-          map.delete(key);
-          throw e;
-        });
-        map.set(key, p);
-      }
-      return p;
-    },
-    invalidate() {
-      map.clear();
-    },
-  };
-}
 ```
 
-Usage in `accuracyChecks.ts` keeps the exported signatures identical:
+The fetcher is defensive (coerces missing arrays) so a partial body never throws
+in the component.
 
-```ts
-const metaCached = createCache(fetchAccuracyChecksMeta);
-export function getAccuracyChecksMeta() { return metaCached.get(); }
-export function invalidateAccuracyChecksMetaCache() { metaCached.invalidate(); }
+### 2.2 Render structure in `app/push-log/page.tsx`
 
-// NOT wired in this task — getAccuracyChecksForAnalyst is dead code today
-// (see §1 "Keyed cache (dropped)"). The createKeyedCache helper below is
-// specified + unit-tested so a FUTURE analyst-history view can adopt it:
-//
-//   const analystCached = createKeyedCache(
-//     fetchAccuracyChecksForAnalyst,
-//     (name) => name.trim().toLowerCase(),
-//   );
-//   export function getAccuracyChecksForAnalyst(name: string) {
-//     return analystCached.get(name);
-//   }
-//   export function invalidateAccuracyChecksForAnalystCache() {
-//     analystCached.invalidate(); // whole-map clear, wired into every check mutation
-//   }
+The existing log table, its filters, sort state, polling, and layout stay
+**exactly as they are**, below. Add a **summary section above** them, and fetch
+both the push log (unchanged) and the new board on the **same existing poll**:
+
+- Add state `const [summary, setSummary] = useState<RoundSummary | null>(null)`.
+- In the existing `load` callback, after `getPushLog`, also call
+  `getRoundSummary(ctrl.signal)` and `setSummary(...)`. Run the two fetches in
+  parallel with `Promise.allSettled` so a round-summary failure never blanks the
+  log (and vice-versa); on the summary's rejection leave the previous board in
+  place (or `null` on first load). Reuse the same `POLL_MS` (5 s) interval and
+  the same `live`/pause toggle and `abortRef` — **no new poll loop**. This
+  respects the Worker's 45 s cache (most polls are HITs).
+
+Summary layout — placed between the header/filters block and the `{/* Body */}`
+log block:
+
+```
+<section> "Round summary" heading + muted caption
+  for each division in summary.rounds (already sorted by the Worker):
+    <div> card/block per division:
+      header row: competition name + roundShort badge (e.g. "NTFL Men's Premier · R3")
+      compact table, one row per fixture:
+        | Match (shortMatch) | Status chip | Score (mono, sky) or muted "not pushed yet" | last push time (clock) |
+</section>
 ```
 
-(The `let`-based inline form in §1 is the identical fallback if the team prefers
-no helper; the helper is recommended because it is the testable unit. `createKeyedCache`
-is still built and tested now even though no production code wires it yet — it is
-a few pure lines and keeps the future adoption to one call site.)
+Concretely:
 
-### Unit tests — `lib/api/cache.test.ts` (Vitest)
+- **Grouping:** one bordered block per `division`, each with a sticky-ish header
+  showing `competition` and a round badge (`roundShort`). For 40+ divisions the
+  blocks stack vertically; each block's inner table is small (4–6 rows), so the
+  page stays scannable — the operator scrolls divisions, not hundreds of log
+  rows.
+- **Per fixture row** reuses the existing helpers verbatim:
+  - `shortMatch(f.match)` for the match label.
+  - status chip: a small helper `statusChip(f.status)` mapping FINAL → emerald,
+    UPCOMING → slate, others → slate, with an IN_PROGRESS/LIVE → amber/pulse
+    branch that is a **defensive fallthrough only**. Important caveat: this board
+    is built entirely from the grade REST feed, which for NTFL **never reports
+    IN_PROGRESS** — a game stays `UPCOMING` (or `""` → normalised to `UPCOMING`)
+    until it flips straight to `FINAL`. So in practice the board emits only
+    `UPCOMING` and `FINAL`, and the amber/pulse branch will **not** fire for this
+    data source. A fixture that is actually being played shows as `UPCOMING`
+    here; "live-ness" is surfaced on the Live Scores tab (which probes the
+    spectator feed), not on this summary board. The IN_PROGRESS/LIVE branch is
+    kept purely as a defensive mapping (and is unit-tested in isolation) so the
+    helper is correct if ever fed a live status, but the operator should not
+    expect a pulsing chip mid-game on this page. The footnote (below) does not
+    need to mention this; it is a developer-facing note so no one wires an
+    expectation to a dead branch.
+  - score: when `f.lastPushTs` is non-null show `f.score` in the same
+    `font-mono text-sky-300` style the log uses; when `null` show a muted
+    `"not pushed yet"` (`text-slate-500 italic`).
+  - `ok === false` → render the score with a red tint + a small warning glyph so
+    a rejected push is visible at a glance; `ok === true`/`null` → normal.
+  - last push: `clock(f.lastPushTs)` when present, else `—`. (`clock` already
+    guards `NaN`.)
+- **Empty states:** if `summary` is `null` on first load, show nothing (the log's
+  own loader covers the page). If `summary.rounds` is empty, show a single muted
+  line "No divisions to summarise yet." The summary section never shows the red
+  error banner — a summary fetch failure just leaves the last good board (the log
+  below still owns the page's error surface).
+- **Visual style:** reuse the existing palette/classes (`border-white/10`,
+  `bg-white/5`, `text-slate-*`, `tabular-nums`, the same chip styles as the log's
+  status cell) so the summary looks native to the page. No new dependencies, no
+  layout change to the log.
 
-Pure, no network, no Supabase. Drive each helper with a stub `fetcher` that
-counts calls and can be made to reject.
+A short footnote under the summary states the cap caveat in operator terms:
+"Shows the latest score still held in the push log (last 100 pushes). A fixture
+pushed earlier that has scrolled out of the log reads 'not pushed yet'."
 
-`createCache`:
-- **populate once:** two sequential `get()`s with a counting fetcher → fetcher
-  called exactly once; both resolve to the same value.
-- **dedupe concurrent:** two `get()`s called before the first resolves →
-  fetcher called once; both awaits resolve to the same value/instance.
-- **invalidate forces re-fetch:** `get()`, `invalidate()`, `get()` → fetcher
-  called twice.
-- **error does not poison:** a fetcher that rejects once then succeeds →
-  first `get()` rejects, second `get()` re-calls and resolves (proves the slot
-  reset to `null` on error).
+### 2.3 Frontend pure-helper module + tests
 
-`createKeyedCache`:
-- **key isolation:** `get("a")` and `get("b")` → fetcher called once per
-  distinct key.
-- **normalization collapses keys:** with `keyFn = trim().toLowerCase()`,
-  `get("Jane")`, `get(" jane ")`, `get("JANE")` → fetcher called once; all share
-  one entry.
-- **invalidate clears all keys:** populate "a" and "b", `invalidate()`, re-get
-  both → fetcher called twice more (2 before + 2 after = 4 total).
-- **error does not poison a key:** a key whose first fetch rejects then succeeds
-  → first rejects, second re-calls and resolves.
+New module `lib/round-summary/roundSummary.ts` holding the tested reference
+implementations of the correctness-critical rules (the Worker mirrors these):
 
-### Why not unit-test the data modules directly
+- `selectLatestRound(games, nowMs)`, `compareRounds(a, b)`, and
+  `indexLatestPushes(entries)` — the exact rules from 1.7 and 1.8. Pure; typed
+  via the minimal structural `RoundInputGame` input (pinned in §1.9) so the same
+  body also satisfies the Worker's cast `Record<string, unknown>[]`. The typed
+  `PlayHqGame` / `PushLogEntry` shapes exported from `lib/api/playhq.ts` both
+  satisfy their respective inputs.
+- `roundNumOf` (`→ number | null`), `shortRound` (one name, matching the legacy
+  log-table helper's branch order — the summary renders `division.roundShort`
+  from the Worker, so this frontend copy exists only as the Worker's tested
+  reference), `displayStatus`, `stripGradeName`, and the presentational
+  `statusChip(status)` class-mapper.
 
-The cached fetch bodies are thin wrappers over the Supabase client; testing them
-would mean mocking PostgREST query-builder chains, which is brittle and tests the
-mock more than the code. The behavior worth protecting — the cache state
-machine — is fully exercised by the pure-helper tests above. The data modules'
-correctness reduces to "wrap the right fetch with a cache" and "call the right
-`invalidate…` after each write", which are verified by **code review against the
-invalidation matrix** (§2) and by the existing app flows (integration-level:
-mutate in a view, confirm the list reflects it on the post-mutation refetch).
-This split — unit-test the pure mechanism, review-verify the wiring — is the
-honest testability boundary given the Supabase coupling, as Q4 requires.
+Co-located `lib/round-summary/roundSummary.test.ts` (vitest, matching the
+existing `lib/comparison/*.test.ts` convention) covering every case listed in
+1.9 plus `statusChip` mappings (including the IN_PROGRESS/LIVE defensive branch
+tested in isolation — see Finding 4) and `displayStatus("")/("NULL") ===
+"UPCOMING"`.
 
-### Verification plan
-
-- `npm run lint` and `npm test` (Vitest) must pass; the new `cache.test.ts` runs
-  under the existing `vitest --run` script (no config change — the repo uses
-  Vitest defaults with co-located `*.test.ts`).
-- `npx tsc --noEmit` (or `npm run build`) to confirm the unchanged public
-  signatures still typecheck across all callers and that the one-directional
-  `accuracyChecks → disputes` import adds no cycle.
-- **Cross-table wiring grep (Finding #6).** Grep the four check mutations that
-  must clear the dispute caches — `deleteAccuracyCheck`, `deleteMaster`,
-  `restoreAccuracyCheck`, `purgeAccuracyCheck` — and confirm each one both
-  imports and CALLS `invalidateAllDisputesCache` and
-  `invalidateOpenDisputeCountsCache` (in addition to its M/D clears). Also
-  confirm the import line `import { invalidateAllDisputesCache,
-  invalidateOpenDisputeCountsCache } from "@/lib/api/disputes";` is present in
-  `accuracyChecks.ts` and that `disputes.ts` still imports only `@/lib/supabase`
-  (no cycle). `tsc` catches a broken import, but this grep confirms the call
-  sites exist, not just the import.
-- **Placement grep (Finding #2).** Confirm `mergeMasters` clears M immediately
-  after its Step-3 `if (error) throw`; `backfillPlayerAccuracy` clears M on its
-  unconditional normal return (not gated on `updated`); and
-  `propagateMasterCorrection` clears M on both the success and throw paths
-  (`finally`).
-- Manual smoke (optional, documented): open Accuracy History (populates M),
-  perform each mutation class once, confirm the list reflects the change on
-  revisit (proves the matrix wiring), and confirm a hard reload re-fetches.
+**Testability summary:** the two correctness-critical behaviors (latest-round
+selection, latest-push-per-fixture join) are pure functions with full unit
+coverage and no network. The endpoint wiring (cache read/write, `mapPool`
+fan-out, CORS) is integration-level and verified manually via `wrangler dev`
+against the real feeds; it contains no branching logic beyond the pure helpers it
+calls, by design. The React rendering is presentational over the typed board; the
+only logic in it (which cell style, empty/muted states) delegates to the tested
+`statusChip`/null checks. A design where the hard logic sits in pure helpers and
+the I/O layer is thin is exactly what keeps this testable.
 
 ---
 
-## 6. Scope / constraints recap
+## Out of scope / explicitly unchanged
 
-- Touch only `lib/api/accuracyChecks.ts`, `lib/api/disputes.ts`, new
-  `lib/api/cache.ts` + `lib/api/cache.test.ts`.
-- No UI component, comparison engine, grading, DB schema, or on-demand/XML fetch
-  changes. Exported signatures identical.
-- Behavior-preserving is the acceptance criterion: the invalidation matrix (§2)
-  is the correctness contract; every in-scope fetch has a cleanly wired
-  invalidation for every mutation that can make it stale, so no fetch is cached
-  without complete invalidation. Nothing had to be skipped-for-safety under this
-  analysis.
-- **Cached in this task: four single-value caches** — `getAccuracyChecksMeta`
-  (M), `getDeletedAccuracyChecksMeta` (D), `getAllDisputes` (GD),
-  `getOpenDisputeCounts` (OC). The parameterized `getAccuracyChecksForAnalyst`
-  keyed cache is **deliberately dropped** because the fetch is dead code today
-  (zero callers); the keyed primitive is specified + tested for future adoption.
-  This narrows the cache surface to exactly the live egress drivers, honoring
-  "a smaller, provably-correct cache is better than a broad one."
+- The existing push-log table, its columns, sorting, filters, search, `POLL_MS`,
+  pause/LIVE toggle, and error banner — untouched.
+- The comparison engine and any file outside the three frontend files + one new
+  helper module, and `src/index.ts` on the Worker.
+- `wrangler.toml` (no change — `caches.default` only).
+- Raising `PUSH_LOG_MAX` or per-fixture push storage (backlogged; the single
+  lever that would remove the 100-entry caveat — see 1.8).
+- No commit/push/deploy; no new dependencies anywhere.
 
----
+## Responses to design review (`design-review.json` / `design-review.md`)
 
-## 7. Responses to design-review findings
+This revision resolves every finding in the round-summary design review
+(verdict `CHANGES_REQUESTED`: 2 HIGH, 4 MEDIUM, 5 NIT). Each response below cites
+the section(s) changed.
 
-This is the revision addressing `.agents/tasks/design-review.md` /
-`design-review.json` (verdict: CHANGES_REQUESTED — 2 MEDIUM, 4 NIT). Each
-finding is addressed below; none was backlogged or ignored.
+- **1 [HIGH] `roundNum` `null` vs `9999` sentinel & sort.** ADDRESSED. §1.2 now
+  declares `roundNum: number | null` explicitly, states the deliberate divergence
+  from the legacy `9999` sentinel (which is *not* reused), and gives a fully
+  specified four-key `rounds` sort that never compares `null` numerically. §1.7
+  step 3 and §1.9 introduce an explicit `hasNum` flag and a pure `compareRounds`
+  comparator (numbered-before-unnumbered; numbered by number; unnumbered by name)
+  used for both selection and the JSON sort. The selection math no longer does
+  arithmetic on `roundNum`.
 
-- **Finding #1 (MEDIUM) — `getAccuracyChecksForAnalyst` has zero callers.**
-  ADDRESSED by taking the review's recommended option (a): **dropped the
-  per-analyst keyed cache from this task.** Re-ran the worktree grep and
-  confirmed the only hits are the function's own definition and doc-comment
-  mentions — it is dead code. The Background and §1 now state it is uncalled and
-  not cached; column **A** was removed from every row of the §2 matrix; and no
-  `invalidateAccuracyChecksForAnalystCache()` wiring is added to any mutation.
-  The keyed-cache primitive (`createKeyedCache`) and its tests are retained in §5
-  so a future analyst-history view adopts it in one line (with the correct
-  `trim().toLowerCase()` key and whole-map invalidation), but nothing production
-  wires it now. This strictly shrinks scope and removes ~10 no-benefit call-site
-  edits.
+- **2 [HIGH] 6 h lookahead could pick a not-yet-started future round.**
+  ADDRESSED. §1.7 is rewritten as a **three-tier precedence**: tier A = highest
+  round whose earliest kickoff `<= now` (started); tier B = highest round `<= now
+  + LOOKAHEAD_MS` (imminent) only if none started; tier C = first upcoming only
+  if none started/imminent; plus the undated fallback. The split-weekend case now
+  selects the started round N, never the not-yet-started N+1. The edge-case list
+  and §1.9 test matrix were updated to match, including the explicit "split
+  weekend: tier A selects N, not N+1" regression test.
 
-- **Finding #2 (MEDIUM) — invalidation placement under-specified for the merge
-  two-step and the resilient loops.** ADDRESSED in §2 "Wiring mechanics" with a
-  precise placement rule: *fire the invalidation after any committed write on
-  that path, before any later step that can throw.* Concretely: `mergeMasters`
-  invalidates M immediately after Step 3's `if (error) throw` (so a Step-4 load
-  throw cannot leave M stale); `backfillPlayerAccuracy` invalidates M on its
-  unconditional normal return (never gated on `updated > 0`); and
-  `propagateMasterCorrection` (whose per-row loop THROWS) clears M in a `finally`
-  so a mid-loop throw after committing rows still clears. §4 and the matrix rows
-  were updated to match, and §5 verification adds a placement grep.
+- **3 [MEDIUM] `venue` ambiguity.** ADDRESSED (option a — drop). §1.8 now states
+  `venue` is deliberately not emitted; the fixture builder produces only the §1.2
+  fields. §1.2 and §2.1 already omit it, so all three agree.
 
-- **Finding #3 (NIT) — `createDispute` dual nature collapsed into one matrix
-  row.** ADDRESSED: the §2 dispute table now has three explicit rows for
-  `createDispute` — insert branch (GD+OC), update/restore branch (GD+OC), and
-  the empty-patch early return (NO write → NO invalidation). Completeness
-  justification item 5 spells out the three branches.
+- **4 [MEDIUM] dead IN_PROGRESS/LIVE chip branch.** ADDRESSED (option a). §2.2 and
+  §2.3 now state the IN_PROGRESS/LIVE mapping is a defensive fallthrough that does
+  not fire for the grade feed (which only emits UPCOMING/FINAL for NTFL), that a
+  played fixture shows as UPCOMING here (live-ness lives on the Live Scores tab),
+  and that the branch is kept and unit-tested in isolation.
 
-- **Finding #4 (NIT) — keyed-cache key relies on ILIKE semantics worth
-  stating.** ADDRESSED in §1 "Keyed cache (dropped)": added the sentence that
-  the key equals the normalized query argument, so each key maps 1:1 to its
-  query result regardless of ILIKE `%`/`_` wildcard behavior, requiring no extra
-  normalization. (Documented on the future primitive since the cache itself is
-  dropped.)
+- **5 [MEDIUM] `selectLatestRound` input shape underspecified.** ADDRESSED. §1.9
+  pins a minimal structural `RoundInputGame` type satisfied by both the typed
+  `PlayHqGame[]` and the Worker's cast `Record<string, unknown>[]`, and names the
+  exact accessors (`game.round?.name ?? ""`, `scheduledKickoffMs(game.schedule)`)
+  so the two copies are line-for-line identical.
 
-- **Finding #5 (NIT) — shared-array-reference invariant documented but not
-  enforced.** ADDRESSED (kept as-is per the review's "acceptable as-is"): the §1
-  shared-reference note now records the verification of the two live callers
-  (both non-mutating), states the explicit rule for future callers to copy
-  before in-place sort/splice, and names the one-line `result.slice()` fallback
-  if it ever becomes a real hazard. No defensive copy is added today.
+- **6 [MEDIUM] grade-games cache write is new behaviour; reproduce exact write.**
+  ADDRESSED. §1.4 now labels it a deliberate NEW write (not a reuse of
+  `resolveFullGame`) and reproduces the exact expressions from
+  `/api/grades/:id/games`: `ttl = Math.max(0, Number(env.CACHE_TTL_SECONDS ??
+  "90") || 90)`, `listTtl = Math.min(ttl, 60) || 60`, body
+  `{ gradeId, count: data.length, data }`, and the `Cache-Control` header.
 
-- **Finding #6 (NIT) — verification should assert the cross-module invalidation
-  import + call sites.** ADDRESSED: §5 verification plan adds an explicit grep
-  step confirming all four cross-table mutations (`deleteAccuracyCheck`,
-  `deleteMaster`, `restoreAccuracyCheck`, `purgeAccuracyCheck`) both import and
-  call `invalidateAllDisputesCache` + `invalidateOpenDisputeCountsCache`, plus
-  the no-cycle confirmation.
-```
+- **7 [NIT] `roundShort`/`shortRound` naming mismatch.** ADDRESSED. The helper is
+  `shortRound` everywhere; the Worker precomputes `roundShort` as a field and the
+  frontend renders `division.roundShort` directly. The legacy log-table
+  `shortRound` is left untouched. §1.6, §1.9, §2.2, §2.3 updated.
 
+- **8 [NIT] dangling "OR" in §1.9.** ADDRESSED. §1.9 now states the chosen
+  approach directly (frontend vitest module is the tested reference; Worker keeps
+  inline copies) with no undecided alternative.
+
+- **9 [NIT] reprint `shortRound` branch order.** ADDRESSED. §1.9 reprints the
+  exact branch order from `page.tsx` (prelim/semi/qualif/elim matched before any
+  generic "final"), and §1.6 points to it.
+
+- **10 [NIT] prove "zero KV reads on hit".** ADDRESSED. §1.10 adds the one-line
+  proof: the join result is baked into the cached board text, so a hit returns
+  stored text without re-reading `PUSH_LOG` or re-running `indexLatestPushes`.
+
+- **11 [NIT] enumerate `errors[]` tokens.** ADDRESSED. §1.4 enumerates the tokens:
+  `rate_limited | forbidden | not_found | upstream_error | fetch_failed`, and
+  notes the frontend treats `errors[]` as opaque.
+
+Non-blocking "Unverified" notes also addressed:
+
+- **Darwin single-offset assumption** (review Unverified #3): §1.7 now flags that
+  the selection rule inherits `scheduledKickoffMs`'s hardcoded `+09:30` offset,
+  why it is acceptable for the current NT-region grade set, and that the fix (if a
+  non-Darwin grade is added) is localised to `scheduledKickoffMs`.
+- **Total-subrequest ceiling vs concurrency** (review Unverified #4): §1.5 now
+  distinguishes the `limit = 6` concurrency bound from the total-subrequest
+  ceiling, works the ~40–80 worst-case cold arithmetic against Cloudflare's
+  50/1000 limits, and states the three mitigations (shared grade cache, 45 s board
+  cache, paid-plan budget).
+
+## Notes on prior stale artifacts
+
+An earlier authoring of this `design.md` closed with a note claiming the review
+in this folder was for an unrelated `meta-cache` feature. That is no longer true:
+the `design-review.json` here (`reviewDoc` →
+`.worktrees\round-summary\...\design-review.md`) is a genuine review of THIS
+round-summary design, and the section above records the responses to each of its
+findings.

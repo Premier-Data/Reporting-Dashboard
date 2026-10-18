@@ -1,8 +1,18 @@
 {
   "verdict": "APPROVED",
   "findings": [
-    "Non-blocking: worktree vitest and Turbopack build failed on a known filesystem-junction artifact; the test suite was validated in the main tree, which does not contain these edits. The worktree `tsc --noEmit` and `--webpack` build both ran clean against the actual edits, and the changed files carry no dedicated behavioral tests, so the main-tree run would not have exercised the new behavior regardless. Runtime proofs (badge network panel, before/after file diff) remain the author's noted manual checks.",
-    "Non-blocking: the facet cache is invalidated only by the four comp-sync functions (fullSync, incrementalSync, resyncCompetitions, purgeExcludedCompetitions). No other writer to comp_fixtures sport/season/competition columns exists today (confirmed), but a future direct writer that bypasses these would serve stale facets."
+    {
+      "label": "Push-log 100-entry cap",
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "detail": "In peak season (160-240 pushes/round) a fixture pushed earlier can age out of the 100-entry ring buffer and render 'not pushed yet'. Accepted limitation, surfaced in the UI footnote and design; the only fix (raise PUSH_LOG_MAX or per-fixture KV) is correctly scoped out."
+    },
+    {
+      "label": "Darwin single-offset assumption",
+      "severity": "non-blocking",
+      "confidence": "confirmed",
+      "detail": "scheduledKickoffMs hardcodes +09:30 and the selection rule inherits it; a future non-Darwin/DST grade could skew the tier A/B boundary by hours. Acceptable for the current NT-region grades; fix is localised to the helper if ever needed."
+    }
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\req-reduction\\reporting-ui\\.agents\\tasks\\review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\round-summary\\reporting-ui\\.agents\\tasks\\code-review.md"
 }

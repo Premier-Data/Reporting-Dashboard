@@ -1,178 +1,205 @@
-# Design review — client-side meta/list caching (Supabase egress)
+# Design review — Round-Summary board (`/api/round-summary` + Push Activity summary table)
 
-Reviewed: `.agents/tasks/design.md` (the revision that answers the prior
-review in its §7).
-Reviewer stance: fresh read, no prior context assumed. The dominant correctness
-risk is CACHE STALENESS — a mutation that writes `accuracy_checks` or
-`accuracy_disputes` but has no matching invalidation would silently serve stale
-data. I re-derived the invalidation matrix directly from source rather than
-trusting the design.
+Reviewed document: `.worktrees/round-summary/reporting-ui/.agents/tasks/design.md`
+Grounding sources read:
+- `playhq-worker/src/index.ts` (worker)
+- `reporting-ui/lib/api/playhq.ts` (frontend fetchers/types)
+- `reporting-ui/app/push-log/page.tsx` (Push Activity page)
+- `reporting-ui/package.json` + existing `lib/comparison/*.test.ts`, `lib/api/cache.test.ts` (test convention)
 
-## Verdict
+This is a fresh review of the document on its own merits, with every "the existing
+helper does X" claim checked against source.
 
-APPROVED — zero HIGH, zero MEDIUM findings. Three NITs below do not block.
+---
 
-The invalidation matrix is **complete and correct against source**. Every write
-site in both files is enumerated and wired to the caches it can make stale,
-including the subtle cross-table coupling (`accuracy_checks.deleted_at` filters
-`getAllDisputes` / `getOpenDisputeCounts`). The placement rule (invalidate after
-a committed write and before any later step that can throw, using `finally`
-where needed) correctly closes the committed-write-then-throw hole for
-`mergeMasters`, `propagateMasterCorrection`, and `backfillPlayerAccuracy`.
+## Verdict summary
 
-## Independent write-site enumeration (the staleness check)
+The design is strong: the latest-round rule (the correctness-critical piece the task
+flags) is precise, three-tiered, and avoids the far-future-round trap; the push-log
+join is a clean max-`ts`-per-`playhqId` index on the full UUID; the 100-entry cap is
+acknowledged; the response contract is fully pinned and matches the frontend types;
+the cost strategy is bounded (`mapPool` limit 6 + two cache layers) with the
+subrequest ceiling worked through; the named helpers all exist and are used as
+described; the pure helpers are specified with a test matrix; and the reverted
+push-log-only summary is explicitly NOT reintroduced.
 
-I grepped `\.(insert|update|delete)\(` in both files and classified every hit.
+I found **no HIGH or MEDIUM blocking issues** against the seven gate criteria. The
+findings below are all NIT-level accuracy/clarity fixes. Per the mechanical rule
+(zero HIGH + zero MEDIUM), the verdict is **APPROVED**.
 
-### `accuracy_checks` — 12 write sites, all covered
-
-| Line | Function | Write | Caches design clears | Correct? |
-|---|---|---|---|---|
-| 242 | `saveAccuracyCheck` | INSERT active row | M | ✅ new active row; not deleted; no disputes |
-| 369 | `updateAccuracyCheck` | UPDATE one row | M | ✅ meta/analyst change only |
-| 447 | `propagateMasterCorrection` | UPDATE many (loop THROWS per row) | M (via `finally`) | ✅ mid-loop throw still clears |
-| 654 | `renameMaster` | UPDATE `file_name_master` | M | ✅ meta column |
-| 690 | `deleteMaster` | soft-delete one row | M, D, GD, OC | ✅ cross-table (hides its disputes) |
-| 794 | `mergeMasters` Step 3 | UPDATE source ids name+XML | M (right after guard) | ✅ before Step-4 throw |
-| 852 | `mergeMasters` Step 4 | UPDATE re-grade (resilient) | M (covered by Step-3 clear) | ✅ one clear suffices |
-| 1152 | `fixStaleMasterTotals` | UPDATE `master_total` | M | ✅ leaderboard column |
-| 1517 | `backfillPlayerAccuracy` | UPDATE many (resilient) | M (unconditional return) | ✅ not gated on `updated` |
-| 1570 | `deleteAccuracyCheck` | soft-delete | M, D, GD, OC | ✅ cross-table |
-| 1589 | `restoreAccuracyCheck` | restore | M, D, GD, OC | ✅ cross-table |
-| 1605 | `purgeAccuracyCheck` | hard DELETE (CASCADE) | M, D, GD, OC | ✅ CASCADE drops disputes |
-
-`recomputeAllPlayerAccuracy` is a thin wrapper over `backfillPlayerAccuracy`
-(confirmed at source) so wiring inside backfill covers it — no separate site.
-
-### `accuracy_disputes` — 5 write sites, all covered
-
-| Line | Function | Write | Caches cleared | Correct? |
-|---|---|---|---|---|
-| 108 | `createDispute` (update/restore branch) | UPDATE patch | GD, OC | ✅ reason/category/restore |
-| 122 | `createDispute` (insert branch) | INSERT open | GD, OC | ✅ new open dispute |
-| 249 | `resolveDispute` | UPDATE status | GD, OC | ✅ leaves open set |
-| 271 | `deleteDispute` | soft-delete | GD, OC | ✅ both filter deleted_at |
-| 287 | `restoreDispute` | restore | GD, OC | ✅ re-enters GD/OC |
-
-The `createDispute` empty-patch early return performs no write and correctly
-gets no invalidation. The three-branch split is spelled out in the matrix and in
-completeness item 5.
-
-### Reads correctly left uncached / uninvalidated
-
-`getDisputesForCheck`, `getAccuracyCheckById`, `getSavedMasterXml`,
-`getSavedMasters`, `getMasterCheckSiblings`, `countActiveGroupSiblings`,
-`resolveActiveGroupIds`, `diagnoseMasterConsistency`, `getAccuracyChecksXml`,
-`getAllAccuracyChecks` — all read-only or single-row / XML-blob fetches, out of
-the task's list. Confirmed none performs a write.
+---
 
 ## Findings
 
-### 1. NIT — `getDisputesForCheck` staleness is not surfaced to the two cached dispute views
-**Where:** Background ("`getDisputesForCheck` … NOT cached") and §2.
-**Problem:** This is correctly NOT cached, so no staleness bug exists. But note
-for the implementer: the `accuracy-checks` page calls `getDisputesForCheck` for
-the expanded panel AND `getOpenDisputeCounts` (OC, cached) for badges. After a
-mutation these two can momentarily disagree on screen because only OC is cached.
-This is behavior-preserving (OC's invalidation already fires on every dispute
-write) and not a correctness regression; just worth a one-line note so a future
-reader does not mistake the panel/badge timing for a cache bug.
-**Fix (doc-only):** add a sentence to the `getDisputesForCheck` skip rationale:
-"its per-check panel is always a fresh fetch, so panel and (cached) badge counts
-reconcile on the next OC invalidation — no extra wiring needed."
+### 1 [NIT] `errors[]` token enumeration is incomplete vs the actual throws
+§1.4 claims the `errors[].error` tokens are "exactly … `rate_limited | forbidden |
+not_found | upstream_error` (verbatim from the `UpstreamError` throws in
+`fetchGradeGames`)". Verified against `fetchGradeGames` (worker lines ~1004–1037):
+it also throws `new UpstreamError("api_key_not_configured", 500)` when
+`env.PHQ_API_KEY` is unset. If the key is ever missing, **every** grade fails with
+`api_key_not_configured`, which is not in the enumerated set. (`graphql_errors`
+belongs to `fetchGame`, not `fetchGradeGames`, so the design is right to omit it.)
+Impact is cosmetic: the design also says the frontend treats `errors[]` as opaque
+and never branches on the token, so rendering is unaffected — but the "verbatim"
+enumeration is inaccurate.
+**Fix:** add `api_key_not_configured` to the enumerated list in §1.4 (and the §1.11
+table row), or soften the wording to "includes but is not limited to", e.g.
+`rate_limited | forbidden | not_found | upstream_error | api_key_not_configured`
+(from `UpstreamError`) plus `fetch_failed` (catch-all).
 
-### 2. NIT — `mergeMasters` "one clear suffices" depends on no read between Step 3 and return
-**Where:** §2 Wiring mechanics, `mergeMasters` bullet.
-**Problem:** The claim that clearing M once after Step 3 covers the Step-4
-re-grades is correct ONLY because nothing reads M between Step 3 and the
-function returning. That is true today (Step 4 is a tight server loop with no
-`getAccuracyChecksMeta` call), but the reasoning is load-bearing and currently
-only implied.
-**Fix (doc-only):** state the invariant explicitly: "No `get…Meta()` runs
-between Step 3 and return, so a single post-Step-3 clear is sufficient; if a
-future edit adds a meta read inside Step 4, re-clear after the loop."
+### 2 [NIT] `stripGrade` vs `stripGradeName` — one helper, two names
+§1.8 names the team-name helper `stripGrade` (and matches the push pipeline's
+in-file `stripGrade` regex, worker lines 1141–1142, verified identical:
+`.replace(/\s+(men|women)\s+premier.*$/i, "").trim()`). §1.9 lists the pure helper
+to extract as `stripGradeName`. The implementer could reasonably produce two
+differently-named helpers.
+**Fix:** pick one name across §1.8 and §1.9 (suggest `stripGradeName` for the
+exported pure helper, and have §1.8 reference it by that name). Also note the real
+push-pipeline helper defaults a null to `"?"` (`(n ?? "?")`); either reproduce that
+fallback or state it is intentionally dropped since the grade-feed competitor name
+is expected non-null.
 
-### 3. NIT — `fixStaleMasterTotals` placement wording vs. its actual control flow
-**Where:** §2 Wiring mechanics, single-write bullet (parenthetical on
-`fixStaleMasterTotals`).
-**Problem:** The function loops over ids and `continue`s on per-row error (never
-throws out of the loop), so "place the invalidate immediately AFTER that write's
-`if (error) throw` guard" does not literally apply — there is no throwing guard;
-each row's update error is swallowed with `continue`. The design's parenthetical
-does acknowledge "a single clear after the loop is fine," which is the correct
-instruction, but the lead-in rule and the exception read as mildly contradictory.
-**Fix (doc-only):** move `fixStaleMasterTotals` out of the "single-write,
-clear-after-throw-guard" bullet and group it with the resilient-loop shapes:
-"clear M once on the normal return, unconditionally — like `backfillPlayerAccuracy`."
+### 3 [NIT] "same regex the push pipeline uses" — clarify the name source, not just the regex
+§1.8 builds `match` from the grade-feed game's `competitors.find(c => c.isHomeTeam
+=== true/false).name`. Verified this is the correct pattern (worker `toFixtureLite`
+lines 1256–1257 use exactly `comps.find((c) => c.isHomeTeam === true/false)` on a
+grade-feed game, and `teamOf` reads `c.name`). The push pipeline's `stripGrade`
+operates on `live.home.name`, which resolves from the same grade-feed competitor
+names — so the reuse is sound. This is just worth stating explicitly so a reader
+does not worry the two name sources differ.
+**Fix:** one sentence in §1.8: "the grade-feed `competitors[].name` is the same
+field the push pipeline ultimately strips, so the suffix pattern matches."
+
+---
+
+## Gate-criteria assessment (the seven required checks)
+
+1. **Latest-round selection rule — precise, defensible, no far-future pick.** PASS.
+   §1.7 is a three-tier rule (A started `earliestKickoff <= now` → highest; B
+   imminent `<= now + 6h` → highest, only if none started; C first upcoming with a
+   date; plus undated fallback to highest by `compareRounds`). It never picks a
+   far-future round (tier C takes the *smallest* dated upcoming, not the highest
+   that merely exists), correctly handles the NTFL "nothing is non-UPCOMING until
+   FINAL" quirk via date-based tiers, and the split-weekend case selects started N
+   over not-yet-started N+1. The ordering is a pure `compareRounds` that never
+   compares `null` as a number (uses the `hasNum` flag). Defensible and testable.
+
+2. **Push-log latest-per-fixture join + 100-cap caveat.** PASS. §1.8 keys by the
+   full `playhqId` UUID, keeps max-`ts` (numeric `Date.parse` compare), skips empty
+   ids. Verified `PushLogEntry` carries `playhqId`, `ts`, `score`, `ok`, `ttId`
+   (worker lines 888–901) and that the board fixture `id` is the full UUID, so the
+   join is exact. The `PUSH_LOG_MAX = 100` ring buffer is confirmed (worker lines
+   902–903, `recordPushLog` `.slice(0, PUSH_LOG_MAX)`), and §1.8 flags that one peak
+   round (160–240 pushes) exceeds the cap, surfaces it as "latest remembered score",
+   and backlogs the single lever (`PUSH_LOG_MAX`) rather than silently assuming
+   completeness.
+
+3. **Response JSON contract matches what the frontend renders.** PASS. §1.2 fields
+   (`generatedAt`, `rounds[]{gradeId,competition,round,roundShort,roundNum,fixtures[]}`,
+   `fixtures[]{id,match,scheduled,status,score,ok,ttId,lastPushTs}`, `errors[]`)
+   exactly match the §2.1 `RoundSummary` / `RoundSummaryDivision` /
+   `RoundSummaryFixture` types, which the §2.2 renderer consumes. `roundNum` is
+   `number | null` on both sides; `venue` is omitted on both sides (§1.8 states it
+   deliberately). `getRoundSummary` coerces missing arrays defensively.
+
+4. **Bounded cost for 40+ grades.** PASS. §1.5 uses the existing `mapPool(items,
+   limit, fn)` with `limit = 6` — verified `mapPool` settles every result and never
+   rejects (worker lines 1039–1061), so one bad grade cannot abort the batch.
+   Per-grade failures are caught and pushed to `errors[]`, then `continue`. Two
+   cache layers (shared per-grade `grade-games/{id}` ≤60s + a 45s board cache) mean
+   boards are almost never fully cold, and the design works the worst-case
+   ~40–80-subrequest arithmetic against Cloudflare's 50/1000 ceilings and names the
+   paid-plan target. No unbounded fan-out; `fetchGradeGames` already caps at 50
+   pages with a 12s per-request timeout. The whole endpoint is wrapped so it returns
+   `200 {rounds:[]}` rather than 5xx.
+
+5. **Reuse of named existing helpers.** PASS. Every helper the design names was
+   found and matches: `fetchGradeGames`, `competitionLabel`, the
+   `https://playhq-cache/grade-games/{id}` cache key + write expressions (§1.4's
+   `ttl`/`listTtl`/`{gradeId,count,data}` body verified byte-equivalent to the
+   `/api/grades/:id/games` handler, worker lines ~1575–1589 — the only difference is
+   the local variable name `games` vs the design's `data`, behaviourally identical),
+   `PUSH_LOG`/`PUSH_LOG_KEY`, `scheduledKickoffMs` (exported, `+09:30` offset),
+   `UUID_RE`, `corsHeaders`/`json`, `UpstreamError`, `mapPool`, `DEFAULT_GRADE_IDS`,
+   the top-of-`fetch` OPTIONS→204 / non-GET→405 handling, and the grade-id parse
+   from `resolveFullGame`. The §1.4 grade-games cache **write** is correctly labelled
+   a deliberate NEW write (mirroring the games handler, not `resolveFullGame` which
+   only reads) so a reviewer will not flag it as drift.
+
+6. **Pure unit-testable helpers + latest-round tests.** PASS. §1.9 extracts
+   `selectLatestRound`, `compareRounds`, `indexLatestPushes`, `roundNumOf`,
+   `shortRound`, `displayStatus`, `stripGradeName`, `statusChip` as pure functions
+   over a minimal structural `RoundInputGame` input (so Worker and Next copies are
+   line-for-line identical), with a concrete test matrix including the NTFL-quirk
+   mid-round guard, the split-weekend "select N not N+1" guard, finals (`roundNum
+   null`), undated fallback, and empty input. vitest is wired (`npm test` →
+   `vitest --run`) and the cited `lib/comparison/*.test.ts` colocated convention
+   exists.
+
+7. **Reverted push-log-only summary NOT reintroduced.** PASS. The Overview and the
+   "Responses to design review" + "Notes on prior stale artifacts" sections
+   explicitly state the summary is grade-feed-backed (to show not-yet-pushed
+   fixtures) and that no push-log-derived summary is reintroduced. The architecture
+   (Worker assembles from `fetchGradeGames`, push log only annotates) enforces this.
+
+---
 
 ## Verified assumptions (checked against source)
 
-1. **Write-site enumeration is exhaustive.** Grepped both files; all 12
-   `accuracy_checks` and 5 `accuracy_disputes` write sites map onto a matrix
-   row. No un-enumerated write exists.
-2. **Cross-table coupling is real and fully wired.** `getAllDisputes` and
-   `getOpenDisputeCounts` both use `accuracy_checks!inner(deleted_at)` +
-   `.is("accuracy_checks.deleted_at", null)`, so a check's soft-delete / restore
-   / purge changes their result without writing a dispute row. The four check
-   mutations that change deleted-ness (`deleteMaster`, `deleteAccuracyCheck`,
-   `restoreAccuracyCheck`, `purgeAccuracyCheck`) are exactly the four the design
-   clears GD+OC on. Correct and complete.
-3. **`purgeAccuracyCheck` CASCADE.** Hard `.delete()` on `accuracy_checks`; the
-   design relies on ON DELETE CASCADE removing child disputes, matching the
-   `purgeAccuracyCheck` doc comment in source. GD/OC clear is required and present.
-4. **`createDispute` has exactly three branches** (restore/patch UPDATE, INSERT,
-   empty-patch no-write return) — matches the matrix's three rows precisely.
-5. **`recomputeAllPlayerAccuracy` is a wrapper** over `backfillPlayerAccuracy`
-   (`return backfillPlayerAccuracy(onProgress, true)`), so one clear inside
-   backfill covers both — verified.
-6. **`propagateMasterCorrection` THROWS mid-loop** (`if (upErr) throw`), so the
-   `finally`-based clear is genuinely required to avoid a committed-rows-then-throw
-   stale cache. `mergeMasters` Step 4 is resilient (`continue`), confirming the
-   asymmetric handling the design describes.
-7. **Per-analyst fetch keying is moot but correctly specified for the future.**
-   `getAccuracyChecksForAnalyst` uses `.ilike("analyst_name", analystName.trim())`;
-   the proposed future key `name.trim().toLowerCase()` matches that folding. The
-   fetch has ZERO callers (grep: only its own definition and doc mentions), so
-   dropping it from scope is correct and removes needless invalidation wiring.
-8. **Single-row / XML / blob fetches are NOT cached.** `getAccuracyCheckById`,
-   `getSavedMasterXml`, `getAccuracyChecksXml`, `getSavedMasters` confirmed out
-   of scope in source and design.
-9. **Failed fetch does not poison.** The `createCache`/inline pattern assigns
-   `cache = fetch().catch(e => { cache = null; throw e; })`, resetting to `null`
-   and rethrowing — matches `clubConfig`/`fixtureMap`. Keyed variant does
-   `map.delete(key)`. Correct no-poison behavior.
-10. **Pull-to-refresh / hard reload re-fetches.** `components/pwa/usePullToRefresh.ts`
-    calls `window.location.reload()` on trigger, tearing down module state so all
-    caches re-init to null/empty. The cache can never block a deliberate refresh.
-    Verified in source.
-11. **Exported signatures unchanged.** The pattern wraps existing bodies as inner
-    `fetch…` and keeps the public function returning the cached promise; the four
-    cached getters keep their exact return types. New exports are only the
-    `invalidate…` functions. No caller signature changes.
-12. **Shared-array-reference invariant holds for current callers.** Grepped
-    `app/accuracy-checks/page.tsx` and `app/disputes/page.tsx`: every `.sort()`
-    runs on a copy (`[...checks].sort`, `[...scoped].sort`, `[...rows].sort`) or
-    a freshly built array (`result`, `Array.from(...)`, mapped arrays). No
-    in-place sort/splice on a cached fetch result. The documented "copy before
-    mutating" rule for future callers is adequate.
-13. **Vitest + co-located test convention exists.** `package.json` has
-    `"test": "vitest --run"` and `vitest@^3.2.7`; `lib/comparison/overlap-window.test.ts`
-    confirms the co-located `*.test.ts` convention the new `cache.test.ts` follows.
-14. **No import cycle.** `disputes.ts` imports only `@/lib/supabase`; the new
-    `accuracyChecks → disputes` invalidation import is one-directional. Confirmed.
+- `scheduledKickoffMs({date,time})` is **exported**, returns `number | null`, and
+  hardcodes `NTFL_UTC_OFFSET = "+09:30"` with a code comment that a DST grade needs
+  a per-fixture offset lookup — exactly as §1.7 states (worker lines 988–1000).
+- `mapPool<T,R>(items, limit, fn)` settles every result into
+  `PromiseSettledResult<R>[]` and never rejects (worker lines 1039–1061). §1.5's
+  "never rejects / can't abort the batch" claim is accurate.
+- `PUSH_LOG_KEY = "recent"`, `PUSH_LOG_MAX = 100`, `recordPushLog` prepends and
+  `.slice(0, 100)` (ring buffer, newest first) — §1.8 cap caveat is correct
+  (worker lines 902–938).
+- `PushLogEntry` has `playhqId: string`, `ttId: number | null`, `score`, `ok`, `ts`
+  (worker lines 888–901). The join key and the nullable fields in §1.2 are right.
+- `/api/push-log` returns `{ count, entries }`; `getPushLog` reads `body.entries`
+  (worker line 1571; `playhq.ts`). The board reads KV directly via `PUSH_LOG.get`,
+  consistent with the design.
+- The `/api/grades/:id/games` cache write uses
+  `JSON.stringify({ gradeId, count: games.length, data: games })`, `listTtl =
+  Math.min(ttl, 60) || 60`, and `ttl = Math.max(0, Number(env.CACHE_TTL_SECONDS ??
+  "90") || 90)` with `Cache-Control: public, max-age=${listTtl}` — §1.4's
+  "byte-for-byte" reproduction is accurate (`ttl` is in scope at the route;
+  only the var name `games`/`data` differs). (worker lines 1494, 1575–1597)
+- Top of `fetch`: `OPTIONS → 204 headers: cors`; `method !== "GET" → 405`; CORS via
+  `corsHeaders(env, origin)`. §1.1 is correct (worker lines 1483–1489).
+- `competitionLabel(url)`, `UUID_RE`, `DEFAULT_GRADE_IDS`, `json`, `UpstreamError`,
+  and the `resolveFullGame` grade-id parse all exist as described.
+- `competitors.find(c => c.isHomeTeam === true/false)` is the real home/away pattern
+  on grade-feed games (`toFixtureLite`, worker lines 1256–1257).
+- `stripGrade` regex `/\s+(men|women)\s+premier.*$/i` is exactly the push pipeline's
+  (worker lines 1141–1142).
+- `shortRound` branch order in §1.9 matches `page.tsx` verbatim (prelim/semi/
+  qualif/elim before any generic final), `roundNum` returns the `9999` sentinel
+  (page.tsx lines 30–45), and `clock` guards `NaN` (page.tsx lines 46–50).
+- Frontend reuse: `POLL_MS = 5_000`, `load` useCallback with `abortRef`,
+  `setInterval(load, POLL_MS)` gated on `live`, `shortMatch`, `clock` all present in
+  `page.tsx` — §2.2's "same existing poll, no new loop" is feasible as written.
+- vitest `^3.2.7` wired (`"test": "vitest --run"`); `lib/comparison/*.test.ts` and
+  `lib/api/cache.test.ts` colocated tests exist — §1.9/§2.3 test plan is grounded.
 
 ## Unverified / wrong assumptions
 
-1. **Cross-tab staleness is accepted by design, not eliminated.** §3 Q2 decides
-   NO TTL and documents that another admin's already-open tab keeps stale caches
-   until it reloads or mutates — identical to the shipping `clubConfig`/`fixtureMap`
-   caches. This is an explicit, justified decision matching the existing pattern,
-   not a gap. Flagged here only so the acceptance owner is aware it is a conscious
-   trade-off (the Realtime `subscribeToAccuracyCheck` path is named as the future
-   fix if sub-reload cross-tab freshness is ever required).
-2. **"Mutation-then-refetch always shows fresh data" assumes the UI refetches
-   after awaiting the mutation.** §4 relies on consumers calling the list fetch
-   AFTER the mutation resolves. The two live pages do follow this (e.g.
-   `resolveDispute` then `getOpenDisputeCounts`), so the assumption holds today;
-   it is a convention future callers must keep, not a property the cache enforces.
-   Not a current defect.
+- **Wrong (minor):** §1.4's `errors[]` token set is described as the complete
+  verbatim set of `fetchGradeGames` throws but omits `api_key_not_configured`
+  (500, thrown when `PHQ_API_KEY` is unset). See Finding 1. Not blocking because the
+  frontend treats `errors[]` as opaque.
+- **Unverified (acceptable):** the PlayHQ grade-feed `game.round.name` values
+  ("Round 3", "Grand Final", etc.) and that finals rounds truly carry no digit are
+  taken from live-feed experience, not from a fixture snapshot in-repo. The design
+  handles the unnumbered case via `roundNum: null` + `compareRounds`, so a surprise
+  name degrades gracefully rather than crashing. No change required.
+- **Unverified (acceptable, flagged by design):** the single-offset `+09:30`
+  assumption for all 40+ grades. §1.7 already flags this, bounds the impact to a few
+  hours' skew within the 6h window for a hypothetical non-Darwin grade, and localises
+  the future fix to `scheduledKickoffMs`. Acceptable for the current NT-region grade
+  set.
+- **Unverified (acceptable):** the free-vs-paid Cloudflare subrequest ceiling (50 /
+  1000) and that the deploy target is the paid plan. §1.5 states this as the
+  operating assumption with two cache mitigations; not checkable from the repo, but
+  the design degrades (raise board TTL / stagger) if false.

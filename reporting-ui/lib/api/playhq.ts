@@ -254,6 +254,53 @@ export async function getPushLog(signal?: AbortSignal): Promise<PushLogEntry[]> 
   return Array.isArray(body.entries) ? body.entries : [];
 }
 
+// ── Round-summary board (all divisions, latest round, latest score) ───────────
+// Assembled by the Worker's GET /api/round-summary: for every known grade, the
+// latest relevant round with ALL its fixtures, each annotated with its latest
+// pushed score (or null when the push log carries no entry). The frontend just
+// renders this — see app/push-log/page.tsx.
+
+export type RoundSummaryFixture = {
+  id: string; // full PlayHQ fixture UUID
+  match: string; // "Home vs Away" (grade suffix stripped)
+  scheduled: string | null; // "<date>T<time>" or null
+  status: GameStatus; // REST status ("" → "UPCOMING")
+  score: string | null; // latest pushed score string, or null
+  ok: boolean | null; // latest push accepted? or null
+  ttId: number | null; // TT fixtureUid from the push entry, or null
+  lastPushTs: string | null; // ISO of the latest push, or null (null = not pushed)
+};
+
+export type RoundSummaryDivision = {
+  gradeId: string;
+  competition: string; // competitionLabel(game.url)
+  round: string; // roundObj.name verbatim ("Round 3")
+  roundShort: string; // shortRound(round) ("R3")
+  roundNum: number | null; // parsed integer, or null for finals
+  fixtures: RoundSummaryFixture[];
+};
+
+export type RoundSummary = {
+  generatedAt: string; // ISO; when the board was assembled
+  rounds: RoundSummaryDivision[];
+  errors: { gradeId: string; error: string }[];
+};
+
+/** The round-summary board (all divisions, latest round, latest score), via the Worker. */
+export async function getRoundSummary(signal?: AbortSignal): Promise<RoundSummary> {
+  const res = await fetch(`${WORKER_BASE}/api/round-summary`, {
+    cache: "no-store",
+    signal,
+  });
+  if (!res.ok) throw new Error(`Failed loading round summary (HTTP ${res.status})`);
+  const body = (await res.json()) as Partial<RoundSummary>;
+  return {
+    generatedAt: body.generatedAt ?? "",
+    rounds: Array.isArray(body.rounds) ? body.rounds : [],
+    errors: Array.isArray(body.errors) ? body.errors : [],
+  };
+}
+
 // A REST game is "not yet finalised" when its status is empty/null — in AFL
 // that means it's either about to start or currently in play. The REST feed
 // carries no live score for these, so they're the ones to enrich from the
