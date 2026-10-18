@@ -275,6 +275,9 @@ export default function PushLogPage() {
                             const rejected = f.ok === false;
                             return (
                               <tr key={f.id} className="border-b border-white/5 last:border-0">
+                                <td className="whitespace-nowrap px-2 py-1 font-mono text-[11px] text-slate-400" title={div.round}>
+                                  {div.roundShort || "—"}
+                                </td>
                                 <td
                                   className="max-w-[150px] truncate px-3 py-1 font-medium text-slate-200"
                                   title={shortMatch(f.match)}
