@@ -17,7 +17,13 @@ import {
   Search,
 } from "lucide-react";
 
-import { getPushLog, type PushLogEntry } from "@/lib/api/playhq";
+import {
+  getPushLog,
+  getRoundSummary,
+  type PushLogEntry,
+  type RoundSummary,
+} from "@/lib/api/playhq";
+import { statusChip } from "@/lib/round-summary/roundSummary";
 
 const POLL_MS = 5_000;
 
@@ -54,6 +60,7 @@ type SortDir = "asc" | "desc";
 
 export default function PushLogPage() {
   const [entries, setEntries] = useState<PushLogEntry[]>([]);
+  const [summary, setSummary] = useState<RoundSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
@@ -68,18 +75,26 @@ export default function PushLogPage() {
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
-    try {
-      const data = await getPushLog(ctrl.signal);
-      if (ctrl.signal.aborted) return;
-      setEntries(data);
+    // Fetch the log (which owns the page's error surface) and the summary board
+    // together on the one poll; allSettled so a summary failure never blanks the
+    // log and vice-versa. The summary keeps its previous board on rejection.
+    const [logRes, summaryRes] = await Promise.allSettled([
+      getPushLog(ctrl.signal),
+      getRoundSummary(ctrl.signal),
+    ]);
+    if (ctrl.signal.aborted) return;
+    if (logRes.status === "fulfilled") {
+      setEntries(logRes.value);
       setError(null);
       setLastRefresh(new Date());
-    } catch (e) {
-      if (ctrl.signal.aborted) return;
+    } else {
+      const e = logRes.reason;
       setError(e instanceof Error ? e.message : "Failed to load push log.");
-    } finally {
-      if (!ctrl.signal.aborted) setLoading(false);
     }
+    if (summaryRes.status === "fulfilled") {
+      setSummary(summaryRes.value);
+    }
+    setLoading(false);
   }, []);
 
   useEffect(() => {
@@ -215,6 +230,98 @@ export default function PushLogPage() {
             {lastRefresh && <> · updated {clock(lastRefresh.toISOString())}</>}
           </span>
         </div>
+
+        {/* Round summary — latest round per division, every fixture, latest
+            score. Scannable for 40+ divisions so the operator doesn't scroll
+            hundreds of log rows below. Sourced from the Worker's grade feed +
+            push-log join, NOT derived from the log table below. */}
+        {summary !== null && (
+          <section className="mb-5">
+            <div className="mb-2 flex items-baseline justify-between gap-3">
+              <h2 className="text-sm font-semibold text-slate-200">Round summary</h2>
+              <span className="text-[11px] text-slate-500">
+                Latest round per division · latest score for every fixture
+              </span>
+            </div>
+
+            {summary.rounds.length === 0 ? (
+              <div className="rounded-lg border border-white/10 bg-white/5 px-4 py-6 text-center text-sm text-slate-400">
+                No divisions to summarise yet.
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-2">
+                {summary.rounds.map((div) => (
+                  <div
+                    key={div.gradeId}
+                    className="overflow-hidden rounded-lg border border-white/10 bg-white/5"
+                  >
+                    <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
+                      <span className="truncate text-xs font-semibold text-slate-200" title={div.competition}>
+                        {div.competition || "—"}
+                      </span>
+                      {div.roundShort && (
+                        <span className="shrink-0 rounded bg-sky-500/15 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-sky-300">
+                          {div.roundShort}
+                        </span>
+                      )}
+                    </div>
+                    {div.fixtures.length === 0 ? (
+                      <div className="px-3 py-3 text-xs text-slate-500">No fixtures in this round.</div>
+                    ) : (
+                      <table className="w-full border-collapse text-[12px] tabular-nums">
+                        <tbody>
+                          {div.fixtures.map((f) => {
+                            const pushed = f.lastPushTs !== null;
+                            const rejected = f.ok === false;
+                            return (
+                              <tr key={f.id} className="border-b border-white/5 last:border-0">
+                                <td
+                                  className="max-w-[150px] truncate px-3 py-1 font-medium text-slate-200"
+                                  title={shortMatch(f.match)}
+                                >
+                                  {shortMatch(f.match)}
+                                </td>
+                                <td className="px-2 py-1">
+                                  <span
+                                    className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-semibold ${statusChip(f.status)}`}
+                                  >
+                                    {f.status}
+                                  </span>
+                                </td>
+                                <td className="whitespace-nowrap px-2 py-1 text-right">
+                                  {pushed ? (
+                                    <span
+                                      className={`font-mono ${rejected ? "text-red-300" : "text-sky-300"}`}
+                                    >
+                                      {rejected && (
+                                        <AlertTriangle size={11} className="mr-1 inline align-[-1px]" />
+                                      )}
+                                      {f.score || "—"}
+                                    </span>
+                                  ) : (
+                                    <span className="italic text-slate-500">not pushed yet</span>
+                                  )}
+                                </td>
+                                <td className="whitespace-nowrap px-3 py-1 text-right font-mono text-[11px] text-slate-500">
+                                  {pushed ? clock(f.lastPushTs as string) : "—"}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <p className="mt-2 text-[10px] text-slate-600">
+              Shows the latest score still held in the push log (last 100 pushes). A fixture
+              pushed earlier that has scrolled out of the log reads &ldquo;not pushed yet&rdquo;.
+            </p>
+          </section>
+        )}
 
         {/* Body */}
         {loading && entries.length === 0 ? (

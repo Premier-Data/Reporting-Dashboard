@@ -1058,6 +1058,151 @@ async function mapPool<T, R>(
   return results;
 }
 
+// ── Round-summary pure helpers (inline copies) ───────────────────────────────
+// Behaviourally IDENTICAL to reporting-ui/lib/round-summary/roundSummary.ts (the
+// TESTED reference). The task forbids adding a test runner to the Worker, so the
+// frontend suite pins the behaviour and these copies are reviewed against it.
+// Keep the two in sync. All pure — no I/O, no env, no caches. See design §1.7-1.9.
+
+// Minimal structural shape the round helpers read — satisfied by the Worker's
+// cast Array<Record<string, unknown>> games (and by the frontend's PlayHqGame).
+type RoundInputGame = {
+  round?: { name?: string | null } | null;
+  schedule?: { date?: string | null; time?: string | null } | null;
+};
+
+// Lookahead for the "imminent" tier — one match-day slot (design §1.7).
+const ROUND_LOOKAHEAD_MS = 6 * 60 * 60 * 1000;
+
+// First integer in a round name, or null ("Grand Final"). NOT a 9999 sentinel.
+function roundNumOf(name: string | null | undefined): number | null {
+  const m = String(name ?? "").match(/(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+// Short round label. Branch order matches app/push-log/page.tsx EXACTLY
+// (prelim/semi/qualif/elim before any generic "final").
+function shortRound(round: string | undefined): string {
+  const n = (round ?? "").trim();
+  if (!n) return "";
+  const m = n.match(/round\s*(\d+)/i);
+  if (m) return `R${m[1]}`;
+  if (/grand\s*final/i.test(n)) return "GF";
+  if (/prelim/i.test(n)) return "PF";
+  if (/semi/i.test(n)) return "SF";
+  if (/qualif/i.test(n)) return "QF";
+  if (/elim/i.test(n)) return "EF";
+  return n;
+}
+
+// Normalise a REST status for display: "" / "NULL" → "UPCOMING", else upper.
+function displayStatus(raw: unknown): string {
+  const s = String(raw ?? "").trim();
+  if (s === "" || s.toUpperCase() === "NULL") return "UPCOMING";
+  return s.toUpperCase();
+}
+
+// Strip the grade suffix from a team name — same regex the push pipeline uses,
+// with the same (n ?? "?") fallback.
+function stripGradeName(name: string | null | undefined): string {
+  return (name ?? "?").replace(/\s+(men|women)\s+premier.*$/i, "").trim();
+}
+
+type RoundKey = { roundName: string; roundNum: number | null };
+
+// Ordering of rounds (design §1.7 step 3): numbered before unnumbered; two
+// numbered by number; two unnumbered by name. Never compares null as a number.
+function compareRounds(a: RoundKey, b: RoundKey): number {
+  const aHas = a.roundNum !== null;
+  const bHas = b.roundNum !== null;
+  if (aHas && bHas) return (a.roundNum as number) - (b.roundNum as number);
+  if (aHas && !bHas) return -1;
+  if (!aHas && bHas) return 1;
+  return a.roundName.localeCompare(b.roundName);
+}
+
+type RoundAgg = {
+  roundName: string;
+  roundNum: number | null;
+  hasNum: boolean;
+  earliestKickoff: number | null;
+};
+
+function aggregateRounds(games: RoundInputGame[]): RoundAgg[] {
+  const byName = new Map<string, RoundAgg>();
+  for (const game of games) {
+    const roundName = game.round?.name ?? "";
+    let agg = byName.get(roundName);
+    if (!agg) {
+      const rn = roundNumOf(roundName);
+      agg = { roundName, roundNum: rn, hasNum: rn !== null, earliestKickoff: null };
+      byName.set(roundName, agg);
+    }
+    const ms = scheduledKickoffMs(game.schedule);
+    if (ms !== null && (agg.earliestKickoff === null || ms < agg.earliestKickoff)) {
+      agg.earliestKickoff = ms;
+    }
+  }
+  return Array.from(byName.values());
+}
+
+function highestRound(rounds: RoundAgg[]): RoundAgg | null {
+  let best: RoundAgg | null = null;
+  for (const r of rounds) if (best === null || compareRounds(r, best) > 0) best = r;
+  return best;
+}
+
+function smallestRound(rounds: RoundAgg[]): RoundAgg | null {
+  let best: RoundAgg | null = null;
+  for (const r of rounds) if (best === null || compareRounds(r, best) < 0) best = r;
+  return best;
+}
+
+// THE latest-round rule (design §1.7): started → imminent → first-upcoming,
+// then an undated fallback. Returns the chosen round, or null for no games.
+function selectLatestRound(games: RoundInputGame[], nowMs: number): RoundKey | null {
+  const rounds = aggregateRounds(games);
+  if (rounds.length === 0) return null;
+  const dated = rounds.filter((r) => r.earliestKickoff !== null);
+
+  const started = dated.filter((r) => (r.earliestKickoff as number) <= nowMs);
+  const tierA = highestRound(started);
+  if (tierA) return { roundName: tierA.roundName, roundNum: tierA.roundNum };
+
+  const imminent = dated.filter(
+    (r) => (r.earliestKickoff as number) <= nowMs + ROUND_LOOKAHEAD_MS
+  );
+  const tierB = highestRound(imminent);
+  if (tierB) return { roundName: tierB.roundName, roundNum: tierB.roundNum };
+
+  const tierC = smallestRound(dated);
+  if (tierC) return { roundName: tierC.roundName, roundNum: tierC.roundNum };
+
+  const fallback = highestRound(rounds);
+  return fallback ? { roundName: fallback.roundName, roundNum: fallback.roundNum } : null;
+}
+
+// Latest-push-per-fixture index (design §1.8): key by full-UUID playhqId (empty
+// skipped), keep max numeric ts; ties keep first seen.
+function indexLatestPushes(entries: PushLogEntry[]): Map<string, PushLogEntry> {
+  const index = new Map<string, PushLogEntry>();
+  for (const entry of entries) {
+    const id = String(entry?.playhqId ?? "");
+    if (!id) continue;
+    const prev = index.get(id);
+    if (!prev) {
+      index.set(id, entry);
+      continue;
+    }
+    const tsNew = Date.parse(entry.ts);
+    const tsPrev = Date.parse(prev.ts);
+    const nNew = Number.isNaN(tsNew) ? -Infinity : tsNew;
+    const nPrev = Number.isNaN(tsPrev) ? -Infinity : tsPrev;
+    if (nNew > nPrev) index.set(id, entry);
+  }
+  return index;
+}
+
 // Does a NormalisedLive carry a usable in-play score signal? The spectator
 // normaliser (`normaliseLive`) leaves total/goals/behinds as `null` on each
 // side when the feed has no data (pre-game, or a failed/empty fetch); once a
@@ -1798,6 +1943,249 @@ export default {
         }
       }
       return json({ count: entries.length, entries }, 200, cors);
+    }
+
+    // /api/round-summary — a SUMMARY board for the Push Activity page: for every
+    // known grade, the latest relevant round with ALL its fixtures, each joined
+    // to its latest pushed score from the PUSH_LOG. Lets an operator scan "what
+    // is the current scoreline for every fixture this round" across 40+
+    // divisions without wading through hundreds of raw log rows. Assembled here
+    // because the Worker is the only component that enumerates every grade, can
+    // fetch each grade's games behind the edge cache, and owns PUSH_LOG. Never
+    // throws out (empty board instead of a 5xx) — see design §1.1. Short-TTL
+    // edge cache so a roomful of pollers collapses to one assembly per window.
+    if (url.pathname === "/api/round-summary") {
+      const boardKey = new Request("https://playhq-cache/round-summary");
+      const boardHit = await cache.match(boardKey);
+      if (boardHit) {
+        return new Response(await boardHit.text(), {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Cache": "HIT", ...cors },
+        });
+      }
+
+      try {
+        // Same grade list the push pipeline + live resolution know about.
+        const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .filter((id) => UUID_RE.test(id));
+
+        // Read PUSH_LOG ONCE for the whole request and build the latest-per-
+        // fixture index once; a malformed store degrades to an empty log.
+        let pushLog: PushLogEntry[] = [];
+        if (env.PUSH_LOG) {
+          try {
+            const rawLog = await env.PUSH_LOG.get(PUSH_LOG_KEY);
+            pushLog = rawLog ? (JSON.parse(rawLog) as PushLogEntry[]) : [];
+          } catch (e) {
+            console.log(
+              "round-summary: push-log read failed:",
+              e instanceof Error ? e.message : "error"
+            );
+            pushLog = [];
+          }
+        }
+        const pushIndex = indexLatestPushes(Array.isArray(pushLog) ? pushLog : []);
+
+        const listTtl = Math.min(ttl, 60) || 60;
+        const nowMs = Date.now();
+
+        type RoundSummaryFixture = {
+          id: string;
+          match: string;
+          scheduled: string | null;
+          status: string;
+          score: string | null;
+          ok: boolean | null;
+          ttId: number | null;
+          lastPushTs: string | null;
+        };
+        type RoundSummaryDivision = {
+          gradeId: string;
+          competition: string;
+          round: string;
+          roundShort: string;
+          roundNum: number | null;
+          fixtures: RoundSummaryFixture[];
+        };
+        type GradeResult =
+          | { ok: true; division: RoundSummaryDivision }
+          | { ok: false; error: { gradeId: string; error: string } };
+
+        // Per-grade: cache-read grade-games → fetch on miss (warming the shared
+        // cache byte-for-byte like /api/grades/:id/games) → select the latest
+        // round → build its fixtures joined to the push index. Never rejects
+        // (mapPool settles), and a failed grade becomes an error record.
+        const perGrade = async (gradeId: string): Promise<GradeResult> => {
+          try {
+            let games: Array<Record<string, unknown>> | null = null;
+            const gKey = new Request(`https://playhq-cache/grade-games/${gradeId}`);
+            const gHit = await cache.match(gKey);
+            if (gHit) {
+              try {
+                const body = (await gHit.json()) as {
+                  data?: Array<Record<string, unknown>>;
+                };
+                games = Array.isArray(body.data) ? body.data : null;
+              } catch {
+                games = null;
+              }
+            }
+            if (!games) {
+              const data = (await fetchGradeGames(gradeId, env)) as Array<
+                Record<string, unknown>
+              >;
+              games = data;
+              // Warm the shared grade-games cache (deliberate new write; mirrors
+              // the /api/grades/:id/games handler's expressions byte-for-byte so
+              // either writer produces an interchangeable entry).
+              const bodyText = JSON.stringify({ gradeId, count: data.length, data });
+              const toCache = new Response(bodyText, {
+                headers: {
+                  "Content-Type": "application/json",
+                  "Cache-Control": `public, max-age=${listTtl}`,
+                },
+              });
+              ctx.waitUntil(cache.put(gKey, toCache));
+            }
+
+            const selected = selectLatestRound(games as RoundInputGame[], nowMs);
+            // Competition label from any game of the grade (they share the slug).
+            const competition = competitionLabel(
+              (games[0]?.url as string | undefined) ?? undefined
+            );
+            if (!selected) {
+              return {
+                ok: true,
+                division: {
+                  gradeId,
+                  competition,
+                  round: "",
+                  roundShort: "",
+                  roundNum: null,
+                  fixtures: [],
+                },
+              };
+            }
+
+            const inRound = games.filter(
+              (g) =>
+                String(((g.round ?? {}) as Record<string, unknown>).name ?? "") ===
+                selected.roundName
+            );
+
+            const fixtures: RoundSummaryFixture[] = inRound.map((g) => {
+              const comps = Array.isArray(g.competitors)
+                ? (g.competitors as Array<Record<string, unknown>>)
+                : [];
+              const home = comps.find((c) => c.isHomeTeam === true);
+              const away = comps.find((c) => c.isHomeTeam === false);
+              const schedule = (g.schedule ?? {}) as Record<string, unknown>;
+              const date = (schedule.date as string) ?? null;
+              const time = (schedule.time as string) ?? null;
+              const id = String(g.id ?? "");
+              const p = pushIndex.get(id);
+              return {
+                id,
+                match: `${stripGradeName((home?.name as string) ?? null)} vs ${stripGradeName((away?.name as string) ?? null)}`,
+                scheduled: date ? `${date}T${time || "00:00:00"}` : null,
+                status: displayStatus(g.status),
+                score: p ? p.score : null,
+                ok: p ? p.ok : null,
+                ttId: p ? (p.ttId ?? null) : null,
+                lastPushTs: p ? p.ts : null,
+              };
+            });
+
+            // Deterministic order: by scheduled asc (nulls last), then match.
+            fixtures.sort((a, b) => {
+              if (a.scheduled !== b.scheduled) {
+                if (a.scheduled === null) return 1;
+                if (b.scheduled === null) return -1;
+                return a.scheduled < b.scheduled ? -1 : 1;
+              }
+              return a.match.localeCompare(b.match);
+            });
+
+            return {
+              ok: true,
+              division: {
+                gradeId,
+                competition,
+                round: selected.roundName,
+                roundShort: shortRound(selected.roundName),
+                roundNum: selected.roundNum,
+                fixtures,
+              },
+            };
+          } catch (err) {
+            if (err instanceof UpstreamError) {
+              return { ok: false, error: { gradeId, error: err.message } };
+            }
+            return { ok: false, error: { gradeId, error: "fetch_failed" } };
+          }
+        };
+
+        const settled = await mapPool(gradeIds, 6, perGrade);
+        const rounds: RoundSummaryDivision[] = [];
+        const errors: { gradeId: string; error: string }[] = [];
+        for (const r of settled) {
+          if (r.status !== "fulfilled") continue; // mapPool never rejects, but guard
+          if (r.value.ok) rounds.push(r.value.division);
+          else errors.push(r.value.error);
+        }
+
+        // Sort rounds by competition, then by the round comparator.
+        rounds.sort((a, b) => {
+          const byComp = a.competition.localeCompare(b.competition);
+          if (byComp !== 0) return byComp;
+          return compareRounds(
+            { roundName: a.round, roundNum: a.roundNum },
+            { roundName: b.round, roundNum: b.roundNum }
+          );
+        });
+
+        const bodyText = JSON.stringify({
+          generatedAt: new Date(nowMs).toISOString(),
+          rounds,
+          errors,
+        });
+        // Short board cache (45s) so repeated polls collapse to one assembly.
+        ctx.waitUntil(
+          cache.put(
+            boardKey,
+            new Response(bodyText, {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": "public, max-age=45",
+              },
+            })
+          )
+        );
+        return new Response(bodyText, {
+          status: 200,
+          headers: { "Content-Type": "application/json", "X-Cache": "MISS", ...cors },
+        });
+      } catch (e) {
+        // Any unexpected failure still returns a valid empty board, never a 5xx.
+        console.log(
+          "round-summary: assembly failed:",
+          e instanceof Error ? e.message : "error"
+        );
+        return json(
+          {
+            generatedAt: new Date().toISOString(),
+            rounds: [],
+            errors: [
+              { gradeId: "*", error: e instanceof Error ? e.message : "error" },
+            ],
+          },
+          200,
+          cors
+        );
+      }
     }
 
     const m = url.pathname.match(

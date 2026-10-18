@@ -4,27 +4,27 @@
     {
       "id": 1,
       "severity": "NIT",
-      "title": "getDisputesForCheck panel vs cached OC badge timing worth a note",
-      "where": "Design Background (getDisputesForCheck NOT cached) + §2",
-      "problem": "getDisputesForCheck is correctly uncached (no staleness bug). But the accuracy-checks page shows the uncached per-check panel alongside the cached OC badge counts, so after a mutation they can momentarily differ on screen. Behavior-preserving (OC invalidates on every dispute write), not a correctness regression, but easy to misread as a cache bug.",
-      "fix": "Doc-only: add to the getDisputesForCheck skip rationale that its per-check panel is always a fresh fetch and reconciles with the cached badge counts on the next OC invalidation, so no extra wiring is needed."
+      "title": "errors[] token enumeration incomplete vs actual fetchGradeGames throws",
+      "where": "design.md §1.4 (and §1.11 table)",
+      "problem": "§1.4 claims the errors[].error tokens are exactly 'rate_limited | forbidden | not_found | upstream_error', said to be verbatim from fetchGradeGames. The worker's fetchGradeGames also throws UpstreamError('api_key_not_configured', 500) when env.PHQ_API_KEY is unset, so that token is missing from the set. Cosmetic only: the frontend treats errors[] as opaque and never branches on the token.",
+      "fix": "Add api_key_not_configured to the enumerated set in §1.4 and the §1.11 row (rate_limited | forbidden | not_found | upstream_error | api_key_not_configured, plus fetch_failed), or soften to 'includes but is not limited to'."
     },
     {
       "id": 2,
       "severity": "NIT",
-      "title": "mergeMasters 'one clear suffices' depends on no meta read between Step 3 and return",
-      "where": "§2 Wiring mechanics, mergeMasters bullet",
-      "problem": "Clearing M once after Step 3 covering the Step-4 re-grades is correct only because nothing reads M between Step 3 and the function returning. True today (Step 4 is a tight server loop with no getAccuracyChecksMeta call), but the invariant is load-bearing and only implied.",
-      "fix": "Doc-only: state explicitly that no get...Meta() runs between Step 3 and return, so a single post-Step-3 clear suffices; if a future edit adds a meta read inside Step 4, re-clear after the loop."
+      "title": "stripGrade vs stripGradeName naming mismatch",
+      "where": "design.md §1.8 vs §1.9",
+      "problem": "§1.8 names the team-name helper stripGrade (matching the push pipeline's in-file regex), while §1.9 lists the pure helper to extract as stripGradeName. Two names for one helper could yield two implementations. The real push-pipeline helper also defaults null to '?' ((n ?? '?')), which the design does not reproduce.",
+      "fix": "Use one name across §1.8 and §1.9 (suggest stripGradeName for the exported pure helper), and either reproduce the '?' fallback or state it is intentionally dropped because the grade-feed competitor name is non-null."
     },
     {
       "id": 3,
       "severity": "NIT",
-      "title": "fixStaleMasterTotals placement wording contradicts its resilient control flow",
-      "where": "§2 Wiring mechanics, single-write bullet parenthetical on fixStaleMasterTotals",
-      "problem": "fixStaleMasterTotals loops and continues on per-row error (never throws out of the loop), so 'place the invalidate immediately after that write's if (error) throw guard' does not literally apply - there is no throwing guard. The parenthetical does say a single clear after the loop is fine (the correct instruction), but the lead-in rule and the exception read as mildly contradictory.",
-      "fix": "Doc-only: move fixStaleMasterTotals out of the single-write/clear-after-throw-guard bullet and group it with the resilient-loop shapes - clear M once on the unconditional normal return, like backfillPlayerAccuracy."
+      "title": "clarify the match name source matches the push pipeline, not just the regex",
+      "where": "design.md §1.8",
+      "problem": "§1.8 says stripGrade is 'the same regex the push pipeline uses' but builds match from the grade-feed competitors[].name, whereas the pipeline strips live.home.name. Verified these resolve from the same grade-feed competitor names (toFixtureLite / teamOf), so the reuse is sound, but the document should state it to avoid a reader worrying the sources differ.",
+      "fix": "Add one sentence to §1.8 noting the grade-feed competitors[].name is the same field the push pipeline ultimately strips, so the suffix pattern matches."
     }
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\meta-cache\\reporting-ui/.agents/tasks/design-review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\round-summary\\reporting-ui\\.agents\\tasks\\design-review.md"
 }
