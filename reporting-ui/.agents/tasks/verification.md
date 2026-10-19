@@ -1,94 +1,106 @@
-# Verification note — Round-Summary board
+# Verification — Player Category Volume (analyst vs master)
 
-Commit-free record of what was verified, in which tree, and the result. All work
-was done in the ISOLATED worktree
-`c:\Users\AndyDin\reporting-dashboard\.worktrees\round-summary`. The main tree
-was touched only as a verification fallback for the two known junction artifacts,
-and was restored byte-for-byte afterward (confirmed `git status --short` clean).
+Feature: per-player, per-category VOLUME tally below the Golden Player Accuracy
+cards on `app/accuracy-compare/page.tsx`, backed by a new pure module
+`lib/comparison/player-category-tally.ts` (+ unit test).
 
-## Iteration status
+Iteration: FIRST. The `.agents/tasks/review.json` and `code-review.json`
+on disk are STALE leftovers from OTHER features sharing this `.agents/tasks`
+dir — `review.json`'s `reviewDoc` points at the `round-summary` worktree and its
+findings are about push-log caps / Darwin offsets; `code-review.json`'s
+`reviewDoc` points at the MAIN tree. Neither reviews player-category-tally, and
+the feature's module did not yet exist. So this was implemented from scratch
+against `design.md` + `plan.md`.
 
-First iteration (implemented from scratch per `plan.md` / `design.md`). The
-`review.json` present in `.agents/tasks/` has `verdict: APPROVED` but its
-`reviewDoc` points at a different worktree (`req-reduction`) and its findings
-describe facet caches / comp-sync — an unrelated feature. It is a stale/mismatched
-artifact (the design.md's own "prior stale artifacts" note documents this class of
-leftover), not a review of the round-summary work, so there were no round-summary
-findings to fix. Implemented the plan as the first pass.
+AGENTS.md Next.js-docs rule: N/A here. `page.tsx` is already a client component
+(`"use client"`); the feature is pure client React (a `useMemo` + a local cell
+component + a JSX table) plus a pure compute module. The only Next.js imports on
+the page (`next/navigation`, `next/link`) are pre-existing and unchanged — no
+new Next.js API surface is introduced, so there was nothing new to read docs for.
 
-## Commands run, tree, result
+## Files changed (worktree), confirmed via `git -C … status --short`
 
-| # | Command | Tree | Result |
-|---|---------|------|--------|
-| 1 | `npm run typecheck` (tsc --noEmit) | worktree `playhq-worker` | exit 0 ✓ |
-| 2 | `npx wrangler deploy --dry-run` | worktree `playhq-worker` | exit 0 ✓ (bundle 59.41 KiB, no deploy; only an out-of-date-wrangler warning) |
-| 3 | `npx tsc --noEmit` | worktree `reporting-ui` | exit 0 ✓ (authoritative type check) |
-| 4 | `npx vitest --run lib/round-summary` | worktree `reporting-ui` | FAILED — junction artifact "No test suite found" (NOT a real failure) |
-| 5 | `npx vitest --run lib/round-summary` | MAIN `reporting-ui` (helper+test copied in, then removed) | 29 passed ✓ |
-| 6 | `npx vitest --run` (full suite) | MAIN `reporting-ui` | 121 passed, 10 files ✓ (no regressions; includes the new suite) |
-| 7 | `npm run build` (next build, Turbopack) | worktree `reporting-ui` | FAILED — junction artifact "Symlink node_modules points out of filesystem root" (NOT a real failure) |
-| 8 | `npm run build` | MAIN `reporting-ui` (4 edited files copied in, then restored) | exit 0 ✓ (all routes incl. `/push-log` compiled) |
+```
+ M app/accuracy-compare/page.tsx
+?? lib/comparison/player-category-tally.test.ts
+?? lib/comparison/player-category-tally.ts
+```
 
-`wrangler deploy` was NOT run (dry-run only). `GET /api/round-summary` was NOT
-hit against the deployed worker (route not deployed yet); the handler was reasoned
-against the live `/api/push-log` ({count, entries}) and `/api/grades/:id/games`
-({gradeId, count, data}) shapes, which it reuses byte-for-byte.
+Only the three intended files. `player-accuracy.ts` and `xml-compare.ts` are
+import-only (no behaviour change).
 
-### Junction-artifact fallback detail
+## Scope agreement with the Golden cards (reasoned)
 
-The worktree's `node_modules` is a junction to the main tree's `node_modules`.
-Both #4 and #7 failed with the two documented false failures. Fallback per plan:
-copied `lib/round-summary/roundSummary.ts` + `roundSummary.test.ts` into the main
-tree for #5/#6, and the 4 edited files (`lib/api/playhq.ts`, `app/push-log/page.tsx`,
-plus the round-summary module/test) for #8. All copies were removed and the two
-pre-existing main-tree files restored from backup afterward; `git status --short`
-on the main tree under `reporting-ui/lib` and `reporting-ui/app/push-log` is empty.
-The port-3000 dev server was never touched, and nothing was deleted through the
-junction.
+The new `playerCategoryTally` useMemo is built from the SAME source and the
+IDENTICAL `inScope` predicate as the Golden `playerAccuracy` useMemo:
 
-One test initially failed in the main tree (#5 first run): the "morning of a new
-round → tier B" case had a prior dated round (`Round 2`, past) that correctly made
-tier A fire. That was a TEST-DATA bug, not an implementation bug — tier B only
-applies when NO round has started. The test was corrected to a genuine tier-B
-scenario (no earlier started round) and all 29 then passed.
+```ts
+const inScope = (i: Instance) =>
+  inRange(i) && (teamFilter === "all" || i.team === teamFilter);
+computePlayerCategoryTally(
+  canonical.master.filter(inScope),
+  canonical.analyst.filter(inScope),
+);
+```
 
-## Final latest-round rule (as implemented)
+Both memos read from `canonical.master` / `canonical.analyst`, share the same
+dependency array `[canonical, sport, tolerance, effectiveRange, teamFilter]`
+(with the same `react-hooks/exhaustive-deps` disable the Golden memo uses), and
+apply the same `inRange` + `teamFilter` filter. The only intentional structural
+difference: the new section does NOT run `compareInstances` (volume
+reconciliation needs no event pairing) — it hands the scoped instances straight
+to the pure aggregator. Because both sections filter the same canonical arrays
+with the same predicate, they cannot disagree on which events are in scope when
+the active team filter (both/home/away) or the time range
+(overlap/custom/full, via `effectiveRange`) changes.
 
-Group games by round name. Per round compute `roundNum = roundNumOf(name)`
-(`number | null`), `hasNum`, and `earliestKickoff` = min of its fixtures'
-`scheduledKickoffMs` (null if the round has no dated fixture). With
-`now = Date.now()` and `LOOKAHEAD_MS = 6h`, select the first tier that yields a
-round:
+## Commands — what ran, in which tree, and why
 
-- **Tier A — started:** among rounds with `earliestKickoff != null && <= now`,
-  pick the HIGHEST by `compareRounds`.
-- **Tier B — imminent:** else, among rounds with `earliestKickoff <= now + 6h`,
-  pick the HIGHEST.
-- **Tier C — first upcoming:** else, pick the SMALLEST round that has any dated
-  fixture.
-- **Undated fallback:** if every round is date-less, pick the HIGHEST round by
-  `compareRounds`.
+1. `npx tsc --noEmit`
+   - TREE: WORKTREE (`c:\Users\AndyDin\reporting-dashboard\.worktrees\player-category-tally\reporting-ui`).
+   - RESULT: clean, exit 0. This is the authoritative type-check of the edited
+     `page.tsx` and the new module, since those files live only in the worktree.
 
-`compareRounds`: numbered rounds order BEFORE unnumbered; two numbered by
-`roundNum`; two unnumbered by name (locale compare) — never compares `null` as a
-number. Tiers A and B are separate so a split weekend (round N started, N+1 within
-6h but not started) selects N, not N+1.
+2. `npx vitest --run lib/comparison/player-category-tally.test.ts`
+   - First attempt TREE: WORKTREE — FAILED with "No test suite found in file …"
+     (the documented worktree-junction collection failure). Confirmed it was the
+     junction, not jsdom: adding `// @vitest-environment node` cut the run to
+     ~2.5s (environment 1ms) but collection still failed the same way over the
+     junction.
+   - Resolution TREE: MAIN (`c:\Users\AndyDin\reporting-dashboard\reporting-ui`),
+     per the task's guidance. The new module + test were COPIED into the main
+     tree's `lib/comparison/`, run, then DELETED. The main tree already has
+     matching `player-accuracy.ts` / `xml-compare.ts` exports (verified before
+     copying), so the pure-logic test is valid there.
+   - RESULT (main tree): `1 passed (1)`, `13 passed (13)`, exit 0. Covers the
+     metric rule (AC1 6/6=100%, AC2 4/6≈67%, AC3 0/3=0%, AC4 0/0=null strict,
+     AC5 9/6=50%, AC6 20/6 floored to 0) and the per-player category tally
+     (AC7 Defensive = tackle+interception+clearance+block regardless of sub-stat
+     split; AC8 one-side-only players appear; AC8a GK-only / blocks-only KEPT;
+     AC8b ball-recovery/aerial-only DROPPED; AC9 analystOnly-last → team →
+     number sort; empty inputs ⇒ []).
+   - The two temporary copies were removed afterward; `git status` in the main
+     tree shows no modified tracked files.
+   - NOTE: the test file carries `// @vitest-environment node` (committed with
+     the feature). It is a pure-logic test needing no DOM, so the node
+     environment is the correct, meaningful choice and also sidesteps the slow
+     jsdom setup over the junction.
 
-Darwin single-offset caveat: `scheduledKickoffMs` hardcodes `+09:30` (NTFL /
-Australia-Darwin, no DST). The selection inherits it; acceptable for the current
-NT-region grades, and a future non-Darwin grade is a localised fix inside
-`scheduledKickoffMs`. Byte-identical offset in the Worker inline copy and the
-frontend reference module.
+3. `npm run build`
+   - First attempt TREE: WORKTREE — FAILED with the documented Turbopack panic
+     `TurbopackInternalError: Symlink [project]/node_modules is invalid, it
+     points out of the filesystem root` (the worktree-junction build failure).
+   - Resolution TREE: MAIN, per the task's guidance. The edited `page.tsx` and
+     the new module were staged into the main tree (main's original `page.tsx`
+     backed up to `page.tsx.bak` first), built, then the main tree was restored
+     byte-for-byte (`page.tsx.bak` moved back over `page.tsx`, the new module
+     deleted).
+   - RESULT (main tree): build succeeded, exit 0. TypeScript finished in ~14.6s,
+     all 37 routes generated including `/accuracy-compare`. Main tree confirmed
+     clean afterward via `git status --short` (no modified tracked files).
 
-## 100-entry-cap caveat
+## Cleanup
 
-`PUSH_LOG` is a ring buffer capped at `PUSH_LOG_MAX = 100` (newest-first). In peak
-season one round across 40 grades × 4–6 fixtures is 160–240 pushes, and each
-fixture is re-pushed every live cycle, so the 100 newest entries can cover LESS
-than a full round. Consequence: a fixture pushed earlier whose entries have all
-aged out shows `lastPushTs = null` → the board renders "not pushed yet" even
-though it was pushed. This is a known, accepted limitation — the board reflects
-"latest score the log still remembers", not an authoritative "ever pushed" ledger.
-The frontend copy ("not pushed yet") and the section footnote surface this. The
-single lever to remove it (raise `PUSH_LOG_MAX` or per-fixture KV keys) is out of
-scope here (it changes the push-log storage contract + the `/api/push-log` reader).
+- Temporary main-tree copies of the module + test removed.
+- Main-tree `page.tsx` restored from backup; backup file removed.
+- No scratch files left in the worktree (only the three intended changes).

@@ -88,6 +88,13 @@ import {
   computePlayerAccuracy,
   type AccuracyGroup,
 } from "@/lib/comparison/player-accuracy";
+import {
+  computePlayerCategoryTally,
+  categoryAccuracy,
+  CATEGORY_KEYS,
+  CATEGORY_LABELS,
+  type CategoryCell,
+} from "@/lib/comparison/player-category-tally";
 import MasterEditModal from "@/components/MasterEditModal";
 import {
   buildSeekClips,
@@ -728,6 +735,31 @@ function PlayerCells({
         {analyst}
       </td>
     </>
+  );
+}
+
+// A single cell in the Player category volume table: analyst / master counts
+// on top and the absolute-difference % below. Muted when both sides are 0
+// (no data), amber when the counts disagree (a volume mismatch).
+function CategoryTallyCell({ cell }: { cell: CategoryCell }) {
+  const muted = cell.m === 0 && cell.a === 0;
+  const pctText = cell.pct == null ? "—" : `${Math.round(cell.pct * 100)}%`;
+  const mismatch = cell.pct != null && cell.a !== cell.m;
+  return (
+    <td
+      className={`border-l border-slate-100 px-3 py-2 text-center ${
+        muted ? "text-slate-300" : ""
+      }`}
+    >
+      <div
+        className={`tabular-nums ${
+          mismatch ? "font-semibold text-amber-700" : "text-slate-700"
+        }`}
+      >
+        {cell.a} / {cell.m}
+      </div>
+      <div className="text-[11px] tabular-nums text-slate-400">{pctText}</div>
+    </td>
   );
 }
 
@@ -2082,6 +2114,23 @@ function AccuracyCompareInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
 
+  // Player category VOLUME tally (football): below the Golden cards, a pure
+  // per-player, per-category reconciliation of analyst vs master COUNTS
+  // (ignoring which exact stat and whether events matched). Built from the
+  // SAME scoped canonical.* instances the Golden cards use with the IDENTICAL
+  // inScope predicate, so the two sections can never disagree on scope. Does
+  // NOT run compareInstances — volume reconciliation needs no pairing.
+  const playerCategoryTally = useMemo(() => {
+    if (!canonical || sport !== "football") return null;
+    const inScope = (i: Instance) =>
+      inRange(i) && (teamFilter === "all" || i.team === teamFilter);
+    return computePlayerCategoryTally(
+      canonical.master.filter(inScope),
+      canonical.analyst.filter(inScope)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
+
   const scopedStatBreakdown = useMemo(() => {
     const map = new Map<string, { total: number; exact: number }>();
     for (const r of teamScopedRows) {
@@ -2942,6 +2991,97 @@ function AccuracyCompareInner() {
                       highlight={highlight}
                     />
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Player category VOLUME tally (football) — below the Golden
+                cards. Per-player, per-category analyst/master counts + an
+                absolute-difference %, ignoring which exact stat and whether
+                events matched. Same scoped instances as the Golden cards. */}
+            {playerCategoryTally && playerCategoryTally.length > 0 && (
+              <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Player category volume (analyst vs master)
+                    </p>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Counts per category, ignoring which exact stat or whether
+                      events matched — analyst / master and an accuracy %.
+                    </p>
+                  </div>
+                  <span className="rounded-md bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                    {teamFilter === "all" ? "Both teams" : teamDisplay(teamFilter)}
+                  </span>
+                </div>
+                <div className="max-h-[520px] overflow-auto">
+                  <table className="w-full text-sm">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="bg-slate-50 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                        <th className="sticky left-0 z-20 border-b border-slate-200 bg-slate-50 px-4 py-2 text-left">
+                          Player
+                        </th>
+                        {CATEGORY_KEYS.map((ck) => (
+                          <th
+                            key={ck}
+                            className="border-b border-l border-slate-200 px-3 py-2 text-center"
+                          >
+                            {CATEGORY_LABELS[ck]}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {playerCategoryTally.map((row) => (
+                        <tr
+                          key={row.key}
+                          className={`group border-b border-slate-100 last:border-b-0 hover:bg-slate-50/60 ${
+                            row.analystOnly ? "bg-red-50/60" : ""
+                          }`}
+                        >
+                          <td
+                            className={`sticky left-0 z-10 whitespace-nowrap px-4 py-2 font-medium text-slate-800 ${
+                              row.analystOnly ? "bg-red-50" : "bg-white"
+                            } group-hover:bg-slate-50`}
+                          >
+                            {row.display}
+                            {row.analystOnly && (
+                              <span className="ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-700">
+                                analyst only
+                              </span>
+                            )}
+                          </td>
+                          {CATEGORY_KEYS.map((ck) => (
+                            <CategoryTallyCell key={ck} cell={row.cells[ck]} />
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot className="sticky bottom-0 z-10">
+                      <tr className="border-t-2 border-slate-300 bg-slate-100 font-bold text-slate-900">
+                        <td className="sticky left-0 z-20 whitespace-nowrap bg-slate-100 px-4 py-2.5 text-left">
+                          Team totals
+                        </td>
+                        {CATEGORY_KEYS.map((ck) => {
+                          const aTot = playerCategoryTally.reduce(
+                            (sum, row) => sum + row.cells[ck].a,
+                            0
+                          );
+                          const mTot = playerCategoryTally.reduce(
+                            (sum, row) => sum + row.cells[ck].m,
+                            0
+                          );
+                          return (
+                            <CategoryTallyCell
+                              key={ck}
+                              cell={categoryAccuracy(aTot, mTot)}
+                            />
+                          );
+                        })}
+                      </tr>
+                    </tfoot>
+                  </table>
                 </div>
               </div>
             )}
