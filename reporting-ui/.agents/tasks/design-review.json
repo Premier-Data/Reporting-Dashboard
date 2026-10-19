@@ -4,27 +4,35 @@
     {
       "id": 1,
       "severity": "NIT",
-      "title": "errors[] token enumeration incomplete vs actual fetchGradeGames throws",
-      "where": "design.md §1.4 (and §1.11 table)",
-      "problem": "§1.4 claims the errors[].error tokens are exactly 'rate_limited | forbidden | not_found | upstream_error', said to be verbatim from fetchGradeGames. The worker's fetchGradeGames also throws UpstreamError('api_key_not_configured', 500) when env.PHQ_API_KEY is unset, so that token is missing from the set. Cosmetic only: the frontend treats errors[] as opaque and never branches on the token.",
-      "fix": "Add api_key_not_configured to the enumerated set in §1.4 and the §1.11 row (rate_limited | forbidden | not_found | upstream_error | api_key_not_configured, plus fetch_failed), or soften to 'includes but is not limited to'."
+      "title": "\"SAME philosophy as player-accuracy.ts\" is an imprecise framing",
+      "where": "D2.1",
+      "problem": "player-accuracy.ts sums per-stat absolute errors before dividing (to stop one stat's over-count cancelling another's under-count). The new metric sums each side's category volume first, then takes one |a-m|, which allows sub-stat cancellation within a group. This is intended (breakdown-agnostic volume) but the wording overstates equivalence.",
+      "fix": "Reword D2.1: it reuses the absolute-difference SHAPE applied to the per-category VOLUME total, not to summed per-stat errors, and deliberately does not guard against sub-stat cancellation."
     },
     {
       "id": 2,
       "severity": "NIT",
-      "title": "stripGrade vs stripGradeName naming mismatch",
-      "where": "design.md §1.8 vs §1.9",
-      "problem": "§1.8 names the team-name helper stripGrade (matching the push pipeline's in-file regex), while §1.9 lists the pure helper to extract as stripGradeName. Two names for one helper could yield two implementations. The real push-pipeline helper also defaults null to '?' ((n ?? '?')), which the design does not reproduce.",
-      "fix": "Use one name across §1.8 and §1.9 (suggest stripGradeName for the exported pure helper), and either reproduce the '?' fallback or state it is intentionally dropped because the grade-feed competitor name is non-null."
+      "title": "foulsDrawn is an undocumented member of the dropped-here set",
+      "where": "FR5 / D2.4 step 7 / D3",
+      "problem": "bumpFootball classifies 'fouls drawn' into foulsDrawn, which no displayed category's parts include, so a foulsDrawn-only player is dropped. The divergence enumeration (ballRecoveries/groundDuels/aerials/headers) silently omits foulsDrawn, making the list read as exhaustive when it is not.",
+      "fix": "Add a parenthetical to FR5/D3 noting foulsDrawn also maps to no displayed category and is neither shown nor counted toward the drop rule."
     },
     {
       "id": 3,
       "severity": "NIT",
-      "title": "clarify the match name source matches the push pipeline, not just the regex",
-      "where": "design.md §1.8",
-      "problem": "§1.8 says stripGrade is 'the same regex the push pipeline uses' but builds match from the grade-feed competitors[].name, whereas the pipeline strips live.home.name. Verified these resolve from the same grade-feed competitor names (toFixtureLite / teamOf), so the reuse is sound, but the document should state it to avoid a reader worrying the sources differ.",
-      "fix": "Add one sentence to §1.8 noting the grade-feed competitors[].name is the same field the push pipeline ultimately strips, so the suffix pattern matches."
+      "title": "No AC exercises an over-count at the category level via the aggregator",
+      "where": "Acceptance Criteria (AC5/AC6 test the bare metric; AC7 is a clean tally)",
+      "problem": "The sub-stat-cancellation behaviour is only reachable through computePlayerCategoryTally's category summing; no AC pins it, so a future change to categoryTotal could pass all ACs while altering results.",
+      "fix": "Add AC7b: master ['Tackles Successful','Interceptions'] (Defensive m=2), analyst ['Blocks','Blocks','Clearances'] (Defensive a=3) => Defensive { a:3, m:2, pct:0.5 }."
+    },
+    {
+      "id": 4,
+      "severity": "NIT",
+      "title": "Scope chip uses teamDisplay while row labels keep canonical team",
+      "where": "D6 Team filter vs D6 Display-name note",
+      "problem": "The header scope chip maps canonical Home/Away to a club name via teamDisplay, but row labels show the raw canonical team for parity with the Player stats table. Both individually match existing sections, but the asymmetry is unstated and an implementer might unify them.",
+      "fix": "Add a line to D6 stating the asymmetry is deliberate (chip mirrors other section headers; row labels mirror the Player stats table) and must not be unified."
     }
   ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\round-summary\\reporting-ui\\.agents\\tasks\\design-review.md"
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\player-category-tally\\reporting-ui\\.agents\\tasks\\design-doc-review.md"
 }

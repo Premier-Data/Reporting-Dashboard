@@ -1,83 +1,88 @@
-# Round-summary board: `/api/round-summary` + Push Activity summary table
+# Per-player category-volume tally below the Golden Player Accuracy cards
 
-A new Worker endpoint assembles a per-division "latest round, every fixture, latest pushed score" board, and the Push Activity page renders it above the untouched raw log. The board is grade-feed-backed (not push-log-derived), so it can show fixtures that have never been pushed, which is the whole point the earlier reverted attempt couldn't satisfy. The selection of "which round is current" is a pure three-tier rule (started → imminent → first-upcoming, undated fallback), extracted to a tested reference module with a byte-identical inline copy in the Worker. Cost over 40+ grades is bounded by two cache layers plus a `mapPool` concurrency cap of 6, and the endpoint never emits a 5xx.
+Adds a new section to the football accuracy-compare page that reconciles, per player and per FOOTBALL category group (Passing / Offensive / Defensive / Goalkeeper / Other), how many events the analyst coded against how many the master coded — one number per side, independent of which exact sub-stat was coded and independent of event-level matching. The work lands as a new pure module `lib/comparison/player-category-tally.ts` (plus a unit test) and a rendered table in `app/accuracy-compare/page.tsx` directly under the exact-match Golden cards. The metric mirrors the Golden module's absolute-difference philosophy applied at the category-volume level, and classification is reused wholesale from `player-accuracy.ts` so the two sections can never drift on which stat belongs to which category.
 
-Watch for: the 100-entry push-log ring buffer means a fixture pushed earlier in a peak-season round can read "not pushed yet" even though it was pushed — **confirmed**, and explicitly surfaced in the UI footnote and design as an accepted limitation. The Darwin single-offset assumption in `scheduledKickoffMs` is inherited by the selection rule — **confirmed**, bounded and acceptable for the current NT-region grade set.
+Watch for: nothing blocking. The highest-risk property (scope agreement with the Golden cards) is satisfied — both memos filter the same `canonical.*` arrays with a byte-identical `inScope` predicate and share the same dependency array (confirmed). The metric, player keying, category composition, union/drop behaviour and heading distinction all hold.
 
 **Verdict**: APPROVED
 
 ## High-level view
 
-The latest-round rule is implemented exactly as the design specifies and is the correctness heart of the feature. Tiers A and B are kept separate so a split weekend selects the round that has actually started rather than jumping to the not-yet-started next round, and the comparator never compares `null` as a number. The "far-future round" bug the task warns about is avoided because tier A only considers rounds whose earliest kickoff is at or before now, and tier C picks the *smallest* upcoming round, never the highest existing one. All eight required cases are unit-tested.
+The new section is computed by a `useMemo` (`playerCategoryTally`) that sits beside the Golden `playerAccuracy` memo and filters `canonical.master` / `canonical.analyst` with the exact same `inScope = inRange(i) && (teamFilter === "all" || i.team === teamFilter)` predicate, over the same dependency array. The two sections therefore see the same instance set under every team filter and time range. The one deliberate structural difference is that the volume section skips `compareInstances` — it needs no event pairing — and hands the scoped instances straight to the pure aggregator.
 
-The push-log join builds a latest-per-`playhqId` index once per request by maximum timestamp, joins on the full fixture UUID, and renders fixtures with no entry as "not pushed yet". `lastPushTs === null` is the single source of truth for "not pushed", correctly distinct from an unmapped `ttId`.
+The metric `categoryAccuracy(a, m)` returns `(m − |a − m|)/m` clamped to `[0,1]`, and `null` when `m === 0`. Null renders as `—`, never 100%. The required examples hold: 6/6→1, 4/6→2/3 (67%), 0/3→0, 0/0→null, with over-counts floored (9/6→0.5, 20/6→0).
 
-Resilience over 40+ grades rests on three independent levers: a shared `grade-games/{id}` edge cache (≤60s, warmed by both this endpoint and the Live Scores tab), a 45s board-level edge cache that collapses a roomful of pollers into one assembly, and a `mapPool` cap of 6 bounding concurrent upstream fan-out. Per-grade failures become error records and never abort the batch; any unexpected top-level throw still returns `200` with an empty board.
+Category totals come from summing each `FOOTBALL_GROUPS[key].parts[].key` out of `deriveFootball()`, so Defensive is tackles+interceptions+clearances+blocks exactly as the Golden module defines it. Classification (`bumpFootball`), derivation (`deriveFootball`), the zeroed counts (`initFootballCounts`) and the group definitions are imported, not re-implemented.
 
-The response contract matches what the frontend renders field-for-field. The frontend groups by division (the Worker pre-sorts by competition then round), shows every fixture, reuses the existing `shortMatch`/`clock` helpers and palette, and leaves the log table, its filters, sorting, and polling byte-unchanged. Scope held: no push-log-derived summary, no new dependencies, no `wrangler.toml` change, changes confined to the four allowed files plus the new tested helper module.
+Rows are the union of players across both sides, keyed `team.toLowerCase()|number ?? "?"`, displayed and sorted byte-for-byte like the existing Player stats table (analystOnly-last → team localeCompare → number ?? 999). The single divergence from a pure union is a deterministic drop rule: a row is dropped only when all five displayed categories total 0 on both sides, which suppresses all-`—` walls while keeping any player with displayable volume on either side.
+
+`player-accuracy.ts` and `xml-compare.ts` are import-only; the Golden computation, comparison engine and DB are untouched. Only `page.tsx` and the two new module files are production changes.
 
 <details>
-<summary>Issues (2)</summary>
+<summary>Issues (0)</summary>
 
-1. **Push-log 100-entry cap** — in peak season (160–240 pushes/round) a fixture pushed earlier can age out and read "not pushed yet". Non-blocking, accepted, and surfaced in the UI footnote; the only fix (raise `PUSH_LOG_MAX` or per-fixture KV) is correctly scoped out.
-2. **Darwin single-offset assumption** — `scheduledKickoffMs` hardcodes `+09:30`, inherited by the selection rule; a future non-Darwin grade could skew the tier A/B boundary by hours. Non-blocking for the current NT-region grades; fix is localised to the helper if ever needed.
+No blocking or actionable findings. All review focus points verified as correct.
 
 </details>
 
 <details>
 <summary>Details</summary>
 
-### Latest-round selection is the design, verbatim
+### Scope agreement with the Golden cards
 
-`selectLatestRound` groups games by round name, computes per-round `{ roundNum, hasNum, earliestKickoff }`, and applies the three tiers in order: highest *started* round (`earliestKickoff <= now`), else highest *imminent* round (`<= now + 6h`), else smallest *dated* round, else highest round overall as an undated fallback. The Worker inline copy is byte-identical to the frontend reference module — I diffed both bodies and the only differences are the private helper names (`highestRound`/`smallestRound` vs `highest`/`smallest`, `ROUND_LOOKAHEAD_MS` vs `LOOKAHEAD_MS`), which don't affect behaviour.
+This is the property the task flagged as highest risk, and it holds. The Golden memo (page.tsx ~2103) and the new memo (~2123) each define, inline, the identical predicate:
 
-The split-weekend guard is the subtle part and it's correct (**confirmed**): tier A filters to `earliestKickoff <= now` before taking the highest, so when round N has started and N+1 is within the 6h window but hasn't started, tier A yields N and never reaches tier B. The `compareRounds` comparator decides numbered-vs-unnumbered placement via the `hasNum` flag and never evaluates `null < number`, which is what retires the `9999`-sentinel hazard the legacy log-table helper carries.
-
-The far-future bug is structurally impossible here: tier A's upper bound is `now`, and the only tier that can look forward (C) takes the *smallest* dated round, so a full season sitting in the feed on day one resolves to Round 1, not the grand final.
-
-The required cases are all tested in `roundSummary.test.ts`: all-future→tier C, mid-round-all-UPCOMING→tier A (the NTFL quirk guard), between-rounds→tier A started round, morning-of-round→tier B, split-weekend→N not N+1, finals→`roundNum: null` ordered after numbered, all-date-less→highest fallback, and empty→`null`. The verification note records 29 tests passing in the main tree (the worktree run hit the documented junction artifact, not a real failure), and the full suite at 121 passing with no regressions.
-
-### Push-log join and the 100-entry cap
-
-`indexLatestPushes` keys entries by full-UUID `playhqId`, skips empty ids, and keeps the maximum `Date.parse(ts)` with NaN guarded to `-Infinity` and ties keeping the first seen. The KV is read once at the top of the miss path and the index built once, not per grade. Each fixture joins on its full UUID: present → `score/ok/ttId/lastPushTs` from the entry; absent → all `null`. `ttId ?? null` is kept distinct from `lastPushTs`, so an unmapped-but-pushed fixture is not mistaken for unpushed.
-
-The 100-entry ring-buffer cap means a peak-season round (160–240 pushes) can exceed what the log retains, so an earlier-pushed fixture may render "not pushed yet" (**confirmed** against `PUSH_LOG_MAX = 100`). This is acknowledged in the design, the verification note, and the UI footnote, and the single lever to remove it is correctly scoped out because it changes the push-log storage contract. Acceptable as flagged.
-
-### 40+-grade resilience
-
-```
-GET /api/round-summary
-  └─ board edge cache (45s)  ──HIT──▶ return cached board, zero KV/upstream
-       │ MISS
-       ├─ read PUSH_LOG once ─▶ indexLatestPushes (once)
-       └─ mapPool(gradeIds, limit=6, perGrade)
-             perGrade: grade-games/{id} edge cache (≤60s)
-                         │HIT─▶ parse body.data
-                         │MISS▶ fetchGradeGames ─▶ warm shared cache (byte-for-byte)
-                         └─ selectLatestRound ─▶ build+join fixtures
+```ts
+const inScope = (i: Instance) =>
+  inRange(i) && (teamFilter === "all" || i.team === teamFilter);
 ```
 
-Cost is bounded three ways, matching the design's reasoning: the shared grade-games cache means boards are rarely cold, the 45s board cache means ~1 assembly per window regardless of poller count, and `mapPool`'s limit of 6 caps concurrent fan-out. `mapPool` settles every result, so one grade's rejection can't abort the batch; per-grade `try/catch` maps `UpstreamError` to `{ gradeId, error: err.message }` and any other throw to `fetch_failed`, then continues. A top-level `try/catch` wraps the whole assembly and still returns `200 { rounds: [], errors: [{ gradeId: "*", ... }] }` on an unexpected throw. The grade-feed cache warm-write reproduces the `/api/grades/:id/games` handler's expressions (`listTtl`, the `{ gradeId, count, data }` key order, the `Cache-Control` string) so the two writers stay interchangeable under the shared key — this is the deliberate new write the design calls out, not accidental drift from `resolveFullGame`.
+Both read `canonical.master` / `canonical.analyst` and both carry the same dependency array `[canonical, sport, tolerance, effectiveRange, teamFilter]` behind the same `react-hooks/exhaustive-deps` disable. `inRange` closes over `effectiveRange`, so a change to the time range or the team toggle re-derives both memos from the same filtered arrays. There is no second instance source, no `result.rows` detour, no extra canonicalisation — the new section consumes exactly what the Golden cards consume. The only intentional difference is that it does not call `compareInstances`; volume reconciliation does not pair events, so pairing would be dead work here. The two sections cannot disagree on which events are in scope.
 
-### Response contract ↔ frontend render
+### The metric rule
 
-The Worker emits `{ generatedAt, rounds[], errors[] }`; each division carries `gradeId, competition, round, roundShort, roundNum, fixtures[]`; each fixture carries exactly `id, match, scheduled, status, score, ok, ttId, lastPushTs` with no `venue` key. The frontend types in `lib/api/playhq.ts` match field-for-field, `getRoundSummary` mirrors `getPushLog` (`cache: "no-store"`, throw on `!res.ok`, defensive array coercion), and the page groups by the Worker's pre-sorted `rounds`, renders every fixture, keys "not pushed yet" off `lastPushTs === null`, and tints a rejected push (`ok === false`) red with a warning glyph. `statusChip` is imported from the shared reference module, so the chip mapping is the tested one. The log fetch and summary fetch run under one `Promise.allSettled` on the existing poll, so a summary failure never blanks the log and the summary keeps its prior board on rejection.
+`categoryAccuracy` returns `null` for `m === 0` before any division, so a zero-master category is "no data" (`—`), not a vacuous 100%. Otherwise it computes `(m − |a − m|)/m` and clamps with `Math.max(0, Math.min(1, raw))`. The `Math.max(0, …)` floors over-counts (20/6 → raw −2.33 → 0); the `Math.min(1, …)` is unreachable for non-negative counts and is kept only to hold the `[0,1]` contract for arbitrary numeric input. The required examples map directly onto the unit tests (AC1–AC6), which I read: 6/6→1, 4/6→`toBeCloseTo(2/3)`, 0/3→0, 0/0→`null` (asserted strictly), 9/6→0.5, 20/6→0.
 
-### Scope
+The cell renderer (`CategoryTallyCell`) converts this to `cell.pct == null ? "—" : Math.round(pct*100) + "%"`, so 0/0 shows `—` and 4/6 shows `67%`. Whole-number rounding here is a deliberate cosmetic divergence from the Golden cards' precision, which the design explicitly permits.
 
-The reverted push-log-only summary is not reintroduced — the board is sourced entirely from `getRoundSummary`, and a grep for log-derived summary logic in the page found nothing. No `wrangler.toml`, `package.json`, or lockfile changes (no new deps). Edits are confined to `playhq-worker/src/index.ts`, `reporting-ui/lib/api/playhq.ts`, `reporting-ui/app/push-log/page.tsx`, plus the new `lib/round-summary/roundSummary.ts` and its test. The existing log table, filters, sort, and polling are byte-unchanged.
+### Player keying and the per-category totals
+
+`ensure()` keys each player as `` `${i.team.toLowerCase()}|${i.playerNumber ?? "?"}` `` and stores the first-seen team case for display/sort — matching `playerTable` exactly. Null jersey numbers are handled consistently across all three axes: `"?"` in the key, `#?` in the display string, and `number ?? 999` in the sort comparator. Lowercasing the key is safe because the inputs are already `canonicaliseTeams`-normalised upstream; the module correctly does not re-canonicalise a subset (the idempotency-guard bug the design calls out).
+
+Category totals are built by running `bumpFootball` over each lowercased stat label into a fresh `FootballCounts`, deriving with `deriveFootball`, then summing `FOOTBALL_GROUPS[key].parts[].key` via `categoryTotal`. I confirmed against `player-accuracy.ts` that Defensive's parts are tackles + interceptions + clearances + blocks, so AC7 (master coded across four different defensive sub-stats → Defensive master 4) is satisfied by reuse, not by a re-listed key set that could drift. The `?? 0` guard in `categoryTotal` tolerates any part key absent from a derived object.
+
+### Union row set and the drop rule
+
+Players are accumulated from both sides into one map, so the row set is the union automatically; one-sided players appear with the missing side at 0 (and `analystOnly = inAnalyst && !inMaster`). The sole deviation from a strict union is the drop rule: `if (masterSum === 0 && analystSum === 0) continue`, where the sums are over the five displayed categories. This keeps a GK-only or blocks-only player (they feed Goalkeeper / Defensive) and drops a ball-recovery/aerial-only player (maps to no displayed category) — matching AC8a/AC8b. It is deterministic and distinct from `playerTable`'s `relevant()` filter, which the design documents as an intended divergence, not an accidental mismatch.
+
+### Section distinction and gating
+
+The new block is gated on `playerCategoryTally && playerCategoryTally.length > 0`, mirroring the Golden `{playerAccuracy && (…)}` gate, and both are football-only via the `sport !== "football"` early return in the memos. The heading "Player category volume (analyst vs master)" with its sub-caption ("Counts per category, ignoring which exact stat or whether events matched") reads clearly apart from the Golden "Player Accuracy" cards, so a reviewer won't confuse volume reconciliation with exact-match accuracy. The team-totals footer reuses `categoryAccuracy(aTot, mTot)` over the summed column counts, keeping the footer metric consistent with the cells.
+
+### Isolation of untouched code
+
+`git status --short` shows the only production changes are `app/accuracy-compare/page.tsx` and the two new files `lib/comparison/player-category-tally.ts` and `.test.ts`. The remaining modified paths are all under `.agents/tasks/` (design/plan/verification docs), not shipped code. `player-accuracy.ts` and `xml-compare.ts` are imported only — the grep across both trees shows identical exports, and the module adds no mutation of their state. The Golden computation, comparison engine and DB are untouched.
+
+### Test coverage
+
+The unit test exercises the metric (AC1–AC6) and the aggregator (AC7 category summing across sub-stats, AC8 one-sided players, AC8a GK-only and blocks-only kept, AC8b recovery/aerial-only dropped, AC9 sort order, empty inputs → `[]`). It uses a minimal `Instance` factory and `// @vitest-environment node`, correct for a pure-logic test with no DOM.
+
+Not tested: the `page.tsx` wiring itself — the `inScope` equality between the two memos, the gating, and the footer totals are verified by reading, not by a test. That is consistent with the rest of this page (no component tests exist here) and the scope-agreement property is structural (same predicate, same deps) rather than data-dependent, so a test would add little. No action required.
+
+### Verification evidence
+
+verification.md records tsc `--noEmit` clean in the worktree (the authoritative type-check, since the edited files live only there), vitest `13 passed` and `npm run build` success — both run in the main tree after the documented worktree-junction collection/build failures (Turbopack symlink panic), with the main tree restored and confirmed clean afterward. The junction artifacts are a known environment limitation, not a defect in this change. Evidence is present and specific; per the task I did not re-run the suites.
 
 </details>
 
 <details>
 <summary>File map</summary>
 
-- `playhq-worker/src/index.ts` — inline pure-helper copies + the `GET /api/round-summary` handler (board cache, grade fan-out via `mapPool`, push-log join, never-5xx wrapper).
-- `reporting-ui/lib/api/playhq.ts` — `RoundSummary*` types + `getRoundSummary` fetcher.
-- `reporting-ui/app/push-log/page.tsx` — summary board section above the unchanged log; `allSettled` load; `statusChip` import.
-- `reporting-ui/lib/round-summary/roundSummary.ts` — the tested reference pure helpers.
-- `reporting-ui/lib/round-summary/roundSummary.test.ts` — 29 tests across selection, join, and supporting helpers.
+- `lib/comparison/player-category-tally.ts` — new pure module: `categoryAccuracy` metric + `computePlayerCategoryTally` aggregator, reusing `player-accuracy.ts` classification.
+- `lib/comparison/player-category-tally.test.ts` — new unit test covering AC1–AC9 and empty inputs (node environment).
+- `app/accuracy-compare/page.tsx` — new `playerCategoryTally` memo (same scope as Golden), `CategoryTallyCell` component, and the rendered volume table under the Golden cards.
+- `.agents/tasks/*` — design/plan/verification doc updates (process artifacts, not shipped code).
 
-Full diff: `git diff main` in the `round-summary` worktree.
+Full diff: `git -C .worktrees/player-category-tally/reporting-ui diff` (base `main`).
 
 </details>

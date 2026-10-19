@@ -1,18 +1,5 @@
 {
   "verdict": "APPROVED",
-  "findings": [
-    {
-      "label": "Push-log 100-entry cap",
-      "severity": "non-blocking",
-      "confidence": "confirmed",
-      "detail": "In peak season (160-240 pushes/round) a fixture pushed earlier can age out of the 100-entry ring buffer and render 'not pushed yet'. Accepted limitation, surfaced in the UI footnote and design; the only fix (raise PUSH_LOG_MAX or per-fixture KV) is correctly scoped out."
-    },
-    {
-      "label": "Darwin single-offset assumption",
-      "severity": "non-blocking",
-      "confidence": "confirmed",
-      "detail": "scheduledKickoffMs hardcodes +09:30 and the selection rule inherits it; a future non-Darwin/DST grade could skew the tier A/B boundary by hours. Acceptable for the current NT-region grades; fix is localised to the helper if ever needed."
-    }
-  ],
-  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\round-summary\\reporting-ui\\.agents\\tasks\\code-review.md"
+  "findings": [],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\player-category-tally\\reporting-ui\\.agents\\tasks\\code-review.md"
 }
