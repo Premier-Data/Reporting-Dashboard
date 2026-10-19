@@ -94,6 +94,7 @@ import {
   CATEGORY_KEYS,
   CATEGORY_LABELS,
   type CategoryCell,
+  type CategoryPart,
 } from "@/lib/comparison/player-category-tally";
 import MasterEditModal from "@/components/MasterEditModal";
 import {
@@ -3083,10 +3084,29 @@ function AccuracyCompareInner() {
                             (sum, row) => sum + row.cells[ck].m,
                             0
                           );
+                          // Sum each sub-stat's analyst/master across every
+                          // player row so the Team totals cell shows the same
+                          // per-sub-stat breakdown on hover. Parts share a
+                          // fixed order/label per category (the group's
+                          // declared parts), so we fold row-by-row by index.
+                          const parts = playerCategoryTally.reduce<
+                            CategoryPart[]
+                          >((acc, row) => {
+                            row.cells[ck].parts.forEach((p, i) => {
+                              const cur = acc[i];
+                              if (cur) {
+                                cur.a += p.a;
+                                cur.m += p.m;
+                              } else {
+                                acc[i] = { label: p.label, a: p.a, m: p.m };
+                              }
+                            });
+                            return acc;
+                          }, []);
                           return (
                             <CategoryTallyCell
                               key={ck}
-                              cell={categoryAccuracy(aTot, mTot)}
+                              cell={categoryAccuracy(aTot, mTot, parts)}
                             />
                           );
                         })}
