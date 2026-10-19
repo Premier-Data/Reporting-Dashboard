@@ -32,7 +32,7 @@ function inst(partial: Partial<Instance>): Instance {
 
 describe("categoryAccuracy", () => {
   it("AC1: 6/6 is 100%", () => {
-    expect(categoryAccuracy(6, 6)).toEqual({ a: 6, m: 6, pct: 1 });
+    expect(categoryAccuracy(6, 6)).toEqual({ a: 6, m: 6, pct: 1, parts: [] });
   });
 
   it("AC2: 4/6 is ~67%", () => {
@@ -43,7 +43,7 @@ describe("categoryAccuracy", () => {
   });
 
   it("AC3: 0/3 is 0%", () => {
-    expect(categoryAccuracy(0, 3)).toEqual({ a: 0, m: 3, pct: 0 });
+    expect(categoryAccuracy(0, 3)).toEqual({ a: 0, m: 3, pct: 0, parts: [] });
   });
 
   it("AC4: 0/0 is null (no data, strictly null)", () => {
@@ -55,11 +55,11 @@ describe("categoryAccuracy", () => {
   });
 
   it("AC5: over-count 9/6 is 50%", () => {
-    expect(categoryAccuracy(9, 6)).toEqual({ a: 9, m: 6, pct: 0.5 });
+    expect(categoryAccuracy(9, 6)).toEqual({ a: 9, m: 6, pct: 0.5, parts: [] });
   });
 
   it("AC6: extreme over-count 20/6 floors at 0 (not negative)", () => {
-    expect(categoryAccuracy(20, 6)).toEqual({ a: 20, m: 6, pct: 0 });
+    expect(categoryAccuracy(20, 6)).toEqual({ a: 20, m: 6, pct: 0, parts: [] });
   });
 });
 
@@ -81,7 +81,9 @@ describe("computePlayerCategoryTally", () => {
     const row = rows[0];
 
     // Defensive: master 4 (across 4 different sub-stats), analyst 2 ⇒ 50%.
-    expect(row.cells.defensive).toEqual({ a: 2, m: 4, pct: 0.5 });
+    expect(row.cells.defensive.a).toBe(2);
+    expect(row.cells.defensive.m).toBe(4);
+    expect(row.cells.defensive.pct).toBe(0.5);
 
     // Passing: neither side coded a pass ⇒ no data, strictly null.
     expect(row.cells.passing.a).toBe(0);
@@ -107,7 +109,9 @@ describe("computePlayerCategoryTally", () => {
 
     // Master-only player: analyst counts all 0.
     expect(home5!.analystOnly).toBe(false);
-    expect(home5!.cells.offensive).toEqual({ a: 0, m: 1, pct: 0 });
+    expect(home5!.cells.offensive.a).toBe(0);
+    expect(home5!.cells.offensive.m).toBe(1);
+    expect(home5!.cells.offensive.pct).toBe(0);
 
     // Analyst-only player: master counts all 0 (pct null), flagged analystOnly.
     expect(away11!.analystOnly).toBe(true);

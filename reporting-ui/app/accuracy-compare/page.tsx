@@ -745,9 +745,20 @@ function CategoryTallyCell({ cell }: { cell: CategoryCell }) {
   const muted = cell.m === 0 && cell.a === 0;
   const pctText = cell.pct == null ? "—" : `${Math.round(cell.pct * 100)}%`;
   const mismatch = cell.pct != null && cell.a !== cell.m;
+  // Hover breakdown: what the analyst coded vs the master, per sub-stat, so the
+  // user can see WHY the category's volumes differ. "analyst / master" to match
+  // the cell's "a / m" convention. Only list parts either side actually has, to
+  // keep the tooltip short; fall back to a header when none.
+  const nonEmpty = cell.parts.filter((p) => p.a !== 0 || p.m !== 0);
+  const breakdown =
+    (nonEmpty.length > 0 ? nonEmpty : cell.parts)
+      .map((p) => `${p.label}: ${p.a} / ${p.m}`)
+      .join("\n");
+  const tooltip = `Analyst / Master\n${breakdown}`;
   return (
     <td
-      className={`border-l border-slate-100 px-3 py-2 text-center ${
+      title={tooltip}
+      className={`cursor-help border-l border-slate-100 px-3 py-2 text-center ${
         muted ? "text-slate-300" : ""
       }`}
     >

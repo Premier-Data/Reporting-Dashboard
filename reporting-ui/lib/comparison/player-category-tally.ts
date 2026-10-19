@@ -47,10 +47,20 @@ export const CATEGORY_LABELS: Record<CategoryKey, string> = {
   other: FOOTBALL_GROUPS.other.label,
 };
 
+// One sub-stat's analyst vs master counts within a category — carried so the
+// UI can show, on hover, WHAT the analyst coded vs the master (the breakdown
+// behind the category's summed volume). Order follows the group's `parts`.
+export type CategoryPart = {
+  label: string; // the group part's display label (e.g. "Interceptions")
+  a: number; // analyst count of this sub-stat
+  m: number; // master count of this sub-stat
+};
+
 export type CategoryCell = {
-  a: number; // analyst count
-  m: number; // master count
+  a: number; // analyst count (category total)
+  m: number; // master count (category total)
   pct: number | null; // (m - |a - m|) / m, floored 0, capped 1; null when m===0
+  parts: CategoryPart[]; // per-sub-stat analyst vs master, for the hover tooltip
 };
 
 /**
@@ -68,11 +78,15 @@ export type CategoryCell = {
  * input. `Math.max(0, …)` is the load-bearing clamp (it floors over-counts
  * to 0).
  */
-export function categoryAccuracy(a: number, m: number): CategoryCell {
-  if (m === 0) return { a, m, pct: null };
+export function categoryAccuracy(
+  a: number,
+  m: number,
+  parts: CategoryPart[] = []
+): CategoryCell {
+  if (m === 0) return { a, m, pct: null, parts };
   const raw = (m - Math.abs(a - m)) / m;
   const pct = Math.max(0, Math.min(1, raw));
-  return { a, m, pct };
+  return { a, m, pct, parts };
 }
 
 // Sum one group's derived part keys into a single number.
@@ -174,7 +188,14 @@ export function computePlayerCategoryTally(
       const aTot = categoryTotal(da, ck);
       masterSum += mTot;
       analystSum += aTot;
-      cells[ck] = categoryAccuracy(aTot, mTot);
+      // Per-sub-stat breakdown (analyst vs master) for the hover tooltip, in
+      // the group's declared part order. These sum to the category total.
+      const parts: CategoryPart[] = FOOTBALL_GROUPS[ck].parts.map((p) => ({
+        label: p.label,
+        a: da[p.key] ?? 0,
+        m: dm[p.key] ?? 0,
+      }));
+      cells[ck] = categoryAccuracy(aTot, mTot, parts);
     }
 
     // Drop rule (the ONLY deviation from the union): drop a row iff the sum of
