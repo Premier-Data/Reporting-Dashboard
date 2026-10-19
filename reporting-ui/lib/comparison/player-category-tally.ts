@@ -24,6 +24,7 @@ import {
   deriveFootball,
   FOOTBALL_GROUPS,
   type FootballCounts,
+  type AccuracyGroup,
 } from "./player-accuracy";
 import type { Instance } from "./xml-compare";
 
@@ -56,12 +57,48 @@ export type CategoryPart = {
   m: number; // master count of this sub-stat
 };
 
+// One sub-stat's EXACT-match breakdown within a category — carried ONLY by the
+// passing cell after the page overrides it with Golden exact-match accuracy.
+// When present, the UI renders an "Exact / Master" tooltip (matching the
+// Golden passing card) instead of the volume "Analyst / Master" one.
+export type ExactPart = {
+  label: string; // the group part's display label (e.g. "Player Passes")
+  exact: number; // of the master's events, how many the analyst matched exactly
+  master: number; // master count of this sub-stat
+};
+
 export type CategoryCell = {
   a: number; // analyst count (category total)
   m: number; // master count (category total)
   pct: number | null; // (m - |a - m|) / m, floored 0, capped 1; null when m===0
   parts: CategoryPart[]; // per-sub-stat analyst vs master, for the hover tooltip
+  // Present ONLY on the passing cell (after the page overrides it from the
+  // Golden exact-match group). When set, `a`=exact, `m`=master, `pct`=
+  // exact/master, and the tooltip shows exact vs master per sub-stat. Omitted
+  // (undefined) on every volume cell, so the other four columns are untouched.
+  exactParts?: ExactPart[];
 };
+
+/**
+ * Map a Golden `AccuracyGroup` (exact-match, from `buildGroup`) to a
+ * `CategoryCell` for the passing column. Keeps the cell's `{a}/{m}` display
+ * reading "exact / master" and `pct` = exact/master (null when master===0), so
+ * the passing cell matches the Golden Player Accuracy passing card exactly.
+ * Pure (no React/DOM) so the page can override just the passing cell with it.
+ */
+export function passingCellFromGroup(group: AccuracyGroup): CategoryCell {
+  return {
+    a: group.exact,
+    m: group.master,
+    pct: group.pct,
+    parts: [],
+    exactParts: group.parts.map((p) => ({
+      label: p.label,
+      exact: p.exact,
+      master: p.master,
+    })),
+  };
+}
 
 /**
  * The pure metric: absolute-difference accuracy of an analyst count `a`
@@ -93,6 +130,43 @@ export function categoryAccuracy(
 function categoryTotal(derived: FootballCounts, key: CategoryKey): number {
   const group = FOOTBALL_GROUPS[key];
   return group.parts.reduce((sum, p) => sum + (derived[p.key] ?? 0), 0);
+}
+
+// The leading Other sub-stat keys that fold into one tooltip line. The three
+// on-ball actions (touches, carries, dribbles) are summed into a single
+// combined part; Throw ins / Cards / Fouls / Offside stay separate lines.
+const OTHER_FOLD_KEYS = ["touches", "carries", "dribbles"] as const;
+const OTHER_FOLD_LABEL = "Touches / Carries / Dribbles";
+
+/**
+ * Fold the Other group's Touches + Carries + Dribbles tooltip lines into ONE
+ * combined "Touches / Carries / Dribbles" line (summing their analyst `a` and
+ * master `m`), keeping Throw ins / Cards / Fouls / Offside as their own lines
+ * in order. Identifies the three folded parts by position against
+ * `FOOTBALL_GROUPS.other.parts` (keys touches, carries, dribbles are the first
+ * three). This changes ONLY the tooltip grouping — callers compute the Other
+ * cell total/% from the unfolded counts, so the cell VALUE is unchanged. Pure.
+ */
+export function foldOtherParts(parts: CategoryPart[]): CategoryPart[] {
+  const foldIdx = FOOTBALL_GROUPS.other.parts
+    .map((p, i) => (OTHER_FOLD_KEYS.includes(p.key as never) ? i : -1))
+    .filter((i) => i >= 0);
+  if (foldIdx.length === 0) return parts;
+  const combined: CategoryPart = { label: OTHER_FOLD_LABEL, a: 0, m: 0 };
+  let insertAt = -1;
+  const out: CategoryPart[] = [];
+  parts.forEach((p, i) => {
+    if (foldIdx.includes(i)) {
+      combined.a += p.a;
+      combined.m += p.m;
+      if (insertAt === -1) insertAt = out.length;
+    } else {
+      out.push(p);
+    }
+  });
+  if (insertAt === -1) insertAt = out.length;
+  out.splice(insertAt, 0, combined);
+  return out;
 }
 
 export type PlayerCategoryRow = {
@@ -190,11 +264,15 @@ export function computePlayerCategoryTally(
       analystSum += aTot;
       // Per-sub-stat breakdown (analyst vs master) for the hover tooltip, in
       // the group's declared part order. These sum to the category total.
-      const parts: CategoryPart[] = FOOTBALL_GROUPS[ck].parts.map((p) => ({
+      const rawParts: CategoryPart[] = FOOTBALL_GROUPS[ck].parts.map((p) => ({
         label: p.label,
         a: da[p.key] ?? 0,
         m: dm[p.key] ?? 0,
       }));
+      // For the Other column only, fold Touches + Carries + Dribbles into one
+      // tooltip line. The cell total (aTot/mTot) was summed from the UNFOLDED
+      // counts above, so the cell VALUE/% is unchanged — only grouping shifts.
+      const parts = ck === "other" ? foldOtherParts(rawParts) : rawParts;
       cells[ck] = categoryAccuracy(aTot, mTot, parts);
     }
 

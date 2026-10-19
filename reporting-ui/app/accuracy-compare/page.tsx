@@ -86,11 +86,14 @@ import {
 } from "@/lib/comparison/insights";
 import {
   computePlayerAccuracy,
+  buildGroup,
+  FOOTBALL_GROUPS,
   type AccuracyGroup,
 } from "@/lib/comparison/player-accuracy";
 import {
   computePlayerCategoryTally,
   categoryAccuracy,
+  passingCellFromGroup,
   CATEGORY_KEYS,
   CATEGORY_LABELS,
   type CategoryCell,
@@ -750,12 +753,24 @@ function CategoryTallyCell({ cell }: { cell: CategoryCell }) {
   // user can see WHY the category's volumes differ. "analyst / master" to match
   // the cell's "a / m" convention. Only list parts either side actually has, to
   // keep the tooltip short; fall back to a header when none.
-  const nonEmpty = cell.parts.filter((p) => p.a !== 0 || p.m !== 0);
-  const breakdown =
-    (nonEmpty.length > 0 ? nonEmpty : cell.parts)
+  let tooltip: string;
+  if (cell.exactParts) {
+    // Passing cell: exact-vs-master breakdown, matching the Golden passing
+    // card ("Exact / Master"). List parts with any data; fall back to all.
+    const nonEmpty = cell.exactParts.filter(
+      (p) => p.exact !== 0 || p.master !== 0
+    );
+    const breakdown = (nonEmpty.length > 0 ? nonEmpty : cell.exactParts)
+      .map((p) => `${p.label}: ${p.exact} / ${p.master}`)
+      .join("\n");
+    tooltip = `Exact / Master\n${breakdown}`;
+  } else {
+    const nonEmpty = cell.parts.filter((p) => p.a !== 0 || p.m !== 0);
+    const breakdown = (nonEmpty.length > 0 ? nonEmpty : cell.parts)
       .map((p) => `${p.label}: ${p.a} / ${p.m}`)
       .join("\n");
-  const tooltip = `Analyst / Master\n${breakdown}`;
+    tooltip = `Analyst / Master\n${breakdown}`;
+  }
   return (
     <td
       title={tooltip}
@@ -2143,6 +2158,48 @@ function AccuracyCompareInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
 
+  // Golden passing accuracy for the category-volume table's Passing column.
+  // Uses the SAME scoped instances + IDENTICAL inScope predicate + the SAME
+  // compareInstances call as `playerAccuracy`, so the passing cell matches the
+  // Golden Player Accuracy passing card exactly (exact-match with the looser
+  // same-player pass rule, via the shared buildGroup — NOT the volume
+  // reconciliation the other four columns use). Returns the team-wide passing
+  // group (for Team totals) and a per-player map keyed "team|number" (lowercased
+  // team + playerNumber ?? "?") matching the tally's row keys.
+  const playerPassing = useMemo(() => {
+    if (!canonical || sport !== "football") return null;
+    const inScope = (i: Instance) =>
+      inRange(i) && (teamFilter === "all" || i.team === teamFilter);
+    const cmp = compareInstances(
+      canonical.master.filter(inScope),
+      canonical.analyst.filter(inScope),
+      tolerance
+    );
+    // Team-wide passing = the Golden passing card figure over all scoped rows.
+    const team = buildGroup(FOOTBALL_GROUPS.passing, cmp.rows);
+    // Per-player: group scoped rows by the master side's "team|number" key
+    // (falling back to the analyst side for analyst-only rows), matching the
+    // tally's `ensure` key, then build the Golden passing group per player.
+    const byKeyRows = new Map<string, typeof cmp.rows>();
+    for (const r of cmp.rows) {
+      const side = r.master ?? r.analyst;
+      if (!side) continue;
+      const key = `${side.team.toLowerCase()}|${side.playerNumber ?? "?"}`;
+      let list = byKeyRows.get(key);
+      if (!list) {
+        list = [];
+        byKeyRows.set(key, list);
+      }
+      list.push(r);
+    }
+    const byKey = new Map<string, AccuracyGroup>();
+    for (const [key, rows] of byKeyRows) {
+      byKey.set(key, buildGroup(FOOTBALL_GROUPS.passing, rows));
+    }
+    return { team, byKey };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
+
   const scopedStatBreakdown = useMemo(() => {
     const map = new Map<string, { total: number; exact: number }>();
     for (const r of teamScopedRows) {
@@ -3064,9 +3121,19 @@ function AccuracyCompareInner() {
                               </span>
                             )}
                           </td>
-                          {CATEGORY_KEYS.map((ck) => (
-                            <CategoryTallyCell key={ck} cell={row.cells[ck]} />
-                          ))}
+                          {CATEGORY_KEYS.map((ck) => {
+                            // Passing cell = the Golden passing card %, not the
+                            // volume reconciliation. Override from the per-player
+                            // exact-match group (empty group ⇒ master 0 ⇒ "—").
+                            const cell =
+                              ck === "passing"
+                                ? passingCellFromGroup(
+                                    playerPassing?.byKey.get(row.key) ??
+                                      buildGroup(FOOTBALL_GROUPS.passing, [])
+                                  )
+                                : row.cells[ck];
+                            return <CategoryTallyCell key={ck} cell={cell} />;
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -3076,6 +3143,20 @@ function AccuracyCompareInner() {
                           Team totals
                         </td>
                         {CATEGORY_KEYS.map((ck) => {
+                          // Team totals Passing = the Golden team-wide passing
+                          // figure (buildGroup over ALL scoped rows), not a fold
+                          // of per-player volume cells.
+                          if (ck === "passing") {
+                            return (
+                              <CategoryTallyCell
+                                key={ck}
+                                cell={passingCellFromGroup(
+                                  playerPassing?.team ??
+                                    buildGroup(FOOTBALL_GROUPS.passing, [])
+                                )}
+                              />
+                            );
+                          }
                           const aTot = playerCategoryTally.reduce(
                             (sum, row) => sum + row.cells[ck].a,
                             0

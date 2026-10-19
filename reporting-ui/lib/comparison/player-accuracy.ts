@@ -322,7 +322,7 @@ const LOOSE_PASS_PART_KEYS = new Set([
 // matching part's `master`; if the row is an exact match, also count `exact`.
 // For pass parts, a looser rule applies (see LOOSE_PASS_PART_KEYS): any pass
 // by the same player at the matched moment counts as exact.
-function buildGroup(
+export function buildGroup(
   group: AccuracyGroupDef,
   rows: ComparisonRow[]
 ): AccuracyGroup {
