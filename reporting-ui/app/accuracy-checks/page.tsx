@@ -70,7 +70,15 @@ import {
   type AccuracyGroup,
   type StoredPlayerAccuracy,
 } from "@/lib/comparison/player-accuracy";
-import { type StoredAflPlayerAccuracy } from "@/lib/comparison/afl-player-accuracy";
+import {
+  type StoredAflPlayerAccuracy,
+  type AflPlayerAccuracy,
+} from "@/lib/comparison/afl-player-accuracy";
+
+// A per-scope group bundle from either sport. Both PlayerAccuracy and
+// AflPlayerAccuracy are records of group key -> AccuracyGroup; reads index by
+// the active column key.
+type GroupAccuracy = PlayerAccuracy | AflPlayerAccuracy;
 
 // Narrow a stored player_accuracy (now a football | AFL union) to the
 // football shape. The three football-only readers below keep today's behavior:
@@ -159,10 +167,15 @@ function fixtureGroupAccuracy(
   check: AccuracyCheckMeta,
   scope: TeamScope,
   xml?: { xml_master: string | null; xml_analyst: string | null }
-): PlayerAccuracy | null {
-  // Fast path: stored precomputed values.
+): GroupAccuracy | null {
+  // Fast path: stored precomputed values. Detect the STORED shape (AFL vs
+  // football) and return that shape's scope object — AFL rows render AFL
+  // columns, football rows render football columns.
   const stored = check.player_accuracy;
   if (stored) {
+    if ("afl" in stored && stored.afl === true) {
+      return stored[scope] ?? null;
+    }
     const football = asFootballStored(stored);
     if (!football || !football.football) return null;
     return football[scope] ?? null;
@@ -170,6 +183,8 @@ function fixtureGroupAccuracy(
 
   // Fallback: compute from the raw source (only until this check is
   // backfilled). Either side may be a JSON feed, so resolve format-aware.
+  // NOTE: this legacy path always computes FOOTBALL PlayerAccuracy; NULL rows
+  // render Overall/football only (acceptable backward-compat until recompute).
   if (!xml?.xml_master || !xml?.xml_analyst) return null;
   const master = instancesFromRaw(xml.xml_master);
   const analyst = instancesFromRaw(xml.xml_analyst);
@@ -188,9 +203,12 @@ function fixtureGroupAccuracy(
   return groups.overall.master > 0 ? groups : null;
 }
 
-// The Player Accuracy group columns shown in the fixture table, in order.
-// These mirror the cards on the Accuracy Comparison page.
-const PLAYER_ACCURACY_COLUMNS = [
+// A Player Accuracy group column (one % column in the accuracy tables).
+type GroupColumn = { key: string; label: string; short: string };
+
+// The FOOTBALL Player Accuracy group columns, in order. These mirror the cards
+// on the Accuracy Comparison page.
+const PLAYER_ACCURACY_COLUMNS: readonly GroupColumn[] = [
   { key: "overall", label: "Overall", short: "OVR" },
   { key: "passing", label: "Passing", short: "PASS" },
   { key: "offensive", label: "Offensive", short: "OFF" },
@@ -199,7 +217,54 @@ const PLAYER_ACCURACY_COLUMNS = [
   { key: "other", label: "Other", short: "OTH" },
 ] as const;
 
-type PlayerAccuracyGroupKey = (typeof PLAYER_ACCURACY_COLUMNS)[number]["key"];
+// The AFL (Aussie Rules) Player Accuracy group columns, in order. Keys match
+// the AflPlayerAccuracy group keys (overall spans all five groups).
+const AFL_PLAYER_ACCURACY_COLUMNS: readonly GroupColumn[] = [
+  { key: "overall", label: "Overall", short: "OVR" },
+  { key: "scoring", label: "Scoring", short: "SCO" },
+  { key: "defence", label: "Defence", short: "DEF" },
+  { key: "possession", label: "Possession", short: "POS" },
+  { key: "disposals", label: "Disposals", short: "DIS" },
+  { key: "other", label: "Other", short: "OTH" },
+] as const;
+
+// The all-sports column set: only Overall (football and AFL share this key and
+// it's valid on both stored shapes), so the mixed table stays comparable.
+const OVERALL_ONLY_COLUMNS: readonly GroupColumn[] = [
+  { key: "overall", label: "Overall", short: "OVR" },
+] as const;
+
+// Union of every group key that can appear in any column set.
+type PlayerAccuracyGroupKey =
+  | "overall"
+  | "passing"
+  | "offensive"
+  | "defensive"
+  | "goalkeeper"
+  | "scoring"
+  | "defence"
+  | "possession"
+  | "disposals"
+  | "other";
+
+// The football-shaped keys (what StoredPlayerAccuracy.both carries).
+const FOOTBALL_GROUP_KEYS = new Set<string>([
+  "overall",
+  "passing",
+  "offensive",
+  "defensive",
+  "goalkeeper",
+  "other",
+]);
+// The AFL-shaped keys (what StoredAflPlayerAccuracy.both carries).
+const AFL_GROUP_KEYS = new Set<string>([
+  "overall",
+  "scoring",
+  "defence",
+  "possession",
+  "disposals",
+  "other",
+]);
 
 // Club/suffix tokens that should always render fully uppercase.
 const ALWAYS_UPPER_TOKENS = new Set(["fc", "sc"]);
@@ -238,47 +303,68 @@ function groupPct(group: AccuracyGroup | null | undefined): number | null {
   return group.pct;
 }
 
+// Read one group from a per-scope GroupAccuracy (football OR AFL) by its
+// string key. Returns undefined when the key isn't present on that shape.
+function groupForKey(
+  groups: GroupAccuracy | null | undefined,
+  key: string
+): AccuracyGroup | undefined {
+  if (!groups) return undefined;
+  return (groups as Record<string, AccuracyGroup | undefined>)[key];
+}
+
 // Read one Player Accuracy group's % from a check's STORED player_accuracy
-// (both-teams scope). Returns null when not computed yet or non-football.
-function storedGroupPct(
+// (both-teams scope). SPORT-CORRECT: inspects the STORED SHAPE (the `afl`
+// vs `football` discriminant), NOT the row's sport column — legacy AFL rows
+// may still carry a football-shaped value until a recompute.
+//
+//  - AFL-shaped (`afl === true`): return the group only for a valid AFL key.
+//  - football-shaped: keep the `!football` no-data guard, then return the
+//    group only for a valid football key.
+//  - `overall` is valid on both shapes.
+//
+// An AFL-only key on a football-shaped (or legacy-NULL) row returns null ->
+// blank cell, which is correct until that row is recomputed.
+function groupPctForCheck(
   check: AccuracyCheckMeta,
   key: PlayerAccuracyGroupKey
 ): number | null {
-  const pa = asFootballStored(check.player_accuracy);
-  if (!pa || !pa.football) return null;
-  return groupPct(pa.both?.[key]);
+  const pa = check.player_accuracy;
+  if (!pa) return null;
+  if ("afl" in pa && pa.afl === true) {
+    if (!AFL_GROUP_KEYS.has(key)) return null;
+    return groupPct(pa.both?.[key as keyof typeof pa.both]);
+  }
+  const football = asFootballStored(pa);
+  if (!football || !football.football) return null;
+  if (!FOOTBALL_GROUP_KEYS.has(key)) return null;
+  return groupPct(football.both?.[key as keyof typeof football.both]);
 }
 
-// Average each Player Accuracy group across a set of checks (both-teams scope).
-// Only checks with a value for a group count toward its average, so
-// missing/non-football checks don't drag it down. Values are null when no
-// check has a computed value for that group.
+// Average each ACTIVE Player Accuracy group across a set of checks (both-teams
+// scope). Only checks with a value for a group count toward its average, so
+// missing/other-sport checks don't drag it down. Values are null when no
+// check has a computed value for that group. The output record is keyed by the
+// active column keys (football, AFL, or Overall-only).
 function averageGroups(
-  checks: AccuracyCheckMeta[]
-): Record<PlayerAccuracyGroupKey, number | null> {
-  const sums = new Map<PlayerAccuracyGroupKey, { total: number; n: number }>();
-  for (const col of PLAYER_ACCURACY_COLUMNS)
-    sums.set(col.key, { total: 0, n: 0 });
+  checks: AccuracyCheckMeta[],
+  columns: readonly GroupColumn[]
+): Record<string, number | null> {
+  const sums = new Map<string, { total: number; n: number }>();
+  for (const col of columns) sums.set(col.key, { total: 0, n: 0 });
   for (const c of checks) {
-    for (const col of PLAYER_ACCURACY_COLUMNS) {
-      const v = storedGroupPct(c, col.key);
+    for (const col of columns) {
+      const v = groupPctForCheck(c, col.key as PlayerAccuracyGroupKey);
       if (v == null) continue;
       const s = sums.get(col.key)!;
       s.total += v;
       s.n += 1;
     }
   }
-  const out: Record<PlayerAccuracyGroupKey, number | null> = {
-    overall: null,
-    passing: null,
-    offensive: null,
-    defensive: null,
-    goalkeeper: null,
-    other: null,
-  };
-  for (const col of PLAYER_ACCURACY_COLUMNS) {
+  const out: Record<string, number | null> = {};
+  for (const col of columns) {
     const s = sums.get(col.key)!;
-    if (s.n > 0) out[col.key] = s.total / s.n;
+    out[col.key] = s.n > 0 ? s.total / s.n : null;
   }
   return out;
 }
@@ -290,7 +376,7 @@ type FixtureRow = {
   check: AccuracyCheckMeta;
   analyst: string;
   date: string;
-  groups: PlayerAccuracy | null;
+  groups: GroupAccuracy | null;
 };
 
 export default function AccuracyChecksPage() {
@@ -349,6 +435,15 @@ export default function AccuracyChecksPage() {
     if (sportFilter === "all") return allChecks;
     return allChecks.filter((c) => sportByCheck.get(c.id) === sportFilter);
   }, [allChecks, sportFilter, sportByCheck]);
+
+  // The Player Accuracy group columns to render, chosen by the sport filter:
+  //  football -> football 5 + Overall; afl -> AFL 5 + Overall; all -> Overall
+  //  only. Every table, the Stat cards and the trend selector read from this.
+  const activeColumns = useMemo<readonly GroupColumn[]>(() => {
+    if (sportFilter === "football") return PLAYER_ACCURACY_COLUMNS;
+    if (sportFilter === "afl") return AFL_PLAYER_ACCURACY_COLUMNS;
+    return OVERALL_ONLY_COLUMNS;
+  }, [sportFilter]);
 
   // Open-dispute counts per check id (for the badge), and the currently
   // expanded check's disputes panel.
@@ -529,13 +624,22 @@ export default function AccuracyChecksPage() {
   const [trendGroup, setTrendGroup] =
     useState<PlayerAccuracyGroupKey>("overall");
 
+  // If the sport filter changes so the stored trend group is no longer an
+  // active column, fall back to Overall (always present in every column set).
+  // Derived (no effect) so switching sports never shows an inactive group.
+  const effectiveTrendGroup: PlayerAccuracyGroupKey = activeColumns.some(
+    (col) => col.key === trendGroup
+  )
+    ? trendGroup
+    : "overall";
+
   const trendData = useMemo(
     () =>
       analystChecks
         .map((c, i) => {
           // Plot the selected Player Accuracy group (Overall/Passing/…). Skip
           // checks with no stored value for that group so the line is clean.
-          const v = storedGroupPct(c, trendGroup);
+          const v = groupPctForCheck(c, effectiveTrendGroup);
           if (v == null) return null;
           return {
             idx: i + 1,
@@ -545,7 +649,7 @@ export default function AccuracyChecksPage() {
         })
         .filter((p): p is NonNullable<typeof p> => p != null)
         .map((p, i) => ({ ...p, idx: i + 1 })),
-    [analystChecks, trendGroup]
+    [analystChecks, effectiveTrendGroup]
   );
 
   // Sort state for the "Saved checks" table. Defaults to newest first.
@@ -600,18 +704,16 @@ export default function AccuracyChecksPage() {
           return (
             c.category ? CHECK_CATEGORY_LABELS[c.category] : ""
           ).toLowerCase();
-        case "overall":
-        case "passing":
-        case "offensive":
-        case "defensive":
-        case "goalkeeper":
-        case "other":
-          return storedGroupPct(c, key as PlayerAccuracyGroupKey);
         case "exactMaster":
           return c.master_total > 0 ? c.exact / c.master_total : 0;
         case "disputes":
           return openCounts[c.id] ?? 0;
         default:
+          // A Player Accuracy group key (in the active column set) sorts by
+          // the check's stored % for that group.
+          if (activeColumns.some((col) => col.key === key)) {
+            return groupPctForCheck(c, key as PlayerAccuracyGroupKey);
+          }
           return null;
       }
     };
@@ -644,6 +746,7 @@ export default function AccuracyChecksPage() {
     openCounts,
     savedWeekFilter,
     savedCategoryFilter,
+    activeColumns,
   ]);
 
   // Distinct Friday→Thursday weeks present in the current (analyst/sport
@@ -708,7 +811,7 @@ export default function AccuracyChecksPage() {
       "Match",
       "Analyst",
       "Master by",
-      ...PLAYER_ACCURACY_COLUMNS.map((c) => `${c.label} %`),
+      ...activeColumns.map((c) => `${c.label} %`),
       "Exact",
       "Master total",
       "Open disputes",
@@ -721,8 +824,8 @@ export default function AccuracyChecksPage() {
         matchTeamsLabel(c),
         c.analyst_name || "",
         c.master_analyst_name || "",
-        ...PLAYER_ACCURACY_COLUMNS.map((col) =>
-          pctNum(storedGroupPct(c, col.key))
+        ...activeColumns.map((col) =>
+          pctNum(groupPctForCheck(c, col.key as PlayerAccuracyGroupKey))
         ),
         String(c.exact),
         String(c.master_total),
@@ -777,11 +880,19 @@ export default function AccuracyChecksPage() {
     const byStat = new Map<string, Agg>();
 
     for (const c of analystChecks) {
-      const pa = asFootballStored(c.player_accuracy);
-      if (!pa || !pa.football) continue;
-      for (const col of PLAYER_ACCURACY_COLUMNS) {
+      const pa = c.player_accuracy;
+      if (!pa) continue;
+      // Read the both-scope groups for whichever shape is stored.
+      const both: Partial<Record<string, AccuracyGroup>> | null =
+        "afl" in pa && pa.afl === true
+          ? pa.both
+          : "football" in pa && pa.football
+            ? pa.both
+            : null;
+      if (!both) continue;
+      for (const col of activeColumns) {
         if (col.key === "overall") continue;
-        const grp = pa.both?.[col.key];
+        const grp = both[col.key];
         if (!grp) continue;
         for (const part of grp.parts) {
           if (part.master <= 0) continue;
@@ -826,7 +937,7 @@ export default function AccuracyChecksPage() {
 
     if (stats.length === 0) return { stats: [] as typeof stats };
     return { stats };
-  }, [selectedAnalyst, analystChecks]);
+  }, [selectedAnalyst, analystChecks, activeColumns]);
 
   // Distinct Friday→Thursday weeks present in the (sport-filtered) checks,
   // newest first, for the comparison-table week selector. Consistent with the
@@ -858,7 +969,7 @@ export default function AccuracyChecksPage() {
       {
         analyst: string;
         checks: number;
-        sums: Map<PlayerAccuracyGroupKey, { total: number; n: number }>;
+        sums: Map<string, { total: number; n: number }>;
       }
     >();
 
@@ -866,18 +977,14 @@ export default function AccuracyChecksPage() {
       const name = c.analyst_name || "—";
       let e = byAnalyst.get(name);
       if (!e) {
-        const sums = new Map<
-          PlayerAccuracyGroupKey,
-          { total: number; n: number }
-        >();
-        for (const col of PLAYER_ACCURACY_COLUMNS)
-          sums.set(col.key, { total: 0, n: 0 });
+        const sums = new Map<string, { total: number; n: number }>();
+        for (const col of activeColumns) sums.set(col.key, { total: 0, n: 0 });
         e = { analyst: name, checks: 0, sums };
         byAnalyst.set(name, e);
       }
       e.checks += 1;
-      for (const col of PLAYER_ACCURACY_COLUMNS) {
-        const v = storedGroupPct(c, col.key);
+      for (const col of activeColumns) {
+        const v = groupPctForCheck(c, col.key as PlayerAccuracyGroupKey);
         if (v == null) continue;
         const s = e.sums.get(col.key)!;
         s.total += v;
@@ -887,15 +994,8 @@ export default function AccuracyChecksPage() {
 
     return Array.from(byAnalyst.values())
       .map((e) => {
-        const groups: Record<PlayerAccuracyGroupKey, number | null> = {
-          overall: null,
-          passing: null,
-          offensive: null,
-          defensive: null,
-          goalkeeper: null,
-          other: null,
-        };
-        for (const col of PLAYER_ACCURACY_COLUMNS) {
+        const groups: Record<string, number | null> = {};
+        for (const col of activeColumns) {
           const s = e.sums.get(col.key)!;
           groups[col.key] = s.n > 0 ? s.total / s.n : null;
         }
@@ -904,7 +1004,7 @@ export default function AccuracyChecksPage() {
         return { analyst: e.analyst, location, checks: e.checks, groups };
       })
       .sort((a, b) => (b.groups.overall ?? -1) - (a.groups.overall ?? -1));
-  }, [checks, weekFilter, comparisonCategoryFilter, locationByName]);
+  }, [checks, weekFilter, comparisonCategoryFilter, locationByName, activeColumns]);
 
   // Sort state for the comparison table.
   const [comparisonSort, setComparisonSort] = useState<{
@@ -957,25 +1057,15 @@ export default function AccuracyChecksPage() {
 
     // Per-analyst accumulator, grouped under each location, so a location row
     // can expand to show every analyst that belongs to it.
-    type Sums = Map<PlayerAccuracyGroupKey, { total: number; n: number }>;
+    type Sums = Map<string, { total: number; n: number }>;
     const newSums = (): Sums => {
       const s: Sums = new Map();
-      for (const col of PLAYER_ACCURACY_COLUMNS)
-        s.set(col.key, { total: 0, n: 0 });
+      for (const col of activeColumns) s.set(col.key, { total: 0, n: 0 });
       return s;
     };
-    const finalizeGroups = (
-      sums: Sums
-    ): Record<PlayerAccuracyGroupKey, number | null> => {
-      const groups: Record<PlayerAccuracyGroupKey, number | null> = {
-        overall: null,
-        passing: null,
-        offensive: null,
-        defensive: null,
-        goalkeeper: null,
-        other: null,
-      };
-      for (const col of PLAYER_ACCURACY_COLUMNS) {
+    const finalizeGroups = (sums: Sums): Record<string, number | null> => {
+      const groups: Record<string, number | null> = {};
+      for (const col of activeColumns) {
         const s = sums.get(col.key)!;
         groups[col.key] = s.n > 0 ? s.total / s.n : null;
       }
@@ -1016,8 +1106,8 @@ export default function AccuracyChecksPage() {
       }
       a.checks += 1;
 
-      for (const col of PLAYER_ACCURACY_COLUMNS) {
-        const v = storedGroupPct(c, col.key);
+      for (const col of activeColumns) {
+        const v = groupPctForCheck(c, col.key as PlayerAccuracyGroupKey);
         if (v == null) continue;
         const s = e.sums.get(col.key)!;
         s.total += v;
@@ -1049,11 +1139,14 @@ export default function AccuracyChecksPage() {
       .sort(
         (a, b) => order.indexOf(a.location) - order.indexOf(b.location)
       );
-  }, [checks, weekFilter, comparisonCategoryFilter, locationByName]);
+  }, [checks, weekFilter, comparisonCategoryFilter, locationByName, activeColumns]);
 
   // Overall averages across ALL (sport-filtered) checks, for the History
   // summary cards.
-  const overallAverages = useMemo(() => averageGroups(checks), [checks]);
+  const overallAverages = useMemo(
+    () => averageGroups(checks, activeColumns),
+    [checks, activeColumns]
+  );
 
   const [expandedFixture, setExpandedFixture] = useState<string | null>(null);
   const [fixtureSearch, setFixtureSearch] = useState("");
@@ -1158,7 +1251,7 @@ export default function AccuracyChecksPage() {
       if (key === "analyst") return r.analyst.toLowerCase();
       if (key === "date") return new Date(r.date).getTime();
       // Otherwise it's one of the Player Accuracy group keys.
-      const g = r.groups?.[key as keyof PlayerAccuracy];
+      const g = groupForKey(r.groups, key);
       return groupPct(g);
     };
     return [...rows].sort((a, b) => {
@@ -1354,7 +1447,7 @@ export default function AccuracyChecksPage() {
                   align="left"
                 />
               </th>
-              {PLAYER_ACCURACY_COLUMNS.map((col) => (
+              {activeColumns.map((col) => (
                 <th
                   key={col.key}
                   title={col.label}
@@ -1439,8 +1532,11 @@ export default function AccuracyChecksPage() {
                         ))}
                       </select>
                     </td>
-                    {PLAYER_ACCURACY_COLUMNS.map((col) => {
-                      const v = storedGroupPct(c, col.key);
+                    {activeColumns.map((col) => {
+                      const v = groupPctForCheck(
+                        c,
+                        col.key as PlayerAccuracyGroupKey
+                      );
                       return (
                         <td
                           key={col.key}
@@ -1496,7 +1592,9 @@ export default function AccuracyChecksPage() {
                   {expandedCheck === c.id && (
                     <tr className="border-t border-slate-100 bg-slate-50/60">
                       <td
-                        colSpan={selectedAnalyst ? 13 : 14}
+                        colSpan={
+                          (selectedAnalyst ? 7 : 8) + activeColumns.length
+                        }
                         className="px-4 py-3"
                       >
                         <DisputesPanel
@@ -1651,6 +1749,7 @@ export default function AccuracyChecksPage() {
         ) : view === "analysts" ? (
           <AnalystComparisonTable
             rows={sortedComparison}
+            columns={activeColumns}
             sort={comparisonSort}
             onSort={toggleComparisonSort}
             weeks={availableWeeks}
@@ -1666,12 +1765,13 @@ export default function AccuracyChecksPage() {
             selectedAnalyst={selectedAnalyst}
             onAnalystChange={setSelectedAnalyst}
             trendData={trendData}
-            trendGroup={trendGroup}
+            trendGroup={effectiveTrendGroup}
             onTrendGroupChange={setTrendGroup}
           />
         ) : view === "locations" ? (
           <LocationComparisonTable
             rows={locationComparison}
+            columns={activeColumns}
             weeks={availableWeeks}
             weekFilter={weekFilter}
             onWeekChange={setWeekFilter}
@@ -1690,7 +1790,7 @@ export default function AccuracyChecksPage() {
                 </span>
               </p>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-                {PLAYER_ACCURACY_COLUMNS.map((col) => {
+                {activeColumns.map((col) => {
                   const v = overallAverages[col.key];
                   return (
                     <Stat
@@ -1943,7 +2043,7 @@ export default function AccuracyChecksPage() {
                                   align="left"
                                 />
                               </th>
-                              {PLAYER_ACCURACY_COLUMNS.map((col, idx) => (
+                              {activeColumns.map((col, idx) => (
                                 <th
                                   key={col.key}
                                   className={`py-2 px-3 text-center ${
@@ -1977,9 +2077,8 @@ export default function AccuracyChecksPage() {
                                 <td className="whitespace-nowrap py-2 pr-4 text-slate-600">
                                   {formatDate(r.date)}
                                 </td>
-                                {PLAYER_ACCURACY_COLUMNS.map((col, idx) => {
-                                  const grp =
-                                    r.groups?.[col.key as keyof PlayerAccuracy];
+                                {activeColumns.map((col, idx) => {
+                                  const grp = groupForKey(r.groups, col.key);
                                   const v = groupPct(grp);
                                   return (
                                     <td
@@ -2012,14 +2111,13 @@ export default function AccuracyChecksPage() {
                                 Average ({g.rows.length} check
                                 {g.rows.length === 1 ? "" : "s"})
                               </td>
-                              {PLAYER_ACCURACY_COLUMNS.map((col, idx) => {
+                              {activeColumns.map((col, idx) => {
                                 // Average the visible per-row group %s (honours
                                 // the active Both/Home/Away scope).
                                 let total = 0;
                                 let n = 0;
                                 for (const r of g.rows) {
-                                  const grp =
-                                    r.groups?.[col.key as keyof PlayerAccuracy];
+                                  const grp = groupForKey(r.groups, col.key);
                                   // Exclude 0/0 groups (no data) from the avg.
                                   const v = groupPct(grp);
                                   if (v != null) {
@@ -2964,11 +3062,12 @@ type ComparisonRowData = {
   analyst: string;
   location: string;
   checks: number;
-  groups: Record<PlayerAccuracyGroupKey, number | null>;
+  groups: Record<string, number | null>;
 };
 
 function AnalystComparisonTable({
   rows,
+  columns,
   sort,
   onSort,
   weeks,
@@ -2985,6 +3084,8 @@ function AnalystComparisonTable({
   onTrendGroupChange,
 }: {
   rows: ComparisonRowData[];
+  /** The active Player Accuracy group columns (sport-aware). */
+  columns: readonly GroupColumn[];
   sort: { key: string; dir: "asc" | "desc" };
   onSort: (key: string) => void;
   weeks: string[];
@@ -3027,14 +3128,14 @@ function AnalystComparisonTable({
       "Analyst",
       "Location",
       "Checks",
-      ...PLAYER_ACCURACY_COLUMNS.map((c) => `${c.label} %`),
+      ...columns.map((c) => `${c.label} %`),
     ];
     const lines = visibleRows.map((r) =>
       [
         r.analyst,
         r.location,
         String(r.checks),
-        ...PLAYER_ACCURACY_COLUMNS.map((col) => pctNum(r.groups[col.key])),
+        ...columns.map((col) => pctNum(r.groups[col.key] ?? null)),
       ]
         .map(csvCell)
         .join(",")
@@ -3152,7 +3253,7 @@ function AnalystComparisonTable({
                   onSort={onSort}
                 />
               </th>
-              {PLAYER_ACCURACY_COLUMNS.map((col) => (
+              {columns.map((col) => (
                 <th key={col.key} className="px-2.5 py-2 text-right">
                   <SortHead
                     label={col.label}
@@ -3186,8 +3287,8 @@ function AnalystComparisonTable({
                 <td className="px-2.5 py-2 text-right tabular-nums text-slate-600">
                   {r.checks}
                 </td>
-                {PLAYER_ACCURACY_COLUMNS.map((col) => {
-                  const v = r.groups[col.key];
+                {columns.map((col) => {
+                  const v = r.groups[col.key] ?? null;
                   return (
                     <td
                       key={col.key}
@@ -3204,7 +3305,7 @@ function AnalystComparisonTable({
             {visibleRows.length === 0 && (
               <tr>
                 <td
-                  colSpan={3 + PLAYER_ACCURACY_COLUMNS.length}
+                  colSpan={3 + columns.length}
                   className="p-6 text-center text-sm text-slate-400"
                 >
                   {selectedAnalyst
@@ -3224,10 +3325,12 @@ function AnalystComparisonTable({
         <h2 className="text-sm font-semibold text-slate-700">Accuracy trend</h2>
         {selectedAnalyst && (
           <div className="flex flex-wrap items-center gap-1">
-            {PLAYER_ACCURACY_COLUMNS.map((col) => (
+            {columns.map((col) => (
               <button
                 key={col.key}
-                onClick={() => onTrendGroupChange(col.key)}
+                onClick={() =>
+                  onTrendGroupChange(col.key as PlayerAccuracyGroupKey)
+                }
                 className={`rounded-md px-2 py-1 text-[11px] font-semibold transition ${
                   trendGroup === col.key
                     ? "bg-slate-900 text-white"
@@ -3263,18 +3366,19 @@ function AnalystComparisonTable({
 type LocationAnalystRow = {
   analyst: string;
   checks: number;
-  groups: Record<PlayerAccuracyGroupKey, number | null>;
+  groups: Record<string, number | null>;
 };
 type LocationRowData = {
   location: string;
   checks: number;
   analysts: number;
-  groups: Record<PlayerAccuracyGroupKey, number | null>;
+  groups: Record<string, number | null>;
   analystRows: LocationAnalystRow[];
 };
 
 function LocationComparisonTable({
   rows,
+  columns,
   weeks,
   weekFilter,
   onWeekChange,
@@ -3282,6 +3386,8 @@ function LocationComparisonTable({
   onCategoryChange,
 }: {
   rows: LocationRowData[];
+  /** The active Player Accuracy group columns (sport-aware). */
+  columns: readonly GroupColumn[];
   weeks: string[];
   weekFilter: string;
   onWeekChange: (w: string) => void;
@@ -3355,7 +3461,7 @@ function LocationComparisonTable({
     const pctNum = (v: number | null) =>
       v == null ? "" : (v * 100).toFixed(1);
     const csvCell = (s: string) => `"${s.replace(/"/g, '""')}"`;
-    const groupCols = PLAYER_ACCURACY_COLUMNS;
+    const groupCols = columns;
 
     const header = [
       "Location",
@@ -3485,7 +3591,7 @@ function LocationComparisonTable({
                   onSort={toggleSort}
                 />
               </th>
-              {PLAYER_ACCURACY_COLUMNS.map((col) => (
+              {columns.map((col) => (
                 <th key={col.key} className="px-2.5 py-2 text-right">
                   <SortHead
                     label={col.label}
@@ -3522,8 +3628,8 @@ function LocationComparisonTable({
                     <td className="px-2.5 py-2 text-right tabular-nums text-slate-600">
                       {r.checks}
                     </td>
-                    {PLAYER_ACCURACY_COLUMNS.map((col) => {
-                      const v = r.groups[col.key];
+                    {columns.map((col) => {
+                      const v = r.groups[col.key] ?? null;
                       return (
                         <td
                           key={col.key}
@@ -3543,7 +3649,7 @@ function LocationComparisonTable({
                       <tr className="bg-slate-50/60">
                         <td />
                         <td
-                          colSpan={3 + PLAYER_ACCURACY_COLUMNS.length}
+                          colSpan={3 + columns.length}
                           className="px-2.5 py-2 text-xs text-slate-400"
                         >
                           No analysts for this location.
@@ -3565,8 +3671,8 @@ function LocationComparisonTable({
                           <td className="px-2.5 py-2 text-right tabular-nums text-slate-500">
                             {a.checks}
                           </td>
-                          {PLAYER_ACCURACY_COLUMNS.map((col) => {
-                            const v = a.groups[col.key];
+                          {columns.map((col) => {
+                            const v = a.groups[col.key] ?? null;
                             return (
                               <td
                                 key={col.key}
@@ -3587,7 +3693,7 @@ function LocationComparisonTable({
             {rows.length === 0 && (
               <tr>
                 <td
-                  colSpan={4 + PLAYER_ACCURACY_COLUMNS.length}
+                  colSpan={4 + columns.length}
                   className="p-6 text-center text-sm text-slate-400"
                 >
                   No checks for this week.
