@@ -250,15 +250,11 @@ export function jsonEventsToInstances(
       ? opts.mapCategory(ev, stat)
       : defaultMapCategory(ev.statTypeCode, stat);
 
-    // JSON analyst throw-ins are consistently coded ~6s late relative to the
-    // master, so shift this stat's time 6s EARLIER (clamped at 0) before it
-    // flows into start/mid. Scoped to the JSON adapter (analyst feed) and to
-    // throw-ins only — the stat label is already normalised (feed "ThrowIn" ->
-    // "Throw Ins"), so match the normalised "throw in" phrasing.
-    const normStat = stat.trim().toLowerCase().replace(/\s+/g, " ");
-    const isThrowIn =
-      normStat.includes("throw in") || normStat.includes("throw-in");
-    const adjustedStart = isThrowIn ? Math.max(0, start - 6) : start;
+    // No per-stat time shift is applied here. (A previous −6s throw-in shift
+    // was removed: it was introduced for a JSON-analyst-vs-XML-master case, but
+    // throw-ins carry no reliable systematic offset to correct — see the 562
+    // investigation — so events flow through at their raw feed time.)
+    const adjustedStart = start;
 
     const team = (ev.teamName ?? "").trim();
     // Prefer the event's own number; else join playerUid -> number from the

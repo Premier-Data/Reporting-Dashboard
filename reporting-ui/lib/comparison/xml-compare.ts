@@ -161,10 +161,11 @@ const STAT_START_OFFSETS: {
   { keyword: "centre bounce", offset: 6 },
   { keyword: "center bounce", offset: 6 },
 
-  // Throw ins (aka boundary throws) — 7s.
-  { keyword: "throw in", offset: 7 },
-  { keyword: "throw-in", offset: 7 },
-  { keyword: "boundary throw", offset: 7 },
+  // Throw ins (aka boundary throws) — NO fixed offset. The code time falls
+  // through to the window midpoint (for feed events where end === start, that
+  // is simply the start). A former +7s offset was removed: throw-ins show no
+  // consistent lead-in to correct for (see the check-562 investigation), so
+  // forcing one only pushed them out of alignment.
 
   // Kick ins — 6s.
   { keyword: "kick in", offset: 6 },

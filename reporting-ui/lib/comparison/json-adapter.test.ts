@@ -115,9 +115,12 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     expect(analyst[0].mid - analyst[0].start).toBe(0);
   });
 
-  it("shifts JSON analyst Throw Ins 6s EARLIER (and nothing else)", () => {
-    // A throw-in event: its stored start/mid must drop by 6s vs its raw
-    // relativeTime. A non-throw-in event at the same time must be unaffected.
+  it("applies NO time offset to Throw Ins (raw feed time preserved)", () => {
+    // Throw-ins carry no fixed offset: both the former −6s adapter shift and
+    // the +7s codeTime entry were removed (see check-562 investigation). The
+    // stored start equals the raw relativeTime, and mid is the window midpoint
+    // (== start here, since feed events have end == start). A corner, which
+    // DOES keep its +5s codeTime offset, is used as the contrast.
     const throwIn: JsonEvent = {
       uid: 9001,
       relativeTime: 36, // 00:36
@@ -137,15 +140,16 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
 
     const [ti] = jsonEventsToInstances([throwIn], {});
     expect(ti.stat.toLowerCase()).toContain("throw in");
-    // start is shifted 6s earlier: 36 -> 30 (00:36 -> 00:30).
-    expect(ti.start).toBe(30);
-    // mid tracks the shifted start through codeTime (same offset as before,
-    // now applied to 30), so the net visible time is 6s earlier.
-    expect(ti.mid).toBe(codeTime("Throw Ins", 30, 30));
+    // No shift: start stays at the raw 36.
+    expect(ti.start).toBe(36);
+    // No throw-in codeTime offset: mid falls through to the midpoint (== start).
+    expect(ti.mid).toBe(codeTime("Throw Ins", 36, 36));
+    expect(ti.mid).toBe(36);
 
-    // A corner at the same raw time is NOT shifted.
+    // A corner at the same raw time keeps its own +5s codeTime offset.
     const [co] = jsonEventsToInstances([corner], {});
     expect(co.start).toBe(36);
+    expect(co.mid).toBe(codeTime("Corners", 36, 36));
   });
 
   it("runs the full comparison and produces sane, self-consistent totals", () => {
