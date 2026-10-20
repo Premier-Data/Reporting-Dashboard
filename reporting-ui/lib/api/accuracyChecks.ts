@@ -78,6 +78,31 @@ export function instancesFromRaw(raw: string | null | undefined): Instance[] {
 }
 
 /**
+ * A saved check's category. 'full_game' = all/most stat groups coded;
+ * 'specific_stats' = only a couple of groups coded; 'golden_accuracy' = the
+ * master coded far fewer events than the analyst (a spot-check sample). Legacy
+ * rows predate this column and are stored as NULL (Uncategorised).
+ */
+export type CheckCategory = "full_game" | "specific_stats" | "golden_accuracy";
+
+/**
+ * Display labels for each category. SINGLE source reused by the save dropdown,
+ * the inline editor, and the filter so the three option lists never drift.
+ */
+export const CHECK_CATEGORY_LABELS: Record<CheckCategory, string> = {
+    full_game: "Full game",
+    specific_stats: "Specific stats",
+    golden_accuracy: "Golden Accuracy",
+};
+
+/** The category options, in display order. Shared by every category control. */
+export const CHECK_CATEGORY_OPTIONS: readonly CheckCategory[] = [
+    "full_game",
+    "specific_stats",
+    "golden_accuracy",
+];
+
+/**
  * A saved accuracy check row (mirrors the accuracy_checks table).
  */
 export interface AccuracyCheck {
@@ -117,6 +142,10 @@ export interface AccuracyCheck {
     // re-opens with the right player-stats table.
     sport: string | null;
 
+    // How the check is classified for filtering (full game / specific stats /
+    // golden accuracy). Null on legacy rows saved before this column existed.
+    category: CheckCategory | null;
+
     // Precomputed Player Accuracy (both/home/away group results) so the
     // "Checks by master fixture" table can render without re-fetching and
     // re-parsing the raw XML. Recomputed on save/update/propagate. Null on
@@ -141,6 +170,7 @@ export interface SaveAccuracyCheckInput {
     fileNameMaster?: string | null;
     fileNameAnalyst?: string | null;
     tolerance?: number | null;
+    category?: CheckCategory | null;
     result: ComparisonResult;
 }
 
@@ -252,6 +282,7 @@ export async function saveAccuracyCheck(
         xml_analyst: input.xmlAnalyst ?? null,
         video_url: input.videoUrl?.trim() || null,
         sport: input.sport ?? null,
+        category: input.category ?? null,
 
         // Overlap-scoped Player Accuracy (all scopes) from the same grade, so
         // the fixture table reads a small stored field instead of re-parsing.
@@ -273,6 +304,29 @@ export async function saveAccuracyCheck(
     invalidateAccuracyChecksMetaCache();
 
     return data as AccuracyCheck;
+}
+
+/**
+ * Set ONLY the `category` column on an existing check (the inline editor on the
+ * Saved checks table). Deliberately does NOT go through updateAccuracyCheck,
+ * which re-grades and rewrites the accuracy columns — a category relabel must
+ * never touch the stored accuracy. `category` is a meta column shown in the
+ * list, so invalidate the meta cache on success.
+ */
+export async function setAccuracyCheckCategory(
+    id: number,
+    category: CheckCategory | null
+): Promise<void> {
+    const { error } = await supabase
+        .from("accuracy_checks")
+        .update({ category })
+        .eq("id", id);
+    if (error) {
+        console.error("Failed setting check category:", error);
+        throw new Error(error.message || "Failed to set check category.");
+    }
+    // category is a meta column shown in lists → meta list is stale.
+    invalidateAccuracyChecksMetaCache();
 }
 
 export interface UpdateAccuracyCheckInput {
@@ -1409,7 +1463,7 @@ const ACCURACY_CHECK_META_COLUMNS =
     "file_name_master, file_name_analyst, tolerance, accuracy, master_total, " +
     "analyst_total, exact, wrong_stat, wrong_player, wrong_team, missed, extra, " +
     "avg_time_drift, category_breakdown, team_breakdown, video_url, sport, " +
-    "player_accuracy, deleted_at, deleted_by";
+    "category, player_accuracy, deleted_at, deleted_by";
 
 /**
  * Like getAllAccuracyChecks but WITHOUT the xml_master/xml_analyst blobs.

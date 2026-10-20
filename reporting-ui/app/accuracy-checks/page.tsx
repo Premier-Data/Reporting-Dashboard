@@ -41,7 +41,11 @@ import {
   diagnoseMasterConsistency,
   fixStaleMasterTotals,
   instancesFromRaw,
+  setAccuracyCheckCategory,
+  CHECK_CATEGORY_OPTIONS,
+  CHECK_CATEGORY_LABELS,
   type AccuracyCheckMeta,
+  type CheckCategory,
   type MasterConsistencyReport,
   type MasterSiblingCheck,
 } from "@/lib/api/accuracyChecks";
@@ -536,6 +540,12 @@ export default function AccuracyChecksPage() {
   // use the same Friday-start weeks.
   const [savedWeekFilter, setSavedWeekFilter] = useState<string>("all");
 
+  // Category filter for the Saved checks table ("all" = every category,
+  // including legacy NULL rows). A specific category excludes NULL rows.
+  const [savedCategoryFilter, setSavedCategoryFilter] = useState<
+    CheckCategory | "all"
+  >("all");
+
   // Master-consistency diagnostic modal: which fixture filename to inspect.
   const [masterDiagFile, setMasterDiagFile] = useState<string | null>(null);
 
@@ -567,6 +577,10 @@ export default function AccuracyChecksPage() {
           return (c.analyst_name || "").toLowerCase();
         case "masterBy":
           return (c.master_analyst_name || "").toLowerCase();
+        case "category":
+          return (
+            c.category ? CHECK_CATEGORY_LABELS[c.category] : ""
+          ).toLowerCase();
         case "overall":
         case "passing":
         case "offensive":
@@ -582,12 +596,18 @@ export default function AccuracyChecksPage() {
           return null;
       }
     };
-    const scoped =
+    const weekScoped =
       savedWeekFilter === "all"
         ? analystChecks
         : analystChecks.filter(
             (c) => fridayWeekKey(c.created_at) === savedWeekFilter
           );
+    // Category narrowing: "all" keeps everything (NULL included); a specific
+    // category keeps only rows whose category matches (NULL excluded).
+    const scoped =
+      savedCategoryFilter === "all"
+        ? weekScoped
+        : weekScoped.filter((c) => c.category === savedCategoryFilter);
     return [...scoped].sort((a, b) => {
       const av = val(a);
       const bv = val(b);
@@ -599,7 +619,13 @@ export default function AccuracyChecksPage() {
       }
       return ((av as number) - (bv as number)) * mult;
     });
-  }, [analystChecks, savedSort, openCounts, savedWeekFilter]);
+  }, [
+    analystChecks,
+    savedSort,
+    openCounts,
+    savedWeekFilter,
+    savedCategoryFilter,
+  ]);
 
   // Distinct Friday→Thursday weeks present in the current (analyst/sport
   // scoped) checks, newest first, for the Saved-checks week selector.
@@ -1206,6 +1232,22 @@ export default function AccuracyChecksPage() {
               </option>
             ))}
           </select>
+          <label className="text-xs font-medium text-slate-500">Category</label>
+          <select
+            value={savedCategoryFilter}
+            onChange={(e) =>
+              setSavedCategoryFilter(e.target.value as CheckCategory | "all")
+            }
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-slate-500 focus:outline-none"
+            aria-label="Filter saved checks by category"
+          >
+            <option value="all">All categories</option>
+            {CHECK_CATEGORY_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {CHECK_CATEGORY_LABELS[opt]}
+              </option>
+            ))}
+          </select>
           <button
             onClick={exportSavedChecks}
             disabled={sortedSavedChecks.length === 0}
@@ -1267,6 +1309,15 @@ export default function AccuracyChecksPage() {
                 <SortHead
                   label="Master by"
                   col="masterBy"
+                  sort={savedSort}
+                  onSort={toggleSavedSort}
+                  align="left"
+                />
+              </th>
+              <th className="w-32 px-2.5 py-2">
+                <SortHead
+                  label="Category"
+                  col="category"
                   sort={savedSort}
                   onSort={toggleSavedSort}
                   align="left"
@@ -1337,6 +1388,26 @@ export default function AccuracyChecksPage() {
                     <td className="truncate px-2.5 py-2 text-slate-600">
                       {c.master_analyst_name || "—"}
                     </td>
+                    <td
+                      className="px-2.5 py-2"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <select
+                        value={c.category ?? ""}
+                        onClick={(e) => e.stopPropagation()}
+                        onChange={(e) => handleCategoryChange(c.id, e.target.value)}
+                        className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 focus:border-slate-500 focus:outline-none"
+                        title="Change this check's category"
+                        aria-label="Check category"
+                      >
+                        <option value="">— Uncategorised</option>
+                        {CHECK_CATEGORY_OPTIONS.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {CHECK_CATEGORY_LABELS[opt]}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
                     {PLAYER_ACCURACY_COLUMNS.map((col) => {
                       const v = storedGroupPct(c, col.key);
                       return (
@@ -1394,7 +1465,7 @@ export default function AccuracyChecksPage() {
                   {expandedCheck === c.id && (
                     <tr className="border-t border-slate-100 bg-slate-50/60">
                       <td
-                        colSpan={selectedAnalyst ? 12 : 13}
+                        colSpan={selectedAnalyst ? 13 : 14}
                         className="px-4 py-3"
                       >
                         <DisputesPanel
@@ -1437,6 +1508,22 @@ export default function AccuracyChecksPage() {
       await load();
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to delete.");
+    }
+  }
+
+  // Inline category edit on the Saved checks table. Persists only the category
+  // column, then reflects the new value in local state so the row updates
+  // without a full reload. "" maps back to NULL (Uncategorised).
+  async function handleCategoryChange(id: number, value: string) {
+    const next: CheckCategory | null =
+      value === "" ? null : (value as CheckCategory);
+    try {
+      await setAccuracyCheckCategory(id, next);
+      setAllChecks((prev) =>
+        prev.map((x) => (x.id === id ? { ...x, category: next } : x))
+      );
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to set category.");
     }
   }
 

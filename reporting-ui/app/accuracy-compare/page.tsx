@@ -42,6 +42,9 @@ import {
   propagateMasterCorrection,
   getMasterCheckSiblings,
   instancesFromRaw,
+  CHECK_CATEGORY_OPTIONS,
+  CHECK_CATEGORY_LABELS,
+  type CheckCategory,
   type SavedMaster,
 } from "@/lib/api/accuracyChecks";
 import { getPlatformAnalystNames } from "@/lib/api/analysts";
@@ -76,7 +79,10 @@ import {
   playerNumberMapFromReport,
   type JsonEvent,
 } from "@/lib/comparison/json-adapter";
-import { deriveOverlapWindow } from "@/lib/comparison/overlap-window";
+import {
+  deriveOverlapWindow,
+  scopeToOverlap,
+} from "@/lib/comparison/overlap-window";
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import ManageMastersDialog from "./ManageMastersDialog";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
@@ -86,10 +92,12 @@ import {
 } from "@/lib/comparison/insights";
 import {
   computePlayerAccuracy,
+  computePlayerAccuracyByScope,
   buildGroup,
   FOOTBALL_GROUPS,
   type AccuracyGroup,
 } from "@/lib/comparison/player-accuracy";
+import { suggestCheckCategory } from "@/lib/comparison/check-category";
 import {
   computePlayerCategoryTally,
   categoryAccuracy,
@@ -1543,6 +1551,10 @@ function AccuracyCompareInner() {
   // Whether the user has typed their own label. Until they do, the
   // label auto-defaults to AnalystName_AnalystFilename.
   const [labelEdited, setLabelEdited] = useState(false);
+  // Chosen check category for the save. Pre-selected from the auto-suggestion
+  // (see checkCategorySuggestion) until the user overrides it manually.
+  const [checkCategory, setCheckCategory] = useState<CheckCategory>("full_game");
+  const [checkCategoryEdited, setCheckCategoryEdited] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
@@ -1724,6 +1736,7 @@ function AccuracyCompareInner() {
         setDisputes([]);
         setMatchLabel("");
         setLabelEdited(false);
+        setCheckCategoryEdited(false);
         setGradedAnalyst("");
         setMasterAnalyst("");
         setVideoUrl("");
@@ -1883,6 +1896,41 @@ function AccuracyCompareInner() {
       master.name
     );
   }, [master, analyst, tolerance]);
+
+  // Auto-suggested check category. Computed the SAME overlap-scoped way the
+  // save flow (gradeOverlapScoped) actually stores, so the pre-selected value
+  // matches what gets written: scope the already-canonical sets to the overlap
+  // window, then grade for totals + player accuracy and feed both into the
+  // pure suggestCheckCategory helper. Null until both files are loaded.
+  const checkCategorySuggestion = useMemo<CheckCategory | null>(() => {
+    if (!canonical) return null;
+    const scoped = scopeToOverlap(canonical.master, canonical.analyst);
+    const cmp = compareInstances(
+      scoped.master,
+      scoped.analyst,
+      tolerance,
+      master?.name
+    );
+    const pa = computePlayerAccuracyByScope(
+      scoped.master,
+      scoped.analyst,
+      tolerance,
+      master?.name
+    );
+    return suggestCheckCategory({
+      masterTotal: cmp.summary.masterTotal,
+      analystTotal: cmp.summary.analystTotal,
+      playerAccuracy: pa.both,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonical, tolerance, master?.name]);
+
+  // Pre-select the suggestion until the user picks their own category
+  // (mirrors the labelEdited pattern for the match label).
+  useEffect(() => {
+    if (checkCategoryEdited) return;
+    if (checkCategorySuggestion) setCheckCategory(checkCategorySuggestion);
+  }, [checkCategorySuggestion, checkCategoryEdited]);
 
   // Map a canonical team ("Home"/"Away") to the real club name from the master
   // file, for display only. Comparison/filtering still use the canonical team.
@@ -2393,6 +2441,8 @@ function AccuracyCompareInner() {
         videoUrl: videoUrl || null,
         // Store the sport so it re-opens with the right stats table.
         sport,
+        // Store the chosen category (pre-filled from the auto-suggestion).
+        category: checkCategory,
       });
 
       setSaveMsg(
@@ -2930,6 +2980,24 @@ function AccuracyCompareInner() {
                 placeholder="Match label (auto: Analyst_Home_v_Away)"
                 className="min-w-[240px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
               />
+              <label className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                Category
+                <select
+                  value={checkCategory}
+                  onChange={(e) => {
+                    setCheckCategoryEdited(true);
+                    setCheckCategory(e.target.value as CheckCategory);
+                  }}
+                  title="How this check is classified (auto-suggested; change if needed)"
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-slate-500 focus:outline-none"
+                >
+                  {CHECK_CATEGORY_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {CHECK_CATEGORY_LABELS[opt]}
+                    </option>
+                  ))}
+                </select>
+              </label>
               <div className="text-xs text-slate-500">
                 Graded:{" "}
                 <span className="font-semibold text-slate-700">
