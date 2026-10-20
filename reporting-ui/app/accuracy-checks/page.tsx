@@ -557,6 +557,8 @@ export default function AccuracyChecksPage() {
     const mult = dir === "asc" ? 1 : -1;
     const val = (c: AccuracyCheckMeta): number | string | null => {
       switch (key) {
+        case "checkNo":
+          return c.id;
         case "date":
           return new Date(c.created_at).getTime();
         case "match":
@@ -656,6 +658,7 @@ export default function AccuracyChecksPage() {
     const csvCell = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
     const header = [
+      "Check #",
       "Date",
       "Match",
       "Analyst",
@@ -668,6 +671,7 @@ export default function AccuracyChecksPage() {
 
     const lines = sortedSavedChecks.map((c) => {
       const cells = [
+        String(c.id),
         formatDate(c.created_at),
         matchTeamsLabel(c),
         c.analyst_name || "",
@@ -1221,6 +1225,15 @@ export default function AccuracyChecksPage() {
         <table className="w-full table-fixed text-xs">
           <thead className="sticky top-0 z-10 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
             <tr>
+              <th className="w-20 px-2.5 py-2">
+                <SortHead
+                  label="Check #"
+                  col="checkNo"
+                  sort={savedSort}
+                  onSort={toggleSavedSort}
+                  align="left"
+                />
+              </th>
               <th className="w-24 px-2.5 py-2">
                 <SortHead
                   label="Date"
@@ -1302,6 +1315,9 @@ export default function AccuracyChecksPage() {
                     className="cursor-pointer border-t border-slate-100 hover:bg-slate-50"
                     title="Open full accuracy check in Accuracy Comparison"
                   >
+                    <td className="whitespace-nowrap px-2.5 py-2 font-medium tabular-nums text-slate-600">
+                      #{c.id}
+                    </td>
                     <td className="whitespace-nowrap px-2.5 py-2 text-slate-600">
                       {formatDate(c.created_at)}
                     </td>
@@ -1378,7 +1394,7 @@ export default function AccuracyChecksPage() {
                   {expandedCheck === c.id && (
                     <tr className="border-t border-slate-100 bg-slate-50/60">
                       <td
-                        colSpan={selectedAnalyst ? 11 : 12}
+                        colSpan={selectedAnalyst ? 12 : 13}
                         className="px-4 py-3"
                       >
                         <DisputesPanel
