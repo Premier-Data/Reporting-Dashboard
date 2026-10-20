@@ -1,0 +1,13 @@
+{
+  "verdict": "APPROVED",
+  "summary": "Sport-aware grading routes by sport across all five call sites, the stored type is a backward-compatible discriminated union, and all six render surfaces follow the sport-filter column rule with a stored-shape reader; tsc/tests/build clean, lint at pre-existing baseline.",
+  "findings": [
+    "gradeOverlapScoped routes player_accuracy by sport==='afl' (else football default) and all five call sites pass sport with the sport column added to the relevant SELECTs: saveAccuracyCheck(input.sport), updateAccuracyCheck(input.sport; recovery branch selects sport and uses input.sport??c.sport), propagateMasterCorrection(select+row.sport), backfillPlayerAccuracy(select+row.sport), mergeMasters(select+row.sport). CONFIRMED.",
+    "Stored type widened to StoredPlayerAccuracy | StoredAflPlayerAccuracy | null on AccuracyCheck.player_accuracy with a literal 'afl: true' discriminant and no 'football' key on the AFL shape; backward-compatible for football-shaped and legacy-NULL rows. CONFIRMED.",
+    "Column rule honored via activeColumns memo: football -> 5 football + Overall; afl -> Scoring/Defence/Possession/Disposals/Other + Overall; all -> Overall only. Threaded through Saved thead/body/CSV/sort, Stat cards, AnalystComparisonTable (columns prop), LocationComparisonTable (columns prop), fixture table, and trend selector; no residual PLAYER_ACCURACY_COLUMNS.map or storedGroupPct in render paths. CONFIRMED.",
+    "Per-row reader groupPctForCheck/groupForKey/fixtureGroupAccuracy discriminate on the STORED shape ('afl'===true vs football via asFootballStored), not the sport column, so legacy AFL rows carrying a football-shaped value and legacy-NULL rows render blank for AFL-only columns until recompute; overall remains valid on both shapes. CONFIRMED.",
+    "AFL golden categories match the user spec including renamings: 'Tackles Ineff'/'Tackles Eff' (ordered ineff-before-eff), 'Rebound 50s - Shallow/Deep', 'Marks i50 - Shallow/Deep', 'Hit Out to Advantage' before 'Hit Out', Clearance in Other. CONFIRMED (pre-existing classifier reused).",
+    "Verification green in the worktree: npx tsc --noEmit clean; npm run test 168 passed (13 files, incl. new by-scope shape, both-scope deep-equal, and AFL-vs-football routing tests); npm run build succeeds; npm run lint 286 problems = recorded pre-existing baseline, zero new errors in the touched files (page:59 unused import, page:580 load()-in-effect, accuracyChecks:1374-1406 any-casts all exist unchanged in main). CONFIRMED.",
+    "No new dependencies added. CONFIRMED."
+  ]
+}

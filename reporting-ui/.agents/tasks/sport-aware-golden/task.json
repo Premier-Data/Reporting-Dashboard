@@ -1,0 +1,7 @@
+{
+  "task_id": "task-sport-aware-golden",
+  "task_description": "Make stored Player Accuracy and the three Accuracy History comparison tables sport-aware so AFL (Aussie Rules) checks show AFL Golden category values (Scoring/Defence/Possession/Disposals/Other + Overall) from an AFL-shaped stored player_accuracy, while football checks keep their existing football columns and values. Storage, grading path, stored type union, and page rendering all become sport-aware. Backward compatibility for existing football rows and legacy NULLs is mandatory. MODIFIED Next.js v16 app. Do NOT push; do NOT run Recompute all.",
+  "status": "completed",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}
