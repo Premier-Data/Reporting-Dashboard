@@ -17,9 +17,15 @@ import {
   type AccuracyGroup,
   type AccuracyGroupDef,
   type AccuracyPart,
+  type PlayerAccuracyScope,
   type StatClassifier,
 } from "./player-accuracy";
-import { type ComparisonRow } from "./xml-compare";
+import {
+  canonicaliseTeams,
+  compareInstances,
+  type ComparisonRow,
+  type Instance,
+} from "./xml-compare";
 
 // Re-export the shared accuracy shapes so callers can import them from here
 // alongside the AFL helpers if they prefer.
@@ -322,4 +328,56 @@ export function computeAflPlayerAccuracy(
   );
 
   return { overall, scoring, defence, possession, disposals, other };
+}
+
+// Precomputed AFL Player Accuracy for all three scopes — the AFL analogue of
+// StoredPlayerAccuracy. Small enough to STORE on the check (JSON column
+// `player_accuracy`) so the fixture table renders without re-parsing the raw
+// XML. `afl` is the literal `true` discriminant that lets a per-row reader
+// detect the STORED shape regardless of the row's `sport` column.
+export type StoredAflPlayerAccuracy = {
+  afl: true;
+  both: AflPlayerAccuracy;
+  home: AflPlayerAccuracy;
+  away: AflPlayerAccuracy;
+};
+
+/**
+ * Compute AFL Player Accuracy for all three scopes (both/home/away) from raw
+ * master + analyst instances. Mirrors computePlayerAccuracyByScope in
+ * player-accuracy.ts: canonicalises teams (so home/away filtering works), then
+ * compares + groups per scope. This is what gets stored on an AFL check at
+ * save/update/propagate/backfill/merge time and read back by the fixture table.
+ */
+export function computeAflPlayerAccuracyByScope(
+  masterInstances: Instance[],
+  analystInstances: Instance[],
+  tolerance: number,
+  masterFileName?: string | null
+): StoredAflPlayerAccuracy {
+  const canon = canonicaliseTeams(
+    masterInstances,
+    analystInstances,
+    tolerance,
+    masterFileName
+  );
+
+  const forScope = (scope: PlayerAccuracyScope): AflPlayerAccuracy => {
+    const inScope = (i: Instance) =>
+      scope === "both" || i.team.trim().toLowerCase() === scope;
+    const cmp = compareInstances(
+      canon.master.filter(inScope),
+      canon.analyst.filter(inScope),
+      tolerance,
+      masterFileName
+    );
+    return computeAflPlayerAccuracy(cmp.rows);
+  };
+
+  return {
+    afl: true,
+    both: forScope("both"),
+    home: forScope("home"),
+    away: forScope("away"),
+  };
 }

@@ -19,6 +19,10 @@ import {
     computePlayerAccuracyByScope,
     type StoredPlayerAccuracy,
 } from "@/lib/comparison/player-accuracy";
+import {
+    computeAflPlayerAccuracyByScope,
+    type StoredAflPlayerAccuracy,
+} from "@/lib/comparison/afl-player-accuracy";
 import { createCache } from "@/lib/api/cache";
 // Cross-table invalidation (one-directional: accuracyChecks → disputes, no
 // cycle — disputes.ts imports only @/lib/supabase and @/lib/api/cache). The
@@ -149,8 +153,11 @@ export interface AccuracyCheck {
     // Precomputed Player Accuracy (both/home/away group results) so the
     // "Checks by master fixture" table can render without re-fetching and
     // re-parsing the raw XML. Recomputed on save/update/propagate. Null on
-    // older checks until backfilled.
-    player_accuracy: StoredPlayerAccuracy | null;
+    // older checks until backfilled. A football check stores StoredPlayerAccuracy
+    // ({football,...}); an AFL check stores StoredAflPlayerAccuracy ({afl:true,...}).
+    // The per-row reader discriminates on the stored shape, not the sport column
+    // (legacy AFL rows may still carry a football-shaped value).
+    player_accuracy: StoredPlayerAccuracy | StoredAflPlayerAccuracy | null;
 
     // Soft delete: when set, the check is treated as deleted (hidden from all
     // active views) but kept for review/restore. `deleted_by` is the username
@@ -200,8 +207,16 @@ function gradeOverlapScoped(
     xmlMaster: string | null | undefined,
     xmlAnalyst: string | null | undefined,
     tolerance: number | null | undefined,
-    fileNameMaster: string | null | undefined
-): { result: ComparisonResult; playerAccuracy: StoredPlayerAccuracy } | null {
+    fileNameMaster: string | null | undefined,
+    // The sport the check is graded under. 'afl' routes player_accuracy through
+    // the AFL golden computer (StoredAflPlayerAccuracy); any other value —
+    // 'football', null, or an unknown string — keeps the football computer, the
+    // safe default so legacy/untagged rows keep their existing football shape.
+    sport: string | null | undefined
+): {
+    result: ComparisonResult;
+    playerAccuracy: StoredPlayerAccuracy | StoredAflPlayerAccuracy;
+} | null {
     const masterRaw = instancesFromRaw(xmlMaster);
     const analystRaw = instancesFromRaw(xmlAnalyst);
     if (masterRaw.length === 0) return null;
@@ -216,9 +231,19 @@ function gradeOverlapScoped(
 
     // 3. Grade over the scoped sets. Both calls re-canonicalise, hit the
     //    idempotency guard (inputs are Home/Away-only), and pass through — so
-    //    the labels are the full-set labels, matching the live view.
+    //    the labels are the full-set labels, matching the live view. The
+    //    summary/byCategory/byTeam result is identical for both sports; only
+    //    the player_accuracy computer differs, routed by sport.
     const result = compareInstances(scoped.master, scoped.analyst, tol, name);
-    const playerAccuracy = computePlayerAccuracyByScope(
+    const playerAccuracy =
+        sport === "afl"
+            ? computeAflPlayerAccuracyByScope(
+                  scoped.master,
+                  scoped.analyst,
+                  tol,
+                  name
+              )
+            : computePlayerAccuracyByScope(
         scoped.master,
         scoped.analyst,
         tol,
@@ -242,7 +267,8 @@ export async function saveAccuracyCheck(
         input.xmlMaster,
         input.xmlAnalyst,
         input.tolerance,
-        input.fileNameMaster
+        input.fileNameMaster,
+        input.sport
     );
     if (!graded) {
         // Ungradeable (unparsable / empty master). Do NOT fall back to the
@@ -370,7 +396,8 @@ export async function updateAccuracyCheck(
         input.xmlMaster,
         input.xmlAnalyst,
         input.tolerance,
-        input.fileNameMaster
+        input.fileNameMaster,
+        input.sport
     );
     // Defensive: if a FUTURE caller omits xmlAnalyst entirely (partial update),
     // recover the analyst side from the stored row so we never blank a
@@ -379,7 +406,7 @@ export async function updateAccuracyCheck(
     if (!graded && input.xmlAnalyst === undefined) {
         const { data: cur } = await supabase
             .from("accuracy_checks")
-            .select("xml_analyst, file_name_master, tolerance")
+            .select("xml_analyst, file_name_master, tolerance, sport")
             .eq("id", input.id)
             .single();
         if (cur) {
@@ -387,12 +414,16 @@ export async function updateAccuracyCheck(
                 xml_analyst: string | null;
                 file_name_master: string | null;
                 tolerance: number | null;
+                sport: string | null;
             };
             graded = gradeOverlapScoped(
                 input.xmlMaster,
                 c.xml_analyst,
                 input.tolerance ?? c.tolerance,
-                input.fileNameMaster ?? c.file_name_master
+                input.fileNameMaster ?? c.file_name_master,
+                // An explicitly provided input.sport wins; otherwise fall back
+                // to the stored sport so a partial update keeps the right shape.
+                input.sport !== undefined ? input.sport : c.sport
             );
         }
     }
@@ -486,7 +517,7 @@ export async function propagateMasterCorrection(
     // Every check for this master, with the analyst XML needed to re-grade.
     const { data, error } = await supabase
         .from("accuracy_checks")
-        .select("id, analyst_name, tolerance, xml_analyst, file_name_master")
+        .select("id, analyst_name, tolerance, xml_analyst, file_name_master, sport")
         .eq("file_name_master", fileNameMaster)
         .is("deleted_at", null);
 
@@ -508,6 +539,7 @@ export async function propagateMasterCorrection(
             tolerance: number | null;
             xml_analyst: string | null;
             file_name_master: string | null;
+            sport: string | null;
         }[]) {
             // Re-grade this check against the corrected master, OVERLAP-SCOPED the
             // same deterministic way as save/update/backfill — so a later master
@@ -516,7 +548,8 @@ export async function propagateMasterCorrection(
                 xmlMaster,
                 row.xml_analyst,
                 row.tolerance,
-                fileNameMaster
+                fileNameMaster,
+                row.sport
             );
             if (!graded) {
                 // Ungradeable row: write null accuracy columns (reconciled by
@@ -911,7 +944,7 @@ export async function mergeMasters(
     const destGroupIds = await resolveActiveGroupIds(destName);
     const { data: rows, error: loadErr } = await supabase
         .from("accuracy_checks")
-        .select("id, analyst_name, tolerance, xml_analyst, file_name_master")
+        .select("id, analyst_name, tolerance, xml_analyst, file_name_master, sport")
         .in("id", destGroupIds)
         .is("deleted_at", null);
     if (loadErr) {
@@ -929,13 +962,15 @@ export async function mergeMasters(
         tolerance: number | null;
         xml_analyst: string | null;
         file_name_master: string | null;
+        sport: string | null;
     }[]) {
         // SAME overlap-scoped grader as save/update/propagate/backfill.
         const graded = gradeOverlapScoped(
             destXml,
             row.xml_analyst,
             row.tolerance,
-            destName
+            destName,
+            row.sport
         );
         if (!graded) {
             // Ungradeable row: write the null-accuracy marker and continue,
@@ -1577,7 +1612,7 @@ export async function backfillPlayerAccuracy(
     // every check; otherwise only those missing player_accuracy.
     const listQuery = supabase
         .from("accuracy_checks")
-        .select("id, tolerance, file_name_master")
+        .select("id, tolerance, file_name_master, sport")
         .is("deleted_at", null);
     const { data, error } = force
         ? await listQuery
@@ -1592,6 +1627,7 @@ export async function backfillPlayerAccuracy(
         id: number;
         tolerance: number | null;
         file_name_master: string | null;
+        sport: string | null;
     }[];
     let updated = 0;
     let skipped = 0;
@@ -1620,7 +1656,8 @@ export async function backfillPlayerAccuracy(
             (xmlRow as AccuracyCheckXml).xml_master,
             (xmlRow as AccuracyCheckXml).xml_analyst,
             row.tolerance,
-            row.file_name_master
+            row.file_name_master,
+            row.sport
         );
         if (!graded) {
             skipped += 1; // null grade -> leave row untouched, never partial-write

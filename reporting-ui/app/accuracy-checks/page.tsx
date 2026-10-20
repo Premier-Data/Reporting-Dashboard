@@ -68,7 +68,19 @@ import {
   computePlayerAccuracy,
   type PlayerAccuracy,
   type AccuracyGroup,
+  type StoredPlayerAccuracy,
 } from "@/lib/comparison/player-accuracy";
+import { type StoredAflPlayerAccuracy } from "@/lib/comparison/afl-player-accuracy";
+
+// Narrow a stored player_accuracy (now a football | AFL union) to the
+// football shape. The three football-only readers below keep today's behavior:
+// a non-football (AFL) stored value reads as "no football data" exactly as the
+// old `!stored.football` check did. AFL-shaped rendering is added separately.
+function asFootballStored(
+  pa: StoredPlayerAccuracy | StoredAflPlayerAccuracy | null | undefined
+): StoredPlayerAccuracy | null {
+  return pa && "football" in pa ? pa : null;
+}
 import {
   getAnalystLocationMap,
   ANALYST_LOCATIONS,
@@ -151,8 +163,9 @@ function fixtureGroupAccuracy(
   // Fast path: stored precomputed values.
   const stored = check.player_accuracy;
   if (stored) {
-    if (!stored.football) return null;
-    return stored[scope] ?? null;
+    const football = asFootballStored(stored);
+    if (!football || !football.football) return null;
+    return football[scope] ?? null;
   }
 
   // Fallback: compute from the raw source (only until this check is
@@ -231,7 +244,7 @@ function storedGroupPct(
   check: AccuracyCheckMeta,
   key: PlayerAccuracyGroupKey
 ): number | null {
-  const pa = check.player_accuracy;
+  const pa = asFootballStored(check.player_accuracy);
   if (!pa || !pa.football) return null;
   return groupPct(pa.both?.[key]);
 }
@@ -764,7 +777,7 @@ export default function AccuracyChecksPage() {
     const byStat = new Map<string, Agg>();
 
     for (const c of analystChecks) {
-      const pa = c.player_accuracy;
+      const pa = asFootballStored(c.player_accuracy);
       if (!pa || !pa.football) continue;
       for (const col of PLAYER_ACCURACY_COLUMNS) {
         if (col.key === "overall") continue;

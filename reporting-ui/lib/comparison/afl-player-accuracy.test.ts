@@ -1,9 +1,16 @@
 import { describe, it, expect } from "vitest";
 import {
   computeAflPlayerAccuracy,
+  computeAflPlayerAccuracyByScope,
   AFL_GROUPS,
 } from "./afl-player-accuracy";
-import { type Instance, type ComparisonRow, type MatchStatus } from "./xml-compare";
+import { computePlayerAccuracyByScope } from "./player-accuracy";
+import {
+  compareInstances,
+  type Instance,
+  type ComparisonRow,
+  type MatchStatus,
+} from "./xml-compare";
 
 // --- Minimal fixtures -------------------------------------------------------
 // computeAflPlayerAccuracy only reads r.master.stat (for classification),
@@ -260,5 +267,108 @@ describe("AFL player accuracy — exact-match counting", () => {
     expect(acc.scoring.master).toBe(3);
     expect(acc.scoring.exact).toBe(1); // only the "exact" Goal row
     expect(acc.scoring.pct).toBeCloseTo(1 / 3, 10);
+  });
+});
+
+// --- By-scope fixtures ------------------------------------------------------
+// Build real master + analyst Instance[] with Home/Away teams so the three
+// scopes (both/home/away) are actually exercised through canonicalise +
+// compareInstances (not just precomputed ComparisonRows).
+
+let evSeq = 0;
+function ev(
+  stat: string,
+  team: "Home" | "Away",
+  playerNumber: number,
+  mid: number
+): Instance {
+  evSeq += 1;
+  return {
+    id: `e${evSeq}`,
+    start: mid,
+    end: mid,
+    mid,
+    team,
+    playerNumber,
+    playerRaw: String(playerNumber),
+    stat,
+    category: "",
+    code: "",
+  };
+}
+
+describe("AFL player accuracy — by scope", () => {
+  // One Home scoring stat + one Away disposal stat, analyst matches both.
+  const master: Instance[] = [
+    ev("Goal", "Home", 7, 100),
+    ev("Effective Kick", "Away", 12, 200),
+  ];
+  const analyst: Instance[] = [
+    ev("Goal", "Home", 7, 100),
+    ev("Effective Kick", "Away", 12, 200),
+  ];
+
+  it("returns { afl:true, both, home, away } each an AflPlayerAccuracy", () => {
+    const stored = computeAflPlayerAccuracyByScope(master, analyst, 3, null);
+    expect(stored.afl).toBe(true);
+    for (const scope of [stored.both, stored.home, stored.away]) {
+      // Every AFL group key present.
+      expect(scope).toHaveProperty("overall");
+      expect(scope).toHaveProperty("scoring");
+      expect(scope).toHaveProperty("defence");
+      expect(scope).toHaveProperty("possession");
+      expect(scope).toHaveProperty("disposals");
+      expect(scope).toHaveProperty("other");
+    }
+    // Both spans the Home goal + Away kick.
+    expect(stored.both.overall.master).toBe(2);
+    // Home scope sees only the Home goal; Away scope only the Away kick.
+    expect(stored.home.scoring.master).toBe(1);
+    expect(stored.home.disposals.master).toBe(0);
+    expect(stored.away.disposals.master).toBe(1);
+    expect(stored.away.scoring.master).toBe(0);
+  });
+
+  it("`both` scope deep-equals computeAflPlayerAccuracy over the same both-scoped rows", () => {
+    const stored = computeAflPlayerAccuracyByScope(master, analyst, 3, null);
+    // Recreate the both-scope comparison the by-scope function does internally.
+    const cmp = compareInstances(master, analyst, 3, null);
+    const expected = computeAflPlayerAccuracy(cmp.rows);
+    expect(stored.both).toEqual(expected);
+  });
+});
+
+describe("player accuracy routing shape — AFL vs football", () => {
+  it("AFL stored result carries afl:true + AFL groups; football carries football + football groups", () => {
+    const master: Instance[] = [
+      ev("Goal", "Home", 7, 100),
+      ev("Spoil", "Home", 9, 150),
+      ev("Turnover", "Away", 4, 200),
+      ev("Effective Kick", "Away", 12, 250),
+    ];
+    const analyst: Instance[] = [
+      ev("Goal", "Home", 7, 100),
+      ev("Spoil", "Home", 9, 150),
+      ev("Turnover", "Away", 4, 200),
+      ev("Effective Kick", "Away", 12, 250),
+    ];
+
+    const afl = computeAflPlayerAccuracyByScope(master, analyst, 3, null);
+    // AFL discriminant + AFL group keys.
+    expect(afl.afl).toBe(true);
+    expect(afl).not.toHaveProperty("football");
+    expect(afl.both).toHaveProperty("scoring");
+    expect(afl.both).toHaveProperty("defence");
+    expect(afl.both).toHaveProperty("possession");
+    expect(afl.both).toHaveProperty("disposals");
+
+    const football = computePlayerAccuracyByScope(master, analyst, 3, null);
+    // Football discriminant + football group keys.
+    expect(football).toHaveProperty("football");
+    expect(football).not.toHaveProperty("afl");
+    expect(football.both).toHaveProperty("passing");
+    expect(football.both).toHaveProperty("offensive");
+    expect(football.both).toHaveProperty("defensive");
+    expect(football.both).toHaveProperty("goalkeeper");
   });
 });
