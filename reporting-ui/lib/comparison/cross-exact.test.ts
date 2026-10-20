@@ -86,6 +86,88 @@ describe("bare vs outcome crosses/through balls", () => {
     expect(res.rows[0].status).toBe("missed");
   });
 
+  it("collapses AFL Marks i50 Shallow <-> Deep as EXACT (both directions)", () => {
+    const m1 = [inst("m1", 600, "Marks i50 - Shallow", "Home", 12)];
+    const a1 = [inst("a1", 600, "Marks i50 - Deep", "Home", 12)];
+    expect(
+      compareInstances(m1, a1, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    const m1r = [inst("m1", 601, "Marks i50 - Deep", "Home", 12)];
+    const a1r = [inst("a1", 601, "Marks i50 - Shallow", "Home", 12)];
+    expect(
+      compareInstances(m1r, a1r, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
+  it("collapses AFL Rebound 50s Shallow <-> Deep as EXACT (both directions)", () => {
+    const m2 = [inst("m1", 610, "Rebound 50s - Shallow", "Home", 8)];
+    const a2 = [inst("a1", 610, "Rebound 50s - Deep", "Home", 8)];
+    expect(
+      compareInstances(m2, a2, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    const m2r = [inst("m1", 611, "Rebound 50s - Deep", "Home", 8)];
+    const a2r = [inst("a1", 611, "Rebound 50s - Shallow", "Home", 8)];
+    expect(
+      compareInstances(m2r, a2r, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
+  it("collapses AFL Shallow I50 <-> Deep I50 as EXACT (both directions)", () => {
+    const m3 = [inst("m1", 620, "Shallow I50", "Home", 22)];
+    const a3 = [inst("a1", 620, "Deep I50", "Home", 22)];
+    expect(
+      compareInstances(m3, a3, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    const m3r = [inst("m1", 621, "Deep I50", "Home", 22)];
+    const a3r = [inst("a1", 621, "Shallow I50", "Home", 22)];
+    expect(
+      compareInstances(m3r, a3r, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
+  it("keeps AFL depth pairs DISTINCT across different base stats (not exact)", () => {
+    // Cross-pair: a shallow/deep variant must NEVER collapse into a different
+    // base stat, even at the same player + time.
+    const c1m = [inst("m1", 630, "Marks i50 - Shallow", "Home", 5)];
+    const c1a = [inst("a1", 630, "Rebound 50s - Deep", "Home", 5)];
+    expect(
+      compareInstances(c1m, c1a, 3, "Home vs Away").rows[0].status
+    ).not.toBe("exact");
+
+    const c2m = [inst("m1", 631, "Marks i50 - Shallow", "Home", 5)];
+    const c2a = [inst("a1", 631, "Deep I50", "Home", 5)];
+    expect(
+      compareInstances(c2m, c2a, 3, "Home vs Away").rows[0].status
+    ).not.toBe("exact");
+
+    const c3m = [inst("m1", 632, "Rebound 50s - Shallow", "Home", 5)];
+    const c3a = [inst("a1", 632, "Deep I50", "Home", 5)];
+    expect(
+      compareInstances(c3m, c3a, 3, "Home vs Away").rows[0].status
+    ).not.toBe("exact");
+  });
+
+  it("does not newly collapse any football pair (short vs long still differ)", () => {
+    // Football regression guard: no football label contains i50/rebound 50s/
+    // a standalone shallow|deep, so the depth rules cannot fire. Short vs long
+    // passes must still be NON-exact.
+    const master = [inst("m1", 640, "Short Passes Successful", "Home", 7)];
+    const analyst = [inst("a1", 640, "Long Passes Successful", "Home", 7)];
+    expect(
+      compareInstances(master, analyst, 3, "Home vs Away").rows[0].status
+    ).not.toBe("exact");
+
+    // Short vs Short (success vs unsuccess) still collapses as exact, unchanged.
+    const sm = [inst("m1", 641, "Short Passes Successful", "Home", 7)];
+    const sa = [inst("a1", 641, "Short Passes Unsuccesful", "Home", 7)];
+    expect(
+      compareInstances(sm, sa, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
   it('parses "<Home> vs <Away>" filenames with HOME first', () => {
     // JSON fixtures are named "<Home> vs <Away>.json" from the report's
     // authoritative homeTeamName — home must be the first team.

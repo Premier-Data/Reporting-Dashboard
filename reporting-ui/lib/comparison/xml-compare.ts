@@ -548,17 +548,49 @@ function normStat(s: string): string {
  * granularity difference, not a different action.
  */
 function baseAction(s: string): string {
-  return (
-    normStat(s)
-      .replace(/\b(unsuccessful|unsuccesful|successful|effective|ineffective)\b/g, "")
-      // Canonicalise the singular/plural "catch"/"catches" to one base so a
-      // coder's "Catch" counts as the SAME action as another's "Catches"
-      // (either side, treated as an exact match). Scoped to this one word
-      // rather than blanket plural-stripping so unrelated stats aren't merged.
-      .replace(/\bcatches\b/g, "catch")
-      .replace(/\s+/g, " ")
-      .trim()
-  );
+  const norm = normStat(s)
+    .replace(/\b(unsuccessful|unsuccesful|successful|effective|ineffective)\b/g, "")
+    // Canonicalise the singular/plural "catch"/"catches" to one base so a
+    // coder's "Catch" counts as the SAME action as another's "Catches"
+    // (either side, treated as an exact match). Scoped to this one word
+    // rather than blanket plural-stripping so unrelated stats aren't merged.
+    .replace(/\bcatches\b/g, "catch")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // AFL (Aussie Rules) DEPTH collapse: the shallow and deep variants of an
+  // inside-50 stat are the SAME action for exact-match purposes, so a master
+  // coding the shallow variant and an analyst coding the deep variant (or
+  // vice versa) at the same player/team/time scores EXACT. Each pair collapses
+  // only within its OWN base stat; the three bases below stay mutually
+  // distinct so cross-pair comparisons remain wrong-stat / non-exact.
+  //
+  // Order matters: marks and rebound are matched FIRST, and the plain
+  // scoring inside-50 case explicitly excludes mark/marks/rebound. A bare
+  // "shallow"/"deep" on an unrelated label is never stripped.
+  const hasShallowOrDeep = norm.includes("shallow") || norm.includes("deep");
+  if (hasShallowOrDeep) {
+    // (a) "Marks i50 - Shallow" / "Marks i50 - Deep" -> "marks i50"
+    if (norm.includes("marks i50")) {
+      return "marks i50";
+    }
+    // (b) "Rebound 50s - Shallow" / "Rebound 50s - Deep" -> "rebound 50s"
+    if (norm.includes("rebound 50s")) {
+      return "rebound 50s";
+    }
+    // (c) plain Scoring inside-50 ("Shallow I50" / "Deep I50") -> sentinel
+    // "scoring i50". Guarded to exclude mark/marks (handled above) and
+    // rebound so the three bases never collide.
+    if (
+      norm.includes("i50") &&
+      !norm.includes("mark") &&
+      !norm.includes("rebound")
+    ) {
+      return "scoring i50";
+    }
+  }
+
+  return norm;
 }
 
 /**
