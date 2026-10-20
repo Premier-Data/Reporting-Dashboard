@@ -309,6 +309,12 @@ export default function AccuracyChecksPage() {
   );
   // Week filter for the comparison tables ("all" = whole season).
   const [weekFilter, setWeekFilter] = useState<string>("all");
+  // Category filter SHARED across the "All analysts" and "By location"
+  // comparison tabs ("all" = every category, NULL rows included). Separate
+  // from the History tab's savedCategoryFilter.
+  const [comparisonCategoryFilter, setComparisonCategoryFilter] = useState<
+    CheckCategory | "all"
+  >("all");
   // analyst name (lowercased) -> location, for the by-location comparison.
   const [locationByName, setLocationByName] = useState<
     Map<string, AnalystLocation>
@@ -822,10 +828,17 @@ export default function AccuracyChecksPage() {
   // Accuracy group across their checks (optionally filtered to one week).
   // Also carries the check count so the table can show sample size.
   const analystComparison = useMemo(() => {
-    const scoped =
+    const weekScoped =
       weekFilter === "all"
         ? checks
         : checks.filter((c) => fridayWeekKey(c.created_at) === weekFilter);
+    // Narrow by category after the week scope. "all" keeps everything
+    // (NULL/uncategorised included); a specific category keeps only matching
+    // rows (NULL excluded). Mirrors the Saved checks table semantics.
+    const scoped =
+      comparisonCategoryFilter === "all"
+        ? weekScoped
+        : weekScoped.filter((c) => c.category === comparisonCategoryFilter);
 
     const byAnalyst = new Map<
       string,
@@ -878,7 +891,7 @@ export default function AccuracyChecksPage() {
         return { analyst: e.analyst, location, checks: e.checks, groups };
       })
       .sort((a, b) => (b.groups.overall ?? -1) - (a.groups.overall ?? -1));
-  }, [checks, weekFilter, locationByName]);
+  }, [checks, weekFilter, comparisonCategoryFilter, locationByName]);
 
   // Sort state for the comparison table.
   const [comparisonSort, setComparisonSort] = useState<{
@@ -919,10 +932,15 @@ export default function AccuracyChecksPage() {
   // name->location map), averaging each Player Accuracy group. Names without a
   // location fall into "Unknown". Respects the week filter.
   const locationComparison = useMemo(() => {
-    const scoped =
+    const weekScoped =
       weekFilter === "all"
         ? checks
         : checks.filter((c) => fridayWeekKey(c.created_at) === weekFilter);
+    // Narrow by category after the week scope (same rule as the analysts tab).
+    const scoped =
+      comparisonCategoryFilter === "all"
+        ? weekScoped
+        : weekScoped.filter((c) => c.category === comparisonCategoryFilter);
 
     // Per-analyst accumulator, grouped under each location, so a location row
     // can expand to show every analyst that belongs to it.
@@ -1018,7 +1036,7 @@ export default function AccuracyChecksPage() {
       .sort(
         (a, b) => order.indexOf(a.location) - order.indexOf(b.location)
       );
-  }, [checks, weekFilter, locationByName]);
+  }, [checks, weekFilter, comparisonCategoryFilter, locationByName]);
 
   // Overall averages across ALL (sport-filtered) checks, for the History
   // summary cards.
@@ -1625,6 +1643,8 @@ export default function AccuracyChecksPage() {
             weeks={availableWeeks}
             weekFilter={weekFilter}
             onWeekChange={setWeekFilter}
+            categoryFilter={comparisonCategoryFilter}
+            onCategoryChange={setComparisonCategoryFilter}
             analystOptions={analystSummaries.map((s) => ({
               name: s.analystName,
               checks: s.checks,
@@ -1642,6 +1662,8 @@ export default function AccuracyChecksPage() {
             weeks={availableWeeks}
             weekFilter={weekFilter}
             onWeekChange={setWeekFilter}
+            categoryFilter={comparisonCategoryFilter}
+            onCategoryChange={setComparisonCategoryFilter}
           />
         ) : (
           <div className="space-y-6">
@@ -2939,6 +2961,8 @@ function AnalystComparisonTable({
   weeks,
   weekFilter,
   onWeekChange,
+  categoryFilter,
+  onCategoryChange,
   analystOptions,
   totalChecks,
   selectedAnalyst,
@@ -2953,6 +2977,9 @@ function AnalystComparisonTable({
   weeks: string[];
   weekFilter: string;
   onWeekChange: (w: string) => void;
+  /** Shared comparison category filter ("all" = every category). */
+  categoryFilter: CheckCategory | "all";
+  onCategoryChange: (v: CheckCategory | "all") => void;
   /** Analyst names + check counts for the picker. */
   analystOptions: { name: string; checks: number }[];
   /** Total checks across all analysts (for the "All analysts" option). */
@@ -3051,6 +3078,22 @@ function AnalystComparisonTable({
             {weeks.map((w) => (
               <option key={w} value={w}>
                 {fridayWeekLabel(w)}
+              </option>
+            ))}
+          </select>
+          <label className="text-xs font-medium text-slate-500">Category</label>
+          <select
+            value={categoryFilter}
+            onChange={(e) =>
+              onCategoryChange(e.target.value as CheckCategory | "all")
+            }
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-slate-500 focus:outline-none"
+            aria-label="Filter comparison by category"
+          >
+            <option value="all">All categories</option>
+            {CHECK_CATEGORY_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {CHECK_CATEGORY_LABELS[opt]}
               </option>
             ))}
           </select>
@@ -3222,11 +3265,16 @@ function LocationComparisonTable({
   weeks,
   weekFilter,
   onWeekChange,
+  categoryFilter,
+  onCategoryChange,
 }: {
   rows: LocationRowData[];
   weeks: string[];
   weekFilter: string;
   onWeekChange: (w: string) => void;
+  /** Shared comparison category filter ("all" = every category). */
+  categoryFilter: CheckCategory | "all";
+  onCategoryChange: (v: CheckCategory | "all") => void;
 }) {
   // Which location rows are expanded to show their analysts.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -3363,6 +3411,22 @@ function LocationComparisonTable({
             {weeks.map((w) => (
               <option key={w} value={w}>
                 {fridayWeekLabel(w)}
+              </option>
+            ))}
+          </select>
+          <label className="text-xs font-medium text-slate-500">Category</label>
+          <select
+            value={categoryFilter}
+            onChange={(e) =>
+              onCategoryChange(e.target.value as CheckCategory | "all")
+            }
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-slate-500 focus:outline-none"
+            aria-label="Filter comparison by category"
+          >
+            <option value="all">All categories</option>
+            {CHECK_CATEGORY_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {CHECK_CATEGORY_LABELS[opt]}
               </option>
             ))}
           </select>
