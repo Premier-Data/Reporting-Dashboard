@@ -116,9 +116,10 @@ export function bumpAfl(c: AflCounts, s: string): void {
   // --- Hit out to advantage before "hit out" ---
   else if (s.includes("hit out to advantage")) c.hitOutToAdvantage += 1;
   else if (s.includes("hit out")) c.hitOut += 1;
-  // --- Tackle: ineffective before effective ("ineffective" contains "effective") ---
-  else if (s.includes("ineffective tackle")) c.ineffectiveTackle += 1;
-  else if (s.includes("effective tackle")) c.effectiveTackle += 1;
+  // --- Tackle: master labels are "Tackles Ineff" / "Tackles Eff". Match
+  //     "tackles ineff" BEFORE "tackles eff" ("ineff" contains "eff"). ---
+  else if (s.includes("tackles ineff")) c.ineffectiveTackle += 1;
+  else if (s.includes("tackles eff")) c.effectiveTackle += 1;
   // --- Kick outcomes before kick ins ---
   else if (s.includes("ineffective kick")) c.ineffectiveKick += 1;
   else if (s.includes("effective kick")) c.effectiveKick += 1;
@@ -140,8 +141,13 @@ export function bumpAfl(c: AflCounts, s: string): void {
   // --- i50 / rebound (marks already peeled off above) ---
   else if (s.includes("shallow i50")) c.shallowI50 += 1;
   else if (s.includes("deep i50")) c.deepI50 += 1;
-  else if (s.includes("shallow rebound")) c.shallowRebound += 1;
-  else if (s.includes("deep rebound")) c.deepRebound += 1;
+  // Rebounds: master labels are "Rebound 50s - Shallow" / "Rebound 50s - Deep".
+  // Match the full "rebound 50s" phrase + depth so a bare shallow/deep rule
+  // (Scoring I50) can never catch them and vice versa.
+  else if (s.includes("rebound 50s") && s.includes("shallow"))
+    c.shallowRebound += 1;
+  else if (s.includes("rebound 50s") && s.includes("deep"))
+    c.deepRebound += 1;
   else if (s.includes("goal")) c.goal += 1;
   // --- Possession ---
   else if (s.includes("turnover")) c.turnover += 1;

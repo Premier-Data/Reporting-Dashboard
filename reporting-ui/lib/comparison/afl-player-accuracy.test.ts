@@ -51,8 +51,21 @@ describe("AFL player accuracy — group membership", () => {
       AFL_GROUPS.other,
     ] as const;
 
+    // A few parts carry a DISPLAY label that differs from the master stat
+    // string that classifies into them (the card label is friendlier than the
+    // raw source label). Map those to a real master label so this test feeds
+    // inputs that actually classify. All other parts: label === input.
+    const sampleInputFor: Record<string, string> = {
+      "Effective Tackle": "Tackles Eff",
+      "Ineffective Tackle": "Tackles Ineff",
+      "Shallow Rebound": "Rebound 50s - Shallow",
+      "Deep Rebound": "Rebound 50s - Deep",
+    };
+
     for (const g of groups) {
-      const rows = exactRows(g.parts.map((p) => p.label));
+      const rows = exactRows(
+        g.parts.map((p) => sampleInputFor[p.label] ?? p.label)
+      );
       const acc = computeAflPlayerAccuracy(rows);
       // Find the matching computed group by label.
       const computed = [
@@ -107,6 +120,28 @@ describe("AFL player accuracy — collision-safe routing", () => {
     expect(partMaster(acc.scoring, "Deep I50")).toBe(1);
   });
 
+  it("real tackle labels 'Tackles Eff' / 'Tackles Ineff' route to Defence", () => {
+    const acc = computeAflPlayerAccuracy([
+      row(inst("Tackles Eff")),
+      row(inst("Tackles Ineff")),
+    ]);
+    expect(partMaster(acc.defence, "Effective Tackle")).toBe(1);
+    expect(partMaster(acc.defence, "Ineffective Tackle")).toBe(1);
+  });
+
+  it("'Rebound 50s - Shallow/Deep' route to Scoring rebounds, NOT the I50 parts", () => {
+    const acc = computeAflPlayerAccuracy([
+      row(inst("Rebound 50s - Shallow")),
+      row(inst("Rebound 50s - Deep")),
+    ]);
+    expect(partMaster(acc.scoring, "Shallow Rebound")).toBe(1);
+    expect(partMaster(acc.scoring, "Deep Rebound")).toBe(1);
+    // The rebound labels contain "shallow"/"deep" but must NOT leak into the
+    // Shallow I50 / Deep I50 scoring parts.
+    expect(partMaster(acc.scoring, "Shallow I50")).toBe(0);
+    expect(partMaster(acc.scoring, "Deep I50")).toBe(0);
+  });
+
   it("ruck gather -> other, contested gather -> possession, gather -> possession", () => {
     const acc = computeAflPlayerAccuracy([
       row(inst("Ruck Gather")),
@@ -129,8 +164,8 @@ describe("AFL player accuracy — collision-safe routing", () => {
 
   it("ineffective/effective tackle, kick, handball route distinctly", () => {
     const acc = computeAflPlayerAccuracy([
-      row(inst("Ineffective Tackle")),
-      row(inst("Effective Tackle")),
+      row(inst("Tackles Ineff")),
+      row(inst("Tackles Eff")),
       row(inst("Ineffective Kick")),
       row(inst("Effective Kick")),
       row(inst("Ineffective Handball")),
