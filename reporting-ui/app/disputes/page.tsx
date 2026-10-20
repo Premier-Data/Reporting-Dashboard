@@ -140,6 +140,10 @@ export default function DisputesPage() {
     const [categoryFilter, setCategoryFilter] = useState<
         "all" | DisputeCategory | "uncategorised"
     >("all");
+    // Individual-stat filter ("all" = every stat). Matches d.stat
+    // case-insensitively; legacy disputes with a null stat are excluded when a
+    // specific stat is selected.
+    const [statFilter, setStatFilter] = useState<string>("all");
     // Sortable columns for the fixture table.
     const [sort, setSort] = useState<{ key: string; dir: "asc" | "desc" }>({
         key: "open",
@@ -260,11 +264,20 @@ export default function DisputesPage() {
             return d.category === categoryFilter;
         };
 
+        const matchesStat = (d: Dispute) => {
+            if (statFilter === "all") return true;
+            return (
+                (d.stat ?? "").trim().toLowerCase() ===
+                statFilter.trim().toLowerCase()
+            );
+        };
+
         const byCheck = new Map<number, Dispute[]>();
         for (const d of disputes) {
             if (!matchesFilter(d)) continue;
             if (!matchesSport(d.check_id)) continue;
             if (!matchesCategory(d)) continue;
+            if (!matchesStat(d)) continue;
             const arr = byCheck.get(d.check_id) ?? [];
             arr.push(d);
             byCheck.set(d.check_id, arr);
@@ -335,6 +348,7 @@ export default function DisputesPage() {
         sportFilter,
         analystFilter,
         categoryFilter,
+        statFilter,
         sort,
     ]);
 
@@ -351,6 +365,23 @@ export default function DisputesPage() {
             a.localeCompare(b, undefined, { sensitivity: "base" })
         );
     }, [disputes, checkById]);
+
+    // Distinct individual stats present across all disputes, for the Stat
+    // dropdown. Deduped case-insensitively while keeping a representative
+    // original-case label, then sorted alphabetically. Built independent of
+    // the stat filter itself.
+    const statOptions = useMemo(() => {
+        const byLower = new Map<string, string>();
+        for (const d of disputes) {
+            const stat = d.stat?.trim();
+            if (!stat) continue;
+            const key = stat.toLowerCase();
+            if (!byLower.has(key)) byLower.set(key, stat);
+        }
+        return Array.from(byLower.values()).sort((a, b) =>
+            a.localeCompare(b, undefined, { sensitivity: "base" })
+        );
+    }, [disputes]);
 
     function toggle(checkId: number) {
         setExpanded((prev) => {
@@ -530,6 +561,19 @@ export default function DisputesPage() {
                             </option>
                         ))}
                         <option value="uncategorised">Uncategorised</option>
+                    </select>
+                    <select
+                        value={statFilter}
+                        onChange={(e) => setStatFilter(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-slate-500"
+                        aria-label="Filter by stat"
+                    >
+                        <option value="all">All stats</option>
+                        {statOptions.map((stat) => (
+                            <option key={stat} value={stat}>
+                                {stat}
+                            </option>
+                        ))}
                     </select>
                     <input
                         value={search}
