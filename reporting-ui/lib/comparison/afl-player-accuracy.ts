@@ -93,8 +93,12 @@ export function initAflCounts(): AflCounts {
 export function bumpAfl(c: AflCounts, s: string): void {
   // --- Mark variants first (contain shorter phrases) ---
   if (s.includes("intercept mark")) c.interceptMark += 1; // before bare "intercept"
-  else if (s.includes("shallow i50 mark")) c.shallowI50Mark += 1; // before "shallow i50"
-  else if (s.includes("deep i50 mark")) c.deepI50Mark += 1; // before "deep i50"
+  // i50 marks: real labels are "Marks i50 - Shallow" / "Marks i50 - Deep".
+  // Match the full "marks i50" phrase + depth so they never collide with the
+  // Scoring "Shallow I50" / "Deep I50" parts (which have no "marks"/"i50 -").
+  else if (s.includes("marks i50") && s.includes("shallow"))
+    c.shallowI50Mark += 1;
+  else if (s.includes("marks i50") && s.includes("deep")) c.deepI50Mark += 1;
   else if (s.includes("uncontested mark")) c.uncontestedMark += 1; // before "contested mark"
   else if (s.includes("contested mark")) c.contestedMark += 1;
   // --- Specific bounces before bare "bounce" ---

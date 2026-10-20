@@ -60,6 +60,8 @@ describe("AFL player accuracy — group membership", () => {
       "Ineffective Tackle": "Tackles Ineff",
       "Shallow Rebound": "Rebound 50s - Shallow",
       "Deep Rebound": "Rebound 50s - Deep",
+      "Shallow i50 Mark": "Marks i50 - Shallow",
+      "Deep i50 Mark": "Marks i50 - Deep",
     };
 
     for (const g of groups) {
@@ -109,8 +111,8 @@ describe("AFL player accuracy — collision-safe routing", () => {
 
   it("i50 marks -> disposals, i50 -> scoring", () => {
     const acc = computeAflPlayerAccuracy([
-      row(inst("Shallow i50 Mark")),
-      row(inst("Deep i50 Mark")),
+      row(inst("Marks i50 - Shallow")),
+      row(inst("Marks i50 - Deep")),
       row(inst("Shallow I50")),
       row(inst("Deep I50")),
     ]);
