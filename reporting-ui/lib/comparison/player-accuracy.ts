@@ -285,25 +285,33 @@ function isPassStat(statLower: string): boolean {
   );
 }
 
+// A stat classifier maps one lowercased stat label to the SET of group-part
+// keys that label increments. Football derives aggregate keys; AFL (and any
+// future sport) can supply its own. `buildGroup` is parameterised with one so
+// the exact-match counting is shared across sports.
+export type StatClassifier = (statLower: string) => Set<string>;
+
 // Which derived football key does a single (lowercased) stat increment?
 // Runs the classifier on just this stat, then finds the first derived key
 // with a positive count. Used to map a raw stat label to a group part.
-function statDerivedKeys(statLower: string): Set<string> {
+// This is the DEFAULT classifier for buildGroup (football behavior).
+export const footballClassifier: StatClassifier = (statLower: string) => {
   const c = initFootballCounts();
   bumpFootball(c, statLower);
   const d = deriveFootball(c);
   const keys = new Set<string>();
   for (const k of Object.keys(d)) if ((d[k] ?? 0) > 0) keys.add(k);
   return keys;
-}
+};
 
-// Map a stat label to the part key within a group whose derived key it
+// Map a stat label to the part key within a group whose classifier key it
 // increments. Returns null when the stat doesn't belong to the group.
 function partKeyForStat(
   group: AccuracyGroupDef,
-  statLower: string
+  statLower: string,
+  classify: StatClassifier
 ): string | null {
-  const keys = statDerivedKeys(statLower);
+  const keys = classify(statLower);
   for (const p of group.parts) if (keys.has(p.key)) return p.key;
   return null;
 }
@@ -317,6 +325,17 @@ const LOOSE_PASS_PART_KEYS = new Set([
   "totalThroughBalls",
 ]);
 
+// Options for buildGroup. Defaults reproduce today's football behavior exactly
+// (football classifier + the looser same-player pass rule), so existing call
+// sites that pass no opts are byte-for-byte unchanged. Other sports (AFL) pass
+// their own classifier and an EMPTY loosePassPartKeys set so the pass rule can
+// never apply to them — AFL gets exact-match ONLY.
+export type BuildGroupOpts = {
+  classify?: StatClassifier;
+  loosePassPartKeys?: Set<string>;
+  isPassStat?: (statLower: string) => boolean;
+};
+
 // Build one group's EXACT-match result from the scoped comparison rows.
 // For every master instance whose stat belongs to this group, count it in the
 // matching part's `master`; if the row is an exact match, also count `exact`.
@@ -324,8 +343,13 @@ const LOOSE_PASS_PART_KEYS = new Set([
 // by the same player at the matched moment counts as exact.
 export function buildGroup(
   group: AccuracyGroupDef,
-  rows: ComparisonRow[]
+  rows: ComparisonRow[],
+  opts?: BuildGroupOpts
 ): AccuracyGroup {
+  const classify = opts?.classify ?? footballClassifier;
+  const loosePassPartKeys = opts?.loosePassPartKeys ?? LOOSE_PASS_PART_KEYS;
+  const isPass = opts?.isPassStat ?? isPassStat;
+
   const parts = group.parts.map((p) => ({
     label: p.label,
     key: p.key,
@@ -336,7 +360,7 @@ export function buildGroup(
 
   for (const r of rows) {
     if (!r.master) continue; // only master instances define the denominator
-    const partKey = partKeyForStat(group, r.master.stat.toLowerCase());
+    const partKey = partKeyForStat(group, r.master.stat.toLowerCase(), classify);
     if (!partKey) continue;
     const part = byKey.get(partKey);
     if (!part) continue;
@@ -344,7 +368,7 @@ export function buildGroup(
 
     if (r.status === "exact") {
       part.exact += 1;
-    } else if (LOOSE_PASS_PART_KEYS.has(partKey)) {
+    } else if (loosePassPartKeys.has(partKey)) {
       // Looser pass rule: the analyst matched the same player at this moment
       // with ANY pass type/outcome. The comparison pairs same-player+comparable
       // stats as a `wrong_stat` row, so both sides are present here.
@@ -355,7 +379,7 @@ export function buildGroup(
         a.playerNumber != null &&
         m.playerNumber != null &&
         a.playerNumber === m.playerNumber &&
-        isPassStat(a.stat.toLowerCase())
+        isPass(a.stat.toLowerCase())
       ) {
         part.exact += 1;
       }

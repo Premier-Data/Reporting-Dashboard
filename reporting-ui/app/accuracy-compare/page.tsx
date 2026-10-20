@@ -97,6 +97,7 @@ import {
   FOOTBALL_GROUPS,
   type AccuracyGroup,
 } from "@/lib/comparison/player-accuracy";
+import { computeAflPlayerAccuracy } from "@/lib/comparison/afl-player-accuracy";
 import { suggestCheckCategory } from "@/lib/comparison/check-category";
 import {
   computePlayerCategoryTally,
@@ -2189,6 +2190,24 @@ function AccuracyCompareInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
 
+  // Golden Player Accuracy cards (AFL): the AFL counterpart of `playerAccuracy`.
+  // Same scoped instances + IDENTICAL inScope predicate + the same
+  // compareInstances call, but grouped into Scoring / Defence / Possession /
+  // Disposals / Other (+ Overall across all five) via computeAflPlayerAccuracy.
+  // Gated on sport === "afl" so only one of the two blocks ever renders.
+  const aflPlayerAccuracy = useMemo(() => {
+    if (!canonical || sport !== "afl") return null;
+    const inScope = (i: Instance) =>
+      inRange(i) && (teamFilter === "all" || i.team === teamFilter);
+    const cmp = compareInstances(
+      canonical.master.filter(inScope),
+      canonical.analyst.filter(inScope),
+      tolerance
+    );
+    return computeAflPlayerAccuracy(cmp.rows);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonical, sport, tolerance, effectiveRange, teamFilter]);
+
   // Player category VOLUME tally (football): below the Golden cards, a pure
   // per-player, per-category reconciliation of analyst vs master COUNTS
   // (ignoring which exact stat and whether events matched). Built from the
@@ -3119,6 +3138,37 @@ function AccuracyCompareInner() {
                       { label: "Defensive %", g: playerAccuracy.defensive, highlight: false },
                       { label: "Goalkeeper %", g: playerAccuracy.goalkeeper, highlight: false },
                       { label: "Other %", g: playerAccuracy.other, highlight: false },
+                    ] as const
+                  ).map(({ label, g, highlight }) => (
+                    <PlayerAccuracyCard
+                      key={label}
+                      label={label}
+                      group={g}
+                      highlight={highlight}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Golden Player Accuracy cards (AFL) — the AFL counterpart,
+                grouped into Scoring / Defence / Possession / Disposals / Other
+                (+ Overall across all five). Only renders when sport === "afl",
+                so the football block above is byte-for-byte unaffected. */}
+            {aflPlayerAccuracy && (
+              <div className="mt-4">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Golden Player Accuracy Checks <span className="font-normal normal-case text-slate-400">(Analyst vs Master)</span>
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                  {(
+                    [
+                      { label: "Overall %", g: aflPlayerAccuracy.overall, highlight: true },
+                      { label: "Scoring %", g: aflPlayerAccuracy.scoring, highlight: false },
+                      { label: "Defence %", g: aflPlayerAccuracy.defence, highlight: false },
+                      { label: "Possession %", g: aflPlayerAccuracy.possession, highlight: false },
+                      { label: "Disposals %", g: aflPlayerAccuracy.disposals, highlight: false },
+                      { label: "Other %", g: aflPlayerAccuracy.other, highlight: false },
                     ] as const
                   ).map(({ label, g, highlight }) => (
                     <PlayerAccuracyCard

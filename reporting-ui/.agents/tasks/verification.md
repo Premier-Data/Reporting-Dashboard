@@ -104,3 +104,71 @@ the active team filter (both/home/away) or the time range
 - Temporary main-tree copies of the module + test removed.
 - Main-tree `page.tsx` restored from backup; backup file removed.
 - No scratch files left in the worktree (only the three intended changes).
+
+---
+
+# Verification — AFL Golden Player Accuracy cards
+
+Feature: AFL Golden Player Accuracy category cards (Overall + Scoring / Defence
+/ Possession / Disposals / Other) on `app/accuracy-compare/page.tsx`, backed by
+a new pure module `lib/comparison/afl-player-accuracy.ts` (+ unit test), reusing
+the shared exact-match engine via a generalized `buildGroup`.
+
+Iteration: FIRST. The `.agents/tasks/review.json` on disk is a STALE leftover
+from ANOTHER feature — its verdict is `APPROVED` with zero findings and its
+`reviewDoc` points at the `player-category-tally` worktree. No `afl-review.md`
+exists and the AFL module did not yet exist. So this was implemented from
+scratch against `plan.md`.
+
+AGENTS.md Next.js-docs rule: N/A for new API surface. `page.tsx` is already a
+client component (`"use client"`); the change is a pure `useMemo` + one JSX
+render branch reusing the existing `PlayerAccuracyCard`. No new Next.js API is
+introduced.
+
+## Files changed (worktree)
+
+```
+ M app/accuracy-compare/page.tsx
+ M lib/comparison/player-accuracy.ts        (buildGroup generalized; football default preserved)
+?? lib/comparison/afl-player-accuracy.ts
+?? lib/comparison/afl-player-accuracy.test.ts
+```
+
+## buildGroup generalization (football unchanged)
+
+`buildGroup(group, rows, opts?)` now accepts an optional `BuildGroupOpts`
+`{ classify?, loosePassPartKeys?, isPassStat? }`. Defaults reproduce football
+exactly: `classify = footballClassifier` (the former private `statDerivedKeys`,
+now exported), `loosePassPartKeys = LOOSE_PASS_PART_KEYS`, `isPassStat =
+isPassStat`. `computePlayerAccuracy` / `computePlayerAccuracyByScope` call sites
+were NOT changed (still call `buildGroup(group, rows)` with no opts), so
+football behavior is byte-for-byte unchanged. AFL passes
+`{ classify: aflClassify, loosePassPartKeys: new Set() }` so the football looser
+same-player pass rule can never apply to AFL (exact-match only).
+
+Both page memos gate on `sport` (`"football"` vs `"afl"`), so only one Golden
+block ever renders; the football memo/render/`PlayerAccuracyCard` are untouched.
+
+## Commands — run directly in the worktree, exit 0
+
+1. `npx vitest --run lib/comparison/afl-player-accuracy.test.ts`
+   - RESULT: `1 passed (1)`, `14 passed (14)`, exit 0. Covers group membership
+     (9/8/7/11/11), all named collision cases, overall spanning all five groups
+     (master = sum of groups' masters), zero-master group → pct null, and
+     exact-match counting (non-exact rows, incl. a same-player pass-like row, do
+     NOT count — AFL has no loose rule).
+2. `npx vitest --run` (full suite)
+   - RESULT: `13 passed (13)` test files, `158 passed (158)` tests, exit 0.
+     Existing football/player-accuracy/json-adapter tests stay green, proving
+     the buildGroup generalization did not regress football.
+3. `npx tsc --noEmit` — clean, exit 0.
+4. `npm run build` — succeeded, exit 0; all 37 routes generated including
+   `/accuracy-compare`. No dev server started.
+
+Unlike the player-category-tally iteration, these ran directly in the worktree
+without the junction workarounds (vitest, tsc and build all completed and exited
+0 against `.worktrees/afl-golden/reporting-ui`).
+
+## Cleanup
+
+- No scratch files created. `.env` / `.env.local` not staged.
