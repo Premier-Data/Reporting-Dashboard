@@ -417,30 +417,20 @@ function deCamel(code: string): string {
 }
 
 /**
- * Default stat mapper. NAME-PRIMARY: the canonical stat label is the trimmed
- * `statTypeName` as delivered by the feed, used as-is. This is the user's
- * directive — the comparison timeline/stat now references the feed's
- * `statTypeName` (e.g. "Header Shot", "Shot in Play", "Keeper") rather than a
- * `statTypeCode`-derived canonical label. Both master and analyst JSON come
- * from the same platform, so they carry the same name and pair on it.
- *
- * Falls back to the code-derived label (STAT_CODE_MAP, else a de-camel-cased
- * code) ONLY when `statTypeName` is missing/empty.
+ * Default stat mapper. Prefers `statTypeCode` (the reliable detail) over the
+ * coarse `statTypeName`. Falls back to a de-camel-cased code, then the name.
  */
 export function defaultMapStatName(
   statTypeName: string,
   statTypeCode?: string
 ): string {
-  const name = (statTypeName ?? "").trim();
-  if (name) return name;
-  // No name: fall back to the code-derived label so the event stays legible.
   if (statTypeCode) {
     const entry = STAT_CODE_MAP[statTypeCode.toLowerCase()];
     if (entry) return entry.stat;
     // Unknown code: keep it human-readable so it's obvious in the UI/logs.
     return deCamel(statTypeCode);
   }
-  return "";
+  return statTypeName ?? "";
 }
 
 /**
