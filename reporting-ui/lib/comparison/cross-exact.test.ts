@@ -168,6 +168,51 @@ describe("bare vs outcome crosses/through balls", () => {
     ).toBe("exact");
   });
 
+  it("scores keeper Saves <-> Shots Saved as EXACT across player AND team", () => {
+    // Same on-field save, coded from two perspectives: the SAVE is credited to
+    // the keeper (Home #1); the SHOT SAVED to the opposing shooter (Away #9).
+    // Different player AND team — but it's the same event, so EXACT.
+    const m1 = [inst("m1", 700, "Saves", "Home", 1)];
+    const a1 = [inst("a1", 700, "Shots Saved", "Away", 9)];
+    expect(
+      compareInstances(m1, a1, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    // Reverse direction (master shooter, analyst keeper) also exact.
+    const m1r = [inst("m1", 701, "Shots Saved", "Away", 9)];
+    const a1r = [inst("a1", 701, "Saves", "Home", 1)];
+    expect(
+      compareInstances(m1r, a1r, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+
+    // Singular forms pair too.
+    const m1s = [inst("m1", 702, "Save", "Home", 1)];
+    const a1s = [inst("a1", 702, "Shot Saved", "Away", 9)];
+    expect(
+      compareInstances(m1s, a1s, 3, "Home vs Away").rows[0].status
+    ).toBe("exact");
+  });
+
+  it("does NOT collapse other shot outcomes into the save family", () => {
+    // "Shots Off Target" / "Shots Blocked" are distinct from a save and must
+    // NOT score exact against "Saves".
+    const off = compareInstances(
+      [inst("m1", 710, "Saves", "Home", 1)],
+      [inst("a1", 710, "Shots Off Target", "Away", 9)],
+      3,
+      "Home vs Away"
+    );
+    expect(off.rows[0].status).not.toBe("exact");
+
+    const blk = compareInstances(
+      [inst("m1", 711, "Saves", "Home", 1)],
+      [inst("a1", 711, "Shots Blocked", "Away", 9)],
+      3,
+      "Home vs Away"
+    );
+    expect(blk.rows[0].status).not.toBe("exact");
+  });
+
   it('parses "<Home> vs <Away>" filenames with HOME first', () => {
     // JSON fixtures are named "<Home> vs <Away>.json" from the report's
     // authoritative homeTeamName — home must be the first team.
