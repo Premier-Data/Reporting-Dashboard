@@ -417,30 +417,30 @@ function deCamel(code: string): string {
 }
 
 /**
- * Default stat mapper. COMBINED label: the canonical stat is the feed's
- * `statTypeName` joined with its de-camel-cased `statTypeCode` as
- * "<name> - <code>". Per the user's directive the comparison timeline/stat
- * references BOTH fields, so an event with name "Shot in Play" and code
- * "ShotSaved" reads "Shot in Play - Shot Saved". This keeps the fine-grained
- * distinction (the code) visible alongside the coarse name, so e.g. a saved
- * shot and an off-target shot — both name "Shot in Play" — stay distinct.
+ * Default stat mapper. NAME-PRIMARY: the canonical stat label is the trimmed
+ * `statTypeName` as delivered by the feed, used as-is. This is the user's
+ * directive — the comparison timeline/stat now references the feed's
+ * `statTypeName` (e.g. "Header Shot", "Shot in Play", "Keeper") rather than a
+ * `statTypeCode`-derived canonical label. Both master and analyst JSON come
+ * from the same platform, so they carry the same name and pair on it.
  *
- * Both master and analyst JSON come from the same platform, so they carry the
- * same name+code pair and pair on the identical combined label.
- *
- * Degenerate inputs: when only one of name/code is present, use that one
- * (name as-is; code de-camel-cased). When neither is present, "".
+ * Falls back to the code-derived label (STAT_CODE_MAP, else a de-camel-cased
+ * code) ONLY when `statTypeName` is missing/empty.
  */
 export function defaultMapStatName(
   statTypeName: string,
   statTypeCode?: string
 ): string {
   const name = (statTypeName ?? "").trim();
-  const code = (statTypeCode ?? "").trim();
-  const codeLabel = code ? deCamel(code) : "";
-  if (name && codeLabel) return `${name} - ${codeLabel}`;
   if (name) return name;
-  return codeLabel;
+  // No name: fall back to the code-derived label so the event stays legible.
+  if (statTypeCode) {
+    const entry = STAT_CODE_MAP[statTypeCode.toLowerCase()];
+    if (entry) return entry.stat;
+    // Unknown code: keep it human-readable so it's obvious in the UI/logs.
+    return deCamel(statTypeCode);
+  }
+  return "";
 }
 
 /**
