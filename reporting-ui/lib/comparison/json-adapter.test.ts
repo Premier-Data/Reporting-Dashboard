@@ -61,42 +61,42 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     expect(master.length).toBeGreaterThan(1000);
   });
 
-  // RE-BASELINED per the user directive: the comparison stat now references
-  // the feed's `statTypeName`, NOT the `statTypeCode`-derived canonical label.
-  // `defaultMapStatName` is therefore NAME-PRIMARY — a non-empty trimmed
-  // statTypeName is used as-is; the code-derived label is only a fallback for
-  // when the name is missing/empty. These assertions use the real fixture
-  // code|name pairs (ShortPassEffective|Pass, ShotOffTarget|Shot in Play, …).
-  it("uses the feed statTypeName as the canonical stat (name-primary)", () => {
-    // Name present -> name wins, used verbatim (trimmed).
-    expect(defaultMapStatName("Pass", "ShortPassEffective")).toBe("Pass");
-    expect(defaultMapStatName("Pass", "ShortPassIneffective")).toBe("Pass");
-    expect(defaultMapStatName("Carry", "Carry")).toBe("Carry");
-    expect(defaultMapStatName("Header Pass", "Header")).toBe("Header Pass");
-    expect(defaultMapStatName("Throw In", "ThrowIn")).toBe("Throw In");
-    expect(defaultMapStatName("Corner", "Corner")).toBe("Corner");
-    expect(defaultMapStatName("Kick Off", "KickOff")).toBe("Kick Off");
-    expect(defaultMapStatName("Free Kick", "FreeKickPass")).toBe("Free Kick");
-    expect(defaultMapStatName("Cross", "CrossIneffective")).toBe("Cross");
-    expect(defaultMapStatName("Tackle", "TackleEffective")).toBe("Tackle");
-    expect(defaultMapStatName("Foul", "Foul")).toBe("Foul");
-    expect(defaultMapStatName("Shot in Play", "Goal")).toBe("Shot in Play");
-    expect(defaultMapStatName("  Keeper  ", "Save")).toBe("Keeper");
+  // COMBINED per the user directive: the comparison stat references BOTH feed
+  // fields as "<statTypeName> - <de-camel(statTypeCode)>". So the fine-grained
+  // code stays visible alongside the coarse name — a saved shot and an
+  // off-target shot (both name "Shot in Play") read distinctly as
+  // "Shot in Play - Shot Saved" vs "Shot in Play - Shot Off Target".
+  it("combines statTypeName and de-camel(statTypeCode) as '<name> - <code>'", () => {
+    expect(defaultMapStatName("Shot in Play", "ShotSaved")).toBe(
+      "Shot in Play - Shot Saved"
+    );
+    expect(defaultMapStatName("Shot in Play", "ShotOffTarget")).toBe(
+      "Shot in Play - Shot Off Target"
+    );
+    expect(defaultMapStatName("Shot in Play", "Goal")).toBe(
+      "Shot in Play - Goal"
+    );
+    expect(defaultMapStatName("Header Shot", "ShotOffTarget")).toBe(
+      "Header Shot - Shot Off Target"
+    );
+    expect(defaultMapStatName("Pass", "ShortPassEffective")).toBe(
+      "Pass - Short Pass Effective"
+    );
+    expect(defaultMapStatName("Keeper", "Save")).toBe("Keeper - Save");
+    // Trimmed on both sides.
+    expect(defaultMapStatName("  Keeper  ", "Save")).toBe("Keeper - Save");
   });
 
-  it("falls back to the code-derived label only when the name is empty", () => {
-    // Missing/empty name -> fall back to STAT_CODE_MAP, keeping the exact XML
-    // labels (incl. the source misspelling "Unsuccesful") so a name-less feed
-    // still pairs against the XML master.
+  it("uses whichever field is present when one is missing", () => {
+    // No code -> name as-is.
+    expect(defaultMapStatName("Shot in Play", "")).toBe("Shot in Play");
+    expect(defaultMapStatName("Shot in Play")).toBe("Shot in Play");
+    // No name -> de-camel-cased code only.
     expect(defaultMapStatName("", "ShortPassEffective")).toBe(
-      "Short Passes Successful"
+      "Short Pass Effective"
     );
-    expect(defaultMapStatName("   ", "CrossIneffective")).toBe(
-      "Crosses Unsuccesful"
-    );
-    // Unknown code with no name -> de-camel-cased code (legible fallback).
-    expect(defaultMapStatName("", "SomeNewCode")).toBe("Some New Code");
-    // No name and no code -> empty string.
+    expect(defaultMapStatName("   ", "SomeNewCode")).toBe("Some New Code");
+    // Neither present -> empty string.
     expect(defaultMapStatName("", "")).toBe("");
   });
 
@@ -187,26 +187,30 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     expect(s.accuracy).toBeLessThanOrEqual(1);
     expect(s.accuracy).toBeCloseTo(s.exact / s.masterTotal, 5);
 
-    // RE-BASELINED per the user directive (name-based stat wins). The stat
-    // label is now the feed's `statTypeName` (coarse, e.g. "Pass", "Shot in
-    // Play"), which the SportsCode master XML does NOT use — the XML carries
-    // fine-grained labels ("Short Passes Successful", "Shots Off Target"). So
-    // against an XML master the name-keyed feed pairs on FEWER stats than the
-    // old code-keyed mapping did (paired dropped from ~500+ to ~251). This is
-    // expected: name-keying is designed for JSON-vs-JSON (same platform, same
-    // names on both sides), not JSON-vs-XML. The floor below just guards
-    // against a total pairing collapse, not the old code-keyed value.
+    // RE-BASELINED per the user directive (stat = "<statTypeName> - <code>").
+    // The JSON stat label is now the COMBINED feed label, e.g.
+    // "Pass - Short Pass Effective" / "Shot in Play - Shot Saved", which the
+    // SportsCode master XML never uses — the XML carries its own labels
+    // ("Short Passes Successful", "Shots Off Target"). So against an XML master
+    // the combined-label feed pairs on even FEWER stats than the earlier
+    // name-only mapping, and NOTHING matches as `exact` (no XML label equals a
+    // "<name> - <code>" string). This is EXPECTED: the combined label is for
+    // JSON-vs-JSON (same platform, identical name+code on both sides), proven
+    // by the dedicated JSON-vs-JSON pairing test below. This legacy XML-vs-JSON
+    // fixture only guards that pairing doesn't TOTALLY collapse (same-time
+    // events still pair as wrong_stat) — it no longer asserts any exact
+    // matches, which are impossible across the two label vocabularies.
     const paired = s.exact + s.wrongStat + s.wrongPlayer + s.wrongTeam;
     expect(paired).toBeGreaterThan(100);
-    expect(s.exact).toBeGreaterThan(0);
+    expect(s.exact).toBe(0); // no XML label equals a combined "<name> - <code>"
 
-    // NOTE ON THE LOW EXACT RATE: this is a REAL result, not a bug. The master
-    // XML and the JSON feed independently code the same match and disagree
-    // substantially — different event counts, a drifting event clock, and
-    // different player attribution. On top of that, name-keying (per the user
-    // directive) intentionally loosens granularity so coarse feed names won't
-    // line up with the XML's fine-grained labels. The engine is correctly
-    // surfacing that disagreement. Do not "fix" this by loosening matching.
+    // NOTE: this is a REAL result, not a bug. The master XML and the JSON feed
+    // independently code the same match and disagree substantially — different
+    // event counts, a drifting event clock, and different player attribution.
+    // On top of that, the combined-label mapping (per the user directive) uses
+    // the feed's own vocabulary, which the XML master does not share. The
+    // engine is correctly surfacing that. Do not "fix" this by loosening
+    // matching.
 
     // Breakdowns are populated and their category totals reconcile.
     expect(result.byCategory.length).toBeGreaterThan(0);
@@ -236,11 +240,11 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Name-primary stat mapping (the user's directive: the comparison timeline/
-// stat references the feed's `statTypeName`, not the statTypeCode label).
+// Combined stat mapping (the user's directive: the comparison timeline/stat
+// references BOTH feed fields as "<statTypeName> - <de-camel(statTypeCode)>").
 // ---------------------------------------------------------------------------
-describe("JSON adapter — name-primary stat mapping", () => {
-  it("sets Instance.stat to the feed statTypeName, not the code label", () => {
+describe("JSON adapter — combined name+code stat mapping", () => {
+  it("sets Instance.stat to '<name> - <code>', keeping the code distinction", () => {
     const events: JsonEvent[] = [
       {
         uid: 1,
@@ -269,22 +273,21 @@ describe("JSON adapter — name-primary stat mapping", () => {
     ];
     const insts = jsonEventsToInstances(events, {});
     const byId = new Map(insts.map((i) => [i.id, i]));
-    // stat is the NAME, not the old code-derived label ("Shots Off Target",
-    // "Goals", "Saves").
-    expect(byId.get("1")!.stat).toBe("Header Shot");
-    expect(byId.get("2")!.stat).toBe("Shot in Play");
-    expect(byId.get("3")!.stat).toBe("Keeper");
+    expect(byId.get("1")!.stat).toBe("Header Shot - Shot Off Target");
+    expect(byId.get("2")!.stat).toBe("Shot in Play - Goal");
+    expect(byId.get("3")!.stat).toBe("Keeper - Save");
   });
 
-  it("two events with the same name pair on that name", () => {
-    // ShotOffTarget|Header Shot and Goal|Header Shot both map to "Header Shot".
+  it("same name, different code -> DISTINCT stats (code disambiguates)", () => {
+    // Both carry name "Shot in Play" but different codes, so the combined label
+    // keeps them distinct — a saved shot is NOT the same stat as a goal.
     const insts = jsonEventsToInstances(
       [
         {
           uid: 10,
           relativeTime: 50,
-          statTypeCode: "ShotOffTarget",
-          statTypeName: "Header Shot",
+          statTypeCode: "ShotSaved",
+          statTypeName: "Shot in Play",
           teamName: "Home",
           playerNumber: 9,
         },
@@ -292,17 +295,20 @@ describe("JSON adapter — name-primary stat mapping", () => {
           uid: 11,
           relativeTime: 60,
           statTypeCode: "Goal",
-          statTypeName: "Header Shot",
+          statTypeName: "Shot in Play",
           teamName: "Home",
           playerNumber: 9,
         },
       ],
       {}
     );
-    expect(insts.map((i) => i.stat)).toEqual(["Header Shot", "Header Shot"]);
+    expect(insts.map((i) => i.stat)).toEqual([
+      "Shot in Play - Shot Saved",
+      "Shot in Play - Goal",
+    ]);
   });
 
-  it("falls back to the code-derived label when statTypeName is empty", () => {
+  it("falls back to the de-camel-cased code when statTypeName is empty", () => {
     const [inst] = jsonEventsToInstances(
       [
         {
@@ -316,17 +322,17 @@ describe("JSON adapter — name-primary stat mapping", () => {
       ],
       {}
     );
-    expect(inst.stat).toBe("Short Passes Successful");
+    expect(inst.stat).toBe("Short Pass Effective");
   });
 
-  it("still resolves the category for name-based stats", () => {
+  it("still resolves the category for combined-label stats", () => {
     // Category uses the code via STAT_CODE_MAP when present (real feeds carry
-    // both), so name-keying the stat does not disturb grouping.
-    expect(defaultMapCategory("ShotOffTarget", "Header Shot")).toBe("Shots");
-    expect(defaultMapCategory("Goal", "Shot in Play")).toBe("Shots");
-    expect(defaultMapCategory("Save", "Keeper")).toBe("Goal Keeper");
-    expect(defaultMapCategory("Header", "Header Pass")).toBe("General Play");
-    expect(defaultMapCategory("ShortPassEffective", "Pass")).toBe("Passing");
+    // both), so the combined stat label does not disturb grouping.
+    expect(defaultMapCategory("ShotOffTarget", "Header Shot - Shot Off Target")).toBe("Shots");
+    expect(defaultMapCategory("Goal", "Shot in Play - Goal")).toBe("Shots");
+    expect(defaultMapCategory("Save", "Keeper - Save")).toBe("Goal Keeper");
+    expect(defaultMapCategory("Header", "Header Pass - Header")).toBe("General Play");
+    expect(defaultMapCategory("ShortPassEffective", "Pass - Short Pass Effective")).toBe("Passing");
 
     // Name-only fallback (no code) classifies by keyword in the label itself.
     expect(defaultMapCategory(undefined, "Header Shot")).toBe("Shots");
@@ -363,27 +369,34 @@ describe("JSON adapter — name-primary stat mapping", () => {
       ],
       {}
     );
-    // Only the real action (Carry) survives.
-    expect(insts.map((i) => i.stat)).toEqual(["Carry"]);
+    // Only the real action (Carry) survives; its combined label is "Carry - Carry".
+    expect(insts.map((i) => i.stat)).toEqual(["Carry - Carry"]);
   });
 
-  it("pairs two name-matched JSON feeds as EXACT (JSON-vs-JSON, same platform)", () => {
+  it("pairs two name+code-matched JSON feeds as EXACT (JSON-vs-JSON, same platform)", () => {
     // Master and analyst are two JSON feeds from the same platform: identical
-    // names at the same player/team/time. Name-keying makes them pair EXACTly.
-    const mk = (uid: number, name: string, t: number): JsonEvent => ({
+    // name+code at the same player/team/time. The combined label makes them
+    // pair EXACTly.
+    const mk = (uid: number, name: string, code: string, t: number): JsonEvent => ({
       uid,
       relativeTime: t,
-      statTypeCode: "ShotOffTarget",
+      statTypeCode: code,
       statTypeName: name,
       teamName: "Chester FC",
       playerNumber: 9,
     });
     const master = jsonEventsToInstances(
-      [mk(1, "Header Shot", 100), mk(2, "Shot in Play", 200)],
+      [
+        mk(1, "Shot in Play", "ShotSaved", 100),
+        mk(2, "Shot in Play", "Goal", 200),
+      ],
       {}
     );
     const analyst = jsonEventsToInstances(
-      [mk(101, "Header Shot", 100), mk(102, "Shot in Play", 200)],
+      [
+        mk(101, "Shot in Play", "ShotSaved", 100),
+        mk(102, "Shot in Play", "Goal", 200),
+      ],
       {}
     );
     const result = compareInstances(master, analyst, 3, "feed.json");
@@ -392,10 +405,11 @@ describe("JSON adapter — name-primary stat mapping", () => {
     expect(result.summary.accuracy).toBe(1);
   });
 
-  it("round-trips a name-based (non-canonical) stat through the native export", () => {
-    // A name-based label that is NOT a CANONICAL_TO_NATIVE key exports with an
-    // empty statTypeCode and the label as statTypeName; name-primary import
-    // then reads it straight back.
+  it("round-trips a combined-label stat through the native export", () => {
+    // The combined label "Header Shot - Shot Off Target" is not a
+    // CANONICAL_TO_NATIVE key, so it exports with an empty statTypeCode and the
+    // whole combined label as statTypeName; on re-import the name is non-empty
+    // (and there is no code to append), so it reads straight back unchanged.
     const original = jsonEventsToInstances(
       [
         {
@@ -409,43 +423,13 @@ describe("JSON adapter — name-primary stat mapping", () => {
       ],
       {}
     );
-    expect(original[0].stat).toBe("Header Shot");
+    expect(original[0].stat).toBe("Header Shot - Shot Off Target");
 
     const json = serializeInstancesToJson(original);
     const reimported = jsonEventsToInstances(
       (JSON.parse(json) as { allStatistics: JsonEvent[] }).allStatistics,
       {}
     );
-    // "Header Shot" is not a canonical key, so it exported as code "" + name
-    // "Header Shot" and re-imports to the same name.
-    expect(reimported[0].stat).toBe("Header Shot");
-
-    // A CANONICAL label still round-trips, but note the EXPECTED SHIFT under
-    // name-primary: the export emits the native coarse name ("Carry" for
-    // canonical "Carries"), and re-import now returns that NAME, not the
-    // code-derived canonical label. This is the intended consequence of the
-    // directive (name wins on import).
-    const canonical = jsonEventsToInstances(
-      [
-        {
-          uid: 41,
-          relativeTime: 310,
-          statTypeCode: "Carry",
-          statTypeName: "",
-          teamName: "Chester FC",
-          playerNumber: 7,
-        },
-      ],
-      {}
-    );
-    // Name empty -> fell back to the canonical label "Carries".
-    expect(canonical[0].stat).toBe("Carries");
-    const json2 = serializeInstancesToJson(canonical);
-    const reimported2 = jsonEventsToInstances(
-      (JSON.parse(json2) as { allStatistics: JsonEvent[] }).allStatistics,
-      {}
-    );
-    // Export wrote native name "Carry"; name-primary import returns "Carry".
-    expect(reimported2[0].stat).toBe("Carry");
+    expect(reimported[0].stat).toBe("Header Shot - Shot Off Target");
   });
 });
