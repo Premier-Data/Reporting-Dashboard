@@ -417,29 +417,30 @@ function deCamel(code: string): string {
 }
 
 /**
- * Default stat mapper. NAME-ONLY: the canonical stat is the feed's trimmed
- * `statTypeName`, used as-is. Per the user's directive the comparison
- * timeline/stat matches on the stat type NAME — two events with the same
- * `statTypeName` (same player/team/time) are an exact match.
+ * Default stat mapper. COMBINED label: the canonical stat is the feed's
+ * `statTypeName` joined with its de-camel-cased `statTypeCode` as
+ * "<name> - <code>". Per the user's directive the comparison timeline/stat
+ * references BOTH fields, so an event with name "Shot in Play" and code
+ * "ShotSaved" reads "Shot in Play - Shot Saved". This keeps the fine-grained
+ * distinction (the code) visible alongside the coarse name, so e.g. a saved
+ * shot and an off-target shot — both name "Shot in Play" — stay distinct.
  *
- * The `statTypeCode` is deliberately IGNORED for matching: on this platform it
- * is a coarse bucket (e.g. code "Save" covers names "Claimed", "Keeper Throw
- * Successful", "Goal Kick Successful", "Save"; code "ShotOffTarget" covers
- * names "Shot Off Target" and "Shot Blocked"), so the NAME carries the real,
- * specific action. Both master and analyst JSON come from the same platform,
- * so they carry the same name and pair on it.
+ * Both master and analyst JSON come from the same platform, so they carry the
+ * same name+code pair and pair on the identical combined label.
  *
- * Falls back to a de-camel-cased `statTypeCode` ONLY when `statTypeName` is
- * missing/empty, so a name-less event stays legible. "" when neither present.
+ * Degenerate inputs: when only one of name/code is present, use that one
+ * (name as-is; code de-camel-cased). When neither is present, "".
  */
 export function defaultMapStatName(
   statTypeName: string,
   statTypeCode?: string
 ): string {
   const name = (statTypeName ?? "").trim();
-  if (name) return name;
   const code = (statTypeCode ?? "").trim();
-  return code ? deCamel(code) : "";
+  const codeLabel = code ? deCamel(code) : "";
+  if (name && codeLabel) return `${name} - ${codeLabel}`;
+  if (name) return name;
+  return codeLabel;
 }
 
 /**
