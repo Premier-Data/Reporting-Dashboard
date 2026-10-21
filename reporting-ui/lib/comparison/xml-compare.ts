@@ -558,16 +558,6 @@ function baseAction(s: string): string {
     .replace(/\s+/g, " ")
     .trim();
 
-  // Keeper SAVE family: the goalkeeper's "Save"/"Saves" and the shooter's
-  // "Shot Saved"/"Shots Saved" are two codings of the SAME on-field event (a
-  // save). Collapse both to one base so they score as an exact match. (The
-  // player/team-agnostic pairing for this family lives in fieldsOk — a save is
-  // credited to the keeper while a shot-saved is the opposing shooter.) Must
-  // run before returning; guarded to the exact save labels so it never catches
-  // "shots off target" / "shots blocked".
-  if (norm === "saves" || norm === "save") return "save";
-  if (norm === "shots saved" || norm === "shot saved") return "save";
-
   // AFL (Aussie Rules) DEPTH collapse: the shallow and deep variants of an
   // inside-50 stat are the SAME action for exact-match purposes, so a master
   // coding the shallow variant and an analyst coding the deep variant (or
@@ -639,18 +629,6 @@ const EVENT_STAT_KEYWORDS = [
 function isEventStat(stat: string): boolean {
   const s = normStat(stat);
   return EVENT_STAT_KEYWORDS.some((k) => s.includes(k));
-}
-
-/**
- * The keeper SAVE family: the goalkeeper's "Save"/"Saves" and the shooter's
- * "Shot Saved"/"Shots Saved". These are the same on-field event coded from two
- * perspectives (different player/team), so when their base actions match they
- * pair player/team-agnostically (see fieldsOk) and score EXACT. Guarded to the
- * exact labels so it never catches "shots off target" / "shots blocked".
- */
-function isSaveFamily(stat: string): boolean {
-  const s = normStat(stat);
-  return s === "saves" || s === "save" || s === "shots saved" || s === "shot saved";
 }
 
 /**
@@ -1155,14 +1133,7 @@ export function compareInstances(
     const statOk = sameBaseAction(m.stat, a.stat);
     // Game-flow events aren't tied to a player/team. When the stat matches and
     // it's an event, team/player don't apply, so treat them as agreeing.
-    //
-    // The keeper SAVE family (Saves ↔ Shots Saved) is the SAME event coded
-    // from two perspectives: the save is credited to the GOALKEEPER, the
-    // shot-saved to the OPPOSING shooter — different player AND team. So, like
-    // an event, when the base stat matches (both collapse to "save" in
-    // baseAction) we treat team/player as agreeing, scoring it EXACT rather
-    // than wrong_team/wrong_player.
-    if (statOk && (isEventStat(m.stat) || isSaveFamily(m.stat) || isSaveFamily(a.stat))) {
+    if (statOk && isEventStat(m.stat)) {
       return { teamOk: true, playerOk: true, statOk: true, event: true };
     }
     const teamOk = normTeam(m.team) === normTeam(a.team);
