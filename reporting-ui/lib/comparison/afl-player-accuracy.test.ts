@@ -266,7 +266,46 @@ describe("AFL player accuracy — exact-match counting", () => {
     ]);
     expect(acc.scoring.master).toBe(3);
     expect(acc.scoring.exact).toBe(1); // only the "exact" Goal row
+    // No extras here, so denominator is still master -> 1/3, UNCHANGED from
+    // before the extras change (existing fixtures code no analyst-only extras).
+    expect(acc.scoring.extra).toBe(0);
     expect(acc.scoring.pct).toBeCloseTo(1 / 3, 10);
+  });
+});
+
+describe("AFL player accuracy — extras lower the score", () => {
+  it("N exact masters + M analyst-only extras in the same group -> N/(N+M)", () => {
+    // 2 exact master "Goal" events + 3 analyst-only "Goal" over-codes (status
+    // "extra", no master). aflClassify routes both master and analyst "Goal"
+    // into the scoring group, so pct = 2 / (2 + 3) = 0.4.
+    const rows = [
+      row(inst("Goal"), inst("Goal"), "exact"),
+      row(inst("Goal"), inst("Goal"), "exact"),
+      row(null, inst("Goal"), "extra"),
+      row(null, inst("Goal"), "extra"),
+      row(null, inst("Goal"), "extra"),
+    ];
+    const acc = computeAflPlayerAccuracy(rows);
+    expect(acc.scoring.master).toBe(2);
+    expect(acc.scoring.exact).toBe(2);
+    expect(acc.scoring.extra).toBe(3);
+    expect(acc.scoring.pct).toBeCloseTo(2 / 5, 10);
+  });
+
+  it("an extra classifying into a DIFFERENT group leaves this group's extra at 0", () => {
+    const rows = [
+      row(inst("Goal"), inst("Goal"), "exact"), // scoring
+      row(null, inst("Spoil"), "extra"), // defence over-code
+    ];
+    const acc = computeAflPlayerAccuracy(rows);
+    // Scoring unaffected by the defence extra.
+    expect(acc.scoring.master).toBe(1);
+    expect(acc.scoring.extra).toBe(0);
+    expect(acc.scoring.pct).toBe(1);
+    // The over-code lands in defence (master 0, extra 1 -> pct 0, not null).
+    expect(acc.defence.master).toBe(0);
+    expect(acc.defence.extra).toBe(1);
+    expect(acc.defence.pct).toBe(0);
   });
 });
 

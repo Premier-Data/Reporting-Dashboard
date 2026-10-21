@@ -834,9 +834,12 @@ function PlayerAccuracyCard({
   highlight?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  // A group with no master events has no data — show "—", not a %/colour.
-  // Guard on master (not just pct) so a 0/0 group is never treated as 100%.
-  const hasData = group.master > 0 && group.pct != null;
+  // A group with no master events AND no analyst over-codes has no data — show
+  // "—", not a %/colour. A group with master 0 but extras > 0 DOES have data
+  // (pct 0), so allow it. Guard on both (not just pct) so a 0/0 group is never
+  // treated as 100%. Legacy rows lack `extra`, so `?? 0` keeps old behavior.
+  const extra = group.extra ?? 0;
+  const hasData = (group.master > 0 || extra > 0) && group.pct != null;
   const accent =
     !hasData
       ? "text-slate-400"
@@ -875,7 +878,7 @@ function PlayerAccuracyCard({
       </p>
       <p className="text-xs text-slate-500">
         {hasData
-          ? `${group.exact}/${group.master} exact`
+          ? `${group.exact}/${group.master + extra} exact`
           : "No data to compare"}
       </p>
 
@@ -890,12 +893,17 @@ function PlayerAccuracyCard({
                 <th className="pb-1 text-left font-medium">Stat</th>
                 <th className="pb-1 text-right font-medium">Exact</th>
                 <th className="pb-1 text-right font-medium">Master</th>
+                <th className="pb-1 text-right font-medium">Extra</th>
                 <th className="pb-1 text-right font-medium">Acc</th>
               </tr>
             </thead>
             <tbody>
               {group.parts.map((p) => {
-                const acc = p.master === 0 ? 1 : p.exact / p.master;
+                // Denominator is master + analyst over-codes, so over-coding
+                // lowers the per-stat accuracy. Legacy parts lack `extra`.
+                const pExtra = p.extra ?? 0;
+                const denom = p.master + pExtra;
+                const acc = denom === 0 ? 1 : p.exact / denom;
                 return (
                   <tr key={p.label}>
                     <td className="py-0.5 text-left">{p.label}</td>
@@ -903,9 +911,10 @@ function PlayerAccuracyCard({
                     <td className="py-0.5 text-right tabular-nums">
                       {p.master}
                     </td>
+                    <td className="py-0.5 text-right tabular-nums">{pExtra}</td>
                     <td
                       className={`py-0.5 text-right tabular-nums ${
-                        p.master === 0
+                        denom === 0
                           ? "text-slate-400"
                           : acc >= 0.9
                             ? "text-emerald-600"
@@ -916,7 +925,7 @@ function PlayerAccuracyCard({
                                 : "text-red-600"
                       }`}
                     >
-                      {p.master === 0 ? "—" : `${(acc * 100).toFixed(0)}%`}
+                      {denom === 0 ? "—" : `${(acc * 100).toFixed(0)}%`}
                     </td>
                   </tr>
                 );
@@ -925,6 +934,7 @@ function PlayerAccuracyCard({
                 <td className="pt-1 text-left">Total</td>
                 <td className="pt-1 text-right tabular-nums">{group.exact}</td>
                 <td className="pt-1 text-right tabular-nums">{group.master}</td>
+                <td className="pt-1 text-right tabular-nums">{extra}</td>
                 <td className="pt-1 text-right tabular-nums">
                   {hasData ? `${(group.pct! * 100).toFixed(0)}%` : "—"}
                 </td>
@@ -934,11 +944,14 @@ function PlayerAccuracyCard({
           <div className="mt-2 border-t border-slate-100 pt-2 text-[11px] leading-relaxed text-slate-500">
             <p className="text-slate-500">
               Exact = master events the analyst matched exactly (team, player,
-              stat and timing all agree).
+              stat and timing all agree). Extra = analyst-only events with no
+              master match — they lower the score.
             </p>
-            <p className="mt-1 font-mono text-slate-600">exact / master</p>
+            <p className="mt-1 font-mono text-slate-600">
+              exact / (master + extras)
+            </p>
             <p className="mt-1">
-              = {group.exact} / {group.master} ={" "}
+              = {group.exact} / ({group.master} + {extra}) ={" "}
               <span className="font-semibold text-slate-700">
                 {hasData ? `${(group.pct! * 100).toFixed(1)}%` : "—"}
               </span>

@@ -294,12 +294,15 @@ function matchTeamsLabel(check: AccuracyCheckMeta): string {
 }
 
 // A group's % for display/averaging, or null when it has no data to compare.
-// Guards on `master` (not just `pct`) so stale stored snapshots — written
-// before the 0/0 fix, with pct=1 for empty sections — are treated as no-data
-// instead of a bogus 100%. This is the single place that decision is made, so
-// live data is correct even before an admin runs "Recompute all".
+// Guards on `master` AND `extra` (not just `pct`) so stale stored snapshots —
+// written before the 0/0 fix, with pct=1 for empty sections — are treated as
+// no-data instead of a bogus 100%. A group with master 0 but analyst-only
+// over-codes (extra > 0) DOES have data: its pct is 0, not null, so it must
+// NOT be gated out. Legacy rows lack `extra`, so `?? 0` keeps their old
+// behavior. This is the single place that decision is made, so live data is
+// correct even before an admin runs "Recompute all".
 function groupPct(group: AccuracyGroup | null | undefined): number | null {
-  if (!group || group.master === 0) return null;
+  if (!group || (group.master === 0 && (group.extra ?? 0) === 0)) return null;
   return group.pct;
 }
 
@@ -867,6 +870,9 @@ export default function AccuracyChecksPage() {
       group: string;
       master: number;
       exact: number;
+      // Analyst over-codes for this stat; added to the denominator so
+      // over-coding lowers the per-stat accuracy (mirrors the group pct).
+      extra: number;
       // Worst single check for this stat (lowest %, needs enough volume).
       worst: {
         checkId: number;
@@ -895,7 +901,9 @@ export default function AccuracyChecksPage() {
         const grp = both[col.key];
         if (!grp) continue;
         for (const part of grp.parts) {
-          if (part.master <= 0) continue;
+          const partExtra = part.extra ?? 0; // legacy rows lack `extra`
+          const partDenom = part.master + partExtra;
+          if (partDenom <= 0) continue; // no master AND no over-codes -> skip
           let e = byStat.get(part.label);
           if (!e) {
             e = {
@@ -903,17 +911,20 @@ export default function AccuracyChecksPage() {
               group: col.label,
               master: 0,
               exact: 0,
+              extra: 0,
               worst: null,
             };
             byStat.set(part.label, e);
           }
           e.master += part.master;
           e.exact += part.exact;
+          e.extra += partExtra;
           // Track the worst check for this stat — needs a little volume
-          // (>=3 master events) so a single 0/1 doesn't dominate.
-          const checkPct = part.exact / part.master;
+          // (>=3 events in the denominator) so a single 0/1 doesn't dominate.
+          // Denominator is master + over-codes so over-coding lowers the %.
+          const checkPct = part.exact / partDenom;
           if (
-            part.master >= 3 &&
+            partDenom >= 3 &&
             (e.worst == null || checkPct < e.worst.pct)
           ) {
             e.worst = {
@@ -930,7 +941,8 @@ export default function AccuracyChecksPage() {
     }
 
     const stats = Array.from(byStat.values())
-      .map((e) => ({ ...e, pct: e.exact / e.master }))
+      // Over-codes inflate the denominator so an over-coded stat scores lower.
+      .map((e) => ({ ...e, pct: e.exact / (e.master + e.extra) }))
       .filter((s) => s.pct < PROBLEM_THRESHOLD)
       .sort((a, b) => a.pct - b.pct)
       .slice(0, 5);

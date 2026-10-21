@@ -239,21 +239,33 @@ export const FOOTBALL_GROUPS = {
 //   master = master instances of this stat in scope
 //   exact  = of those, how many the analyst matched exactly (team + player +
 //            stat + timing all agree)
+//   extra  = analyst-only over-codes classified into this part (analyst events
+//            with NO master match whose stat maps to this part). These inflate
+//            the denominator so over-coding lowers the score.
 export type AccuracyPart = {
   label: string;
   master: number;
   exact: number;
+  extra: number;
 };
 
-// A computed group result. `pct` is exact / master (event-level accuracy) —
-// the true indicator of player accuracy, matching the stats breakdown table.
+// A computed group result. `pct` is exact / (master + extra) (event-level
+// accuracy) — the true indicator of player accuracy, penalising analyst
+// over-coding, matching the stats breakdown table.
 export type AccuracyGroup = {
   master: number;
   exact: number;
   /**
-   * exact / master, or NULL when master is 0 (no events to compare). A 0/0
-   * group is NOT 100% — it has no data, so it must be excluded from display
-   * and from any averages rather than counted as perfect.
+   * Analyst-only over-codes (status "extra", no master match) whose stat
+   * classifies into one of this group's parts. Added to the denominator.
+   */
+  extra: number;
+  /**
+   * exact / (master + extra), or NULL when master AND extra are both 0 (no
+   * events to compare). A 0/0 group is NOT 100% — it has no data, so it must
+   * be excluded from display and from any averages rather than counted as
+   * perfect. master 0 with extra > 0 yields 0 (NOT null) — intended: the
+   * analyst coded events the master didn't.
    */
   pct: number | null;
   parts: AccuracyPart[];
@@ -355,54 +367,88 @@ export function buildGroup(
     key: p.key,
     master: 0,
     exact: 0,
+    extra: 0,
   }));
   const byKey = new Map(parts.map((p) => [p.key, p]));
 
   for (const r of rows) {
-    if (!r.master) continue; // only master instances define the denominator
-    const partKey = partKeyForStat(group, r.master.stat.toLowerCase(), classify);
-    if (!partKey) continue;
-    const part = byKey.get(partKey);
-    if (!part) continue;
-    part.master += 1;
+    if (r.master) {
+      // MASTER branch — master instances define the base denominator.
+      // UNCHANGED from the original exact-match logic.
+      const partKey = partKeyForStat(
+        group,
+        r.master.stat.toLowerCase(),
+        classify
+      );
+      if (!partKey) continue;
+      const part = byKey.get(partKey);
+      if (!part) continue;
+      part.master += 1;
 
-    if (r.status === "exact") {
-      part.exact += 1;
-    } else if (loosePassPartKeys.has(partKey)) {
-      // Looser pass rule: the analyst matched the same player at this moment
-      // with ANY pass type/outcome. The comparison pairs same-player+comparable
-      // stats as a `wrong_stat` row, so both sides are present here.
-      const m = r.master;
-      const a = r.analyst;
-      if (
-        a &&
-        a.playerNumber != null &&
-        m.playerNumber != null &&
-        a.playerNumber === m.playerNumber &&
-        isPass(a.stat.toLowerCase())
-      ) {
+      if (r.status === "exact") {
         part.exact += 1;
+      } else if (loosePassPartKeys.has(partKey)) {
+        // Looser pass rule: the analyst matched the same player at this moment
+        // with ANY pass type/outcome. The comparison pairs same-player+
+        // comparable stats as a `wrong_stat` row, so both sides are present.
+        const m = r.master;
+        const a = r.analyst;
+        if (
+          a &&
+          a.playerNumber != null &&
+          m.playerNumber != null &&
+          a.playerNumber === m.playerNumber &&
+          isPass(a.stat.toLowerCase())
+        ) {
+          part.exact += 1;
+        }
       }
+    } else if (r.status === "extra" && r.analyst) {
+      // EXTRA branch — an analyst-only over-code (no master match). Classify
+      // the ANALYST stat; if it maps to a part in THIS group, count it as an
+      // extra so it inflates the denominator. Guard strictly on status
+      // "extra" so a paired wrong_stat/wrong_player row (which HAS a master
+      // and is already counted above) is NEVER double-counted here.
+      const partKey = partKeyForStat(
+        group,
+        r.analyst.stat.toLowerCase(),
+        classify
+      );
+      if (!partKey) continue;
+      const part = byKey.get(partKey);
+      if (!part) continue;
+      part.extra += 1;
     }
   }
 
   const master = parts.reduce((s, p) => s + p.master, 0);
   const exact = parts.reduce((s, p) => s + p.exact, 0);
-  // No master events → no data to compare, so pct is null (excluded), NOT 100%.
-  const pct = master === 0 ? null : exact / master;
+  const extra = parts.reduce((s, p) => s + p.extra, 0);
+  // Denominator is master + analyst over-codes. No master AND no extras → no
+  // data to compare, so pct is null (excluded). master 0 with extras > 0 →
+  // pct 0 (NOT null): the analyst coded events the master never had.
+  const denom = master + extra;
+  const pct = denom === 0 ? null : exact / denom;
   return {
     master,
     exact,
+    extra,
     pct,
-    parts: parts.map(({ label, master, exact }) => ({ label, master, exact })),
+    parts: parts.map(({ label, master, exact, extra }) => ({
+      label,
+      master,
+      exact,
+      extra,
+    })),
   };
 }
 
 /**
  * Compute the football Player Accuracy groups (EXACT-match / event-level) from
- * scoped comparison rows. Each group's % is exact / master — the same measure
- * as the per-stat breakdown table, grouped into Passing / Offensive /
- * Defensive / Goalkeeper (+ Overall across all of them).
+ * scoped comparison rows. Each group's % is exact / (master + extra) — the
+ * same measure as the per-stat breakdown table, grouped into Passing /
+ * Offensive / Defensive / Goalkeeper (+ Overall across all of them). Analyst
+ * over-coding (extras) lowers the score.
  *
  * Pass the already-scoped ComparisonRow[] (the caller applies any time-range /
  * team filtering before comparing).

@@ -9,7 +9,9 @@ import type { AccuracyGroup, PlayerAccuracy } from "./player-accuracy";
 // Minimal AccuracyGroup — the helper only reads `.master`, so the rest is
 // filled with inert placeholders to satisfy the type.
 function group(master: number): AccuracyGroup {
-  return { master, exact: 0, pct: master === 0 ? null : 0, parts: [] };
+  // `extra` added for the over-coding denominator change; 0 here keeps the
+  // existing behavior (this helper only exercises `.master`).
+  return { master, exact: 0, extra: 0, pct: master === 0 ? null : 0, parts: [] };
 }
 
 // Build a PlayerAccuracy whose five scored groups have the given master

@@ -1,156 +1,85 @@
-# Implementation Plan — Player Category Volume (analyst vs master)
+# Implementation Plan — Golden Player Accuracy counts analyst over-coding (extras)
 
-Scope: build the per-player, per-category VOLUME tally section below the Golden
-Player Accuracy cards on the Accuracy Comparison page. Only three files are
-touched: the new pure module `lib/comparison/player-category-tally.ts`, its
-test `lib/comparison/player-category-tally.test.ts`, and
-`app/accuracy-compare/page.tsx`. No change to `player-accuracy.ts` exported
-behaviour, the Golden computation, the comparison engine (`xml-compare.ts`), the
-DB, or any unrelated file. Follows the approved design at
-`.agents/tasks/design.md`.
+Goal: change the Golden Player Accuracy metric GLOBALLY (football AND AFL; cards, history, and stored shape) from `pct = exact / master` to `pct = exact / (master + extras)`, where `extras` are genuine analyst-only events (status "extra") that classify into the group. This flows from the single source of truth `buildGroup` so both sports inherit it. Do NOT recompute stored checks in this workflow (the orchestrator runs "Recompute all" after merge).
 
-All paths below are relative to the worktree root
-`c:\Users\AndyDin\reporting-dashboard\.worktrees\player-category-tally\reporting-ui`.
+All paths are absolute under `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui`.
 
-Environment confirmed during exploration:
-- Test runner: Vitest (`package.json` → `"test": "vitest --run"`, `vitest@^3.2.7`,
-  `vitest.config.ts` with `environment: "jsdom"`, `include: ["**/*.test.ts","**/*.test.tsx"]`).
-- Build: `npm run build` (Next.js `next build`). Lint: `npm run lint` (ESLint 9).
-- Style reference for tests: `lib/round-summary/roundSummary.test.ts`
-  (`import { describe, it, expect } from "vitest"`).
-- `Instance` type (from `lib/comparison/xml-compare.ts`) fields for fixtures:
-  `id, start, end, mid, team, playerNumber, playerRaw, stat, category, code`.
-- `player-accuracy.ts` exports confirmed present and importable:
-  `initFootballCounts`, `bumpFootball`, `deriveFootball`, `FOOTBALL_GROUPS`,
-  and the `FootballCounts` type. `FOOTBALL_GROUPS` keys are
-  `passing | offensive | defensive | goalkeeper | other`, each with
-  `{ label, parts: [{ key, label }] }`.
-- Golden `playerAccuracy` useMemo lives at `page.tsx` ~line 2067; its scope is
-  `inRange(i) && (teamFilter === "all" || i.team === teamFilter)` over
-  `canonical.master`/`canonical.analyst`, deps
-  `[canonical, sport, tolerance, effectiveRange, teamFilter]` with an
-  `eslint-disable react-hooks/exhaustive-deps`.
-- `playerTable` useMemo (~line 2149): key/display is `` `${team} - #${number ?? "?"}` ``,
-  sort is `analystOnly`-last → `a.team !== b.team` localeCompare → `(number ?? 999)`,
-  `analystOnly = inAnalyst && !inMaster`, filtered by `sportConfig.relevant`.
-- `relevant()` (football, `page.tsx` ~line 633) sums a DIFFERENT key set than the
-  five displayed categories — the new drop rule is NOT this filter and is not
-  imported from it.
-- Golden cards JSX block `{playerAccuracy && ( … )}` opens ~line 2921 and closes
-  `)}` ~line 2946, immediately before the "Category breakdown + per-stat
-  breakdown" grid (`<div className="mt-4 grid items-stretch gap-4 lg:grid-cols-2">`).
-- Player stats table render (~line 3131+): outer wrapper, `max-h-[520px]
-  overflow-auto`, sticky header `bg-slate-50 text-xs font-semibold uppercase
-  tracking-wider text-slate-500`, row `group border-b border-slate-100
-  last:border-b-0 hover:bg-slate-50/60` (+ `bg-red-50/60` when analystOnly),
-  sticky player `<td>` `sticky left-0 z-10 whitespace-nowrap px-4 py-2
-  font-medium text-slate-800` (+ `bg-red-50`/`bg-white`, `group-hover:bg-slate-50`),
-  `analyst only` badge `ml-2 rounded bg-red-100 px-1.5 py-0.5 text-[10px]
-  font-semibold text-red-700`, and `tfoot` `sticky bottom-0 z-10` with totals row
-  `border-t-2 border-slate-300 bg-slate-100 font-bold text-slate-900` and a sticky
-  label `<td>` `sticky left-0 z-20 whitespace-nowrap bg-slate-100 px-4 py-2.5 text-left`.
+## Context discovered during exploration
+
+- Build/test runner: vitest. Commands (run in `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui`):
+  - Tests: `npm test` (alias for `vitest --run`), or target a file: `npx vitest --run lib/comparison/player-accuracy.test.ts`.
+  - Lint: `npm run lint`.
+  - Build: `npm run build` (Next.js v16 Turbopack). The two edited files are already-wired client pages, so lint + vitest are the primary gates; run build last as a full check.
+- `buildGroup(group, rows, opts)` lives in `lib/comparison/player-accuracy.ts` at approx line 343 and is THE single source of truth. Today it does `if (!r.master) continue;` so analyst-only rows are skipped. It classifies the master stat via `partKeyForStat(group, r.master.stat.toLowerCase(), classify)`, increments `part.master`, and `part.exact` on `r.status === "exact"` plus the looser same-player pass rule (`LOOSE_PASS_PART_KEYS`). It returns `{ master, exact, pct, parts: [{label, master, exact}] }` with `pct = master === 0 ? null : exact / master`.
+- `ComparisonRow` (in `lib/comparison/xml-compare.ts`, approx line 45) is `{ status: MatchStatus; master: Instance | null; analyst: Instance | null; timeDelta: ... }`. `MatchStatus` includes `"extra"` ("analyst instance with no master match"). An analyst-only extra row = `r.master == null && r.analyst != null` with `status === "extra"`.
+- Football: `computePlayerAccuracy` calls `buildGroup` with default opts (footballClassifier + LOOSE_PASS_PART_KEYS). AFL: `computeAflPlayerAccuracy` in `lib/comparison/afl-player-accuracy.ts` calls `buildGroup` with `AFL_OPTS = { classify: aflClassify, loosePassPartKeys: new Set<string>() }`. Both inherit the extras change automatically; the `overall` group is a `buildGroup` over a combined part list, so extras reclassify against those parts correctly.
+- Types to extend live in `lib/comparison/player-accuracy.ts`: `AccuracyPart` (`{label, master, exact}`) and `AccuracyGroup` (`{master, exact, pct, parts}`). AFL re-exports these from `player-accuracy.ts` (no separate AFL type definitions to change). `StoredPlayerAccuracy` and `StoredAflPlayerAccuracy` are composed of `PlayerAccuracy`/`AflPlayerAccuracy` groups, so adding `extra` to `AccuracyGroup`/`AccuracyPart` propagates to the stored shapes automatically — additive and backward-compatible (old stored rows lack `extra`; readers must treat missing `extra` as 0).
+- UI card: `app/accuracy-compare/page.tsx` `PlayerAccuracyCard` (approx line 827). Popup table columns are Stat / Exact / Master / Acc with a Total row, then a formula block showing `exact / master` and `= {group.exact} / {group.master} = ...`. Per-part Acc is computed inline as `p.master === 0 ? 1 : p.exact / p.master` (approx line 898). The card's `hasData` gate is `group.master > 0 && group.pct != null` (approx line 839) — this must also allow extras-only groups.
+- UI gate: `app/accuracy-checks/page.tsx` `groupPct(group)` (approx line 301, NOT line 224) is `if (!group || group.master === 0) return null; return group.pct;`. It is the single place that no-data decision is made (used by `groupPctForCheck`, trend plot, sorting, averaging). This must return null only when `master === 0 AND (group.extra ?? 0) === 0`.
+- Inline exact/master recomputations found in `app/accuracy-checks/page.tsx` that are NOT group.pct: line ~708 `c.exact / c.master_total` (check-level totals from the DB meta, `master_total`/`exact` columns — NOT per-group, leave as-is), line ~914 `part.exact / part.master` and line ~933 `e.exact / e.master` (the "problem stats" aggregator, operates on per-part master/exact across checks — see item 6 for the decision). These are the only `.exact /` / `/ ...master` patterns outside `group.pct` in the two pages.
+- No football player-accuracy test file exists yet (`lib/comparison/player-accuracy.test.ts` is absent); it must be CREATED. The AFL test file exists at `lib/comparison/afl-player-accuracy.test.ts` with a `row(master, analyst, status)` helper and an `inst(stat, opts)` helper — reuse those patterns.
+- AGENTS.md REQUIREMENT: the repo pins a MODIFIED Next.js v16 (Turbopack). Before touching ANY Next API, read the relevant guide under `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\node_modules\next\dist\docs\` (confirmed present). The two UI files are existing client components and this change does not add or alter a Next API, but if any edit ends up touching a Next API (routing, metadata, server/client boundary, etc.), read the matching doc first.
+
+## Core semantics to preserve (call-outs)
+
+- NO DOUBLE-COUNTING: an extra is ONLY a row with `r.master == null && r.analyst != null` (status "extra"). A `wrong_stat` / `wrong_player` row HAS a master and is already in `part.master` — it must NEVER be counted as an extra.
+- Extra classification uses the SAME classifier as master stats, applied to the ANALYST stat: `partKeyForStat(group, r.analyst.stat.toLowerCase(), classify)`. An extra that classifies into a DIFFERENT group does not affect this group. An extra that classifies to no part is ignored.
+- Null / zero semantics for `pct`: `denom = master + extras`. `denom === 0` (no master AND no extras) -> `pct = null`. `master === 0 && extras > 0` -> `pct = 0` (NOT null) — intended. `master > 0` behaves as before but with the larger denominator.
+- Keep the existing looser-pass rule (`LOOSE_PASS_PART_KEYS`) EXACTLY for master rows; it does not apply to extra rows.
 
 ---
 
-- [ ] 1. Create the pure module `lib/comparison/player-category-tally.ts`.
-      Implement, per design D2, exactly these exports and nothing that mutates
-      or re-implements classification logic: the `CategoryKey` type and
-      `CATEGORY_KEYS = ["passing","offensive","defensive","goalkeeper","other"] as const`;
-      `CATEGORY_LABELS: Record<CategoryKey,string>` read from
-      `FOOTBALL_GROUPS[key].label`; the `CategoryCell` type `{ a:number; m:number;
-      pct:number|null }`; the pure metric `categoryAccuracy(a,m)` —
-      `m===0 ⇒ { a, m, pct:null }`, else `pct = Math.max(0, Math.min(1, (m - Math.abs(a-m))/m))`;
-      a private `categoryTotal(derived: FootballCounts, key: CategoryKey)` that
-      sums `FOOTBALL_GROUPS[key].parts.map(p => derived[p.key] ?? 0)`; the
-      `PlayerCategoryRow` type `{ key, team, number, display, analystOnly,
-      cells: Record<CategoryKey,CategoryCell> }`; and the aggregator
-      `computePlayerCategoryTally(masterInstances: Instance[], analystInstances:
-      Instance[]): PlayerCategoryRow[]` following D2.4 steps 1–9 — build a
-      `Map` keyed `` `${i.team.toLowerCase()}|${i.playerNumber ?? "?"}` ``, seed
-      sides with `initFootballCounts()`, remember first-seen `team` (original
-      case) + `number`, `bumpFootball(side, i.stat.toLowerCase())` for each
-      instance (set `inMaster`/`inAnalyst`), `deriveFootball` both sides, fill
-      `cells[key] = categoryAccuracy(categoryTotal(da,key), categoryTotal(dm,key))`,
-      set `display = `${team} - #${number ?? "?"}`` and `analystOnly =
-      inAnalyst && !inMaster`, DROP a row iff the sum of all five displayed
-      category totals is 0 on BOTH sides, then sort with the exact `playerTable`
-      guarded comparator (`analystOnly` last → `a.team !== b.team` localeCompare →
-      `(number ?? 999)`). Import `initFootballCounts, bumpFootball, deriveFootball,
-      FOOTBALL_GROUPS, type FootballCounts` from `./player-accuracy` and
-      `type Instance` from `./xml-compare`. Add the D2.3/D5 code comment recording
-      the key/display/sort-parity-with-`playerTable` relationship and that the row
-      set deliberately differs (sourced from `canonical.*`, five-category drop
-      rule, not `relevant()`). Do not call `canonicaliseTeams` (D3 — the page
-      already canonicalised).
-      Files: `lib/comparison/player-category-tally.ts`
-      Verify: `npx tsc --noEmit` reports no new errors in the module (full
-      type-check is exercised in step 3's build).
+## Plan
 
-- [ ] 2. Create the unit test `lib/comparison/player-category-tally.test.ts`.
-      Use Vitest (`import { describe, it, expect } from "vitest"`), mirroring
-      `lib/round-summary/roundSummary.test.ts` style. Add a small inline
-      `inst(partial)` factory producing a valid `Instance` (fill `id,start,end,mid,
-      team,playerNumber,playerRaw,stat,category,code`). Cover: AC1 `categoryAccuracy(6,6)
-      ⇒ {a:6,m:6,pct:1}`; AC2 `(4,6) ⇒ pct` ≈ `2/3` (assert `toBeCloseTo(2/3)`);
-      AC3 `(0,3) ⇒ pct:0`; AC4 `(0,0) ⇒ pct === null` (STRICT identity); AC5
-      `(9,6) ⇒ pct:0.5`; AC6 `(20,6) ⇒ pct:0`. For `computePlayerCategoryTally`:
-      AC7 — a player with master defensive labels
-      `["Interceptions","Clearances","Blocks","Tackles Successful"]` and analyst
-      `["Interceptions","Clearances"]` yields Defensive `{a:2,m:4,pct:0.5}` and
-      Passing `pct === null` (strict); AC8 — master-only player has analyst cells 0,
-      analyst-only player has master cells 0 and `analystOnly === true`; AC8a — a
-      GK-only player (`["Save","Save","Catch"]`) or blocks-only player is KEPT
-      (has Goalkeeper/Defensive volume); AC8b — a player with only
-      `["Ball Recovery","Aerial Win"]` is DROPPED (maps to no displayed category);
-      AC9 — sort order is `analystOnly`-last then team (localeCompare) then
-      `number ?? 999`, matching `playerTable`.
-      Files: `lib/comparison/player-category-tally.test.ts`
-      Verify: `npm test -- lib/comparison/player-category-tally.test.ts` — all new
-      tests pass (`npm test` runs `vitest --run`).
+- [ ] 1. Extend the accuracy types with an `extra` counter.
+      In `lib/comparison/player-accuracy.ts`, add `extra: number` to `AccuracyPart` and to `AccuracyGroup` (update their doc comments to note `extra` = analyst-only over-codes classified into the part/group, and that `pct` is now `exact / (master + extra)`). AFL re-exports these from this module, so no change is needed in `afl-player-accuracy.ts` types. `PlayerAccuracy`, `AflPlayerAccuracy`, `StoredPlayerAccuracy`, and `StoredAflPlayerAccuracy` compose these and inherit the field automatically.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\player-accuracy.ts`
+      Verify: `npx vitest --run lib/comparison/afl-player-accuracy.test.ts` still passes (existing AFL suite compiles against the new types). This is a type-only step; the formula change in item 2 makes the behavior tests pass.
 
-- [ ] 3. Wire the tally into `app/accuracy-compare/page.tsx` and render the section.
-      (a) Add an import of `computePlayerCategoryTally, categoryAccuracy,
-      CATEGORY_KEYS, CATEGORY_LABELS, type CategoryCell` from
-      `@/lib/comparison/player-category-tally` alongside the existing
-      `player-accuracy` import. (b) Add a `playerCategoryTally` useMemo directly
-      after the Golden `playerAccuracy` useMemo (~line 2082): return `null` when
-      `!canonical || sport !== "football"`; build `inScope = (i) => inRange(i) &&
-      (teamFilter === "all" || i.team === teamFilter)`; call
-      `computePlayerCategoryTally(canonical.master.filter(inScope),
-      canonical.analyst.filter(inScope))`; deps
-      `[canonical, sport, tolerance, effectiveRange, teamFilter]` with the same
-      `// eslint-disable-next-line react-hooks/exhaustive-deps` line the Golden
-      memo uses. Do NOT call `compareInstances` (volume reconciliation needs no
-      pairing). (c) Add a local `CategoryTallyCell({ cell }: { cell: CategoryCell })`
-      component near the other local cell components (per D6): muted when
-      `cell.m===0 && cell.a===0`, `pctText = cell.pct == null ? "—" :
-      `${Math.round(cell.pct*100)}%``, amber emphasis when
-      `cell.pct != null && cell.a !== cell.m`, markup/classes as in D6.
-      (d) Insert the section JSX immediately AFTER the Golden block's closing `)}`
-      (~line 2946) and BEFORE the "Category breakdown" grid, gated
-      `{playerCategoryTally && playerCategoryTally.length > 0 && ( … )}`: a
-      heading "Player category volume (analyst vs master)" with the one-line
-      sub-caption, using the Golden block's label styling (`text-xs font-semibold
-      uppercase tracking-wider text-slate-500`) and a scope chip
-      (`teamFilter === "all" ? "Both teams" : teamDisplay(teamFilter)`); a table
-      reusing the Player stats table's wrapper/scroll/sticky-header/row/
-      player-cell/badge classes (verified ~line 3131+), one header cell per
-      category from `CATEGORY_LABELS` in `CATEGORY_KEYS` order, rows rendering
-      `row.display` + `analyst only` badge when `row.analystOnly`, and a
-      `CategoryTallyCell` per category; and a `tfoot` "Team totals" row (D6)
-      summing each category's `a` and `m` across visible rows and running the two
-      sums through `categoryAccuracy`, reusing the verified footer classes.
-      Files: `app/accuracy-compare/page.tsx`
-      Verify: `npm run build` succeeds (type-check + Next.js compile pass) and
-      `npm run lint` reports no new errors.
+- [ ] 2. Implement the extras logic in `buildGroup`.
+      In `lib/comparison/player-accuracy.ts` `buildGroup` (approx line 343): (a) initialise each part with `extra: 0` alongside `master`/`exact`. (b) Replace the `if (!r.master) continue;` skip with a two-branch loop: MASTER branch (`r.master` present) — unchanged logic, classify `r.master.stat.toLowerCase()`, `part.master++`, and `part.exact++` on exact plus the EXISTING looser-pass rule verbatim; EXTRA branch (`r.master == null && r.analyst != null && r.status === "extra"`) — classify `r.analyst.stat.toLowerCase()` via `partKeyForStat(group, ..., classify)`; if it maps to a part in THIS group, `part.extra++` (do nothing on no-match). (c) Compute group totals `master = Σ part.master`, `exact = Σ part.exact`, `extras = Σ part.extra`; set `const denom = master + extras; const pct = denom === 0 ? null : exact / denom;`. (d) Return `{ master, exact, extra: extras, pct, parts: parts.map(({label, master, exact, extra}) => ({label, master, exact, extra})) }`.
+      Guard the extra branch strictly on `status === "extra"` so no paired `wrong_stat`/`wrong_player` row (which has a master) is ever treated as an extra — no double-counting.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\player-accuracy.ts`
+      Verify: `npx vitest --run lib/comparison/afl-player-accuracy.test.ts` — existing AFL cases (e.g. `acc.defence.pct` toBe(1) with no extras) stay green because extras=0 leaves pct unchanged. Full behavior coverage lands with items 7–8.
 
-- [ ] 4. Full verification and cleanup.
-      Run the whole test suite and the build together to confirm nothing else
-      regressed, then remove any scratch/temporary files created during
-      development. Confirm only the three intended files changed
-      (`git status --short` shows exactly `lib/comparison/player-category-tally.ts`,
-      `lib/comparison/player-category-tally.test.ts`,
-      `app/accuracy-compare/page.tsx`).
-      Files: (none — verification only)
-      Verify: `npm test` (all tests pass) AND `npm run build` (succeeds); and
-      `git status --short` lists only the three expected paths.
+- [ ] 3. Confirm football and AFL compute paths inherit extras (no code change expected).
+      Re-read `computePlayerAccuracy` (football, including the `overall` core-only / core+other fallback built via `buildGroup`) and `computeAflPlayerAccuracy` (AFL `overall` spanning all five groups' parts via `buildGroup` with `AFL_OPTS`). Verify both reach the modified `buildGroup` and that the AFL path classifies extras via `aflClassify`. If any call site destructures the group result in a way that drops `extra`, fix it; otherwise make no change and note the verification in the commit.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\player-accuracy.ts`, `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\afl-player-accuracy.ts`
+      Verify: `npm test` — whole suite compiles and passes with items 1–2 in place.
+
+- [ ] 4. Update the `groupPct` no-data gate to respect extras.
+      In `app/accuracy-checks/page.tsx` `groupPct` (approx line 301): change `if (!group || group.master === 0) return null;` to return null only when `group.master === 0 && (group.extra ?? 0) === 0` (use `?? 0` so legacy stored rows without `extra` are treated as 0 and keep old behavior). Then `return group.pct;`. Update the function's comment to explain the extras-only (master 0, extras > 0 -> pct 0, not null) case. Audit the same file for any OTHER gate on `master === 0` for a per-group pct and mirror this rule there (the `PlayerAccuracyCard` in the other file is handled in item 5; `groupForKey`+`groupPct` callers all funnel through this function).
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\app\accuracy-checks\page.tsx`
+      Verify: `npm run lint` passes; `npm run build` compiles. (TypeScript now knows `group.extra` exists from item 1.)
+
+- [ ] 5. Update the `PlayerAccuracyCard` popup to show Extra and the new formula.
+      In `app/accuracy-compare/page.tsx` `PlayerAccuracyCard` (approx line 827): (a) change `hasData` to allow extras-only groups — `const hasData = (group.master > 0 || (group.extra ?? 0) > 0) && group.pct != null;`. (b) In the popup table, add an "Extra" column (header + per-part cell showing `p.extra ?? 0`, matching the existing Stat/Exact/Master/Acc styling) and include an Extra total in the Total row (`group.extra`). (c) Change the per-part Acc inline calc from `p.master === 0 ? 1 : p.exact / p.master` to use the extras denominator: `const denom = p.master + (p.extra ?? 0); const acc = denom === 0 ? 1 : p.exact / denom;` and gate the "—"/colour on `denom === 0` instead of `p.master === 0`. (d) Change the formula block text from `exact / master` to `exact / (master + extras)` and the worked line from `= {group.exact} / {group.master} = ...` to `= {group.exact} / ({group.master} + {group.extra}) = ...`. Keep the summary line (`{exact}/{master} exact`) but extend it to mention extras, e.g. `{group.exact}/{group.master + group.extra} exact` (keep wording consistent with existing style). Do not touch a Next API; if an edit drifts into one, read `node_modules/next/dist/docs/` first.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\app\accuracy-compare\page.tsx`
+      Verify: `npm run lint` passes; `npm run build` compiles with no type errors.
+
+- [ ] 6. Audit and update the remaining inline per-part recomputations in accuracy-checks.
+      In `app/accuracy-checks/page.tsx` the "problem stats" aggregator computes `part.exact / part.master` (approx line 914) and `e.exact / e.master` (approx line 933) across checks. Decide and apply ONE rule: since these are per-stat accuracy figures that must now reflect over-coding, change them to `part.exact / (part.master + (part.extra ?? 0))` and `e.exact / (e.master + e.extra)` respectively, accumulating `extra` alongside `exact`/`master` in that aggregator's running totals. Leave the DB-meta check-level `c.exact / c.master_total` (approx line 708) UNCHANGED — it reads the `exact`/`master_total` columns, which are not per-group and are out of scope for this group-level change; note this explicitly in the commit. Confirm via search that no other `.exact /` or `/ ...master` per-group recomputation remains unhandled in either page.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\app\accuracy-checks\page.tsx`
+      Verify: `npm run lint` passes; `npm run build` compiles.
+
+- [ ] 7. Create the football player-accuracy test suite.
+      Create `lib/comparison/player-accuracy.test.ts` using vitest, mirroring the fixture helpers in `afl-player-accuracy.test.ts` (`inst(stat, opts)`, `row(master, analyst, status)`). Call `computePlayerAccuracy(rows)` / `buildGroup(FOOTBALL_GROUPS.defensive, rows)` and assert: (a) the 569 case — 4 exact master "Interception" rows + 6 analyst-only extra "Interception" rows (status "extra", master null) -> `defensive`/interceptions part and group `pct` === `4/(4+6)` = 0.4, `exact` 4, `master` 4, `extra` 6; (b) extras that classify into a DIFFERENT group (e.g. an extra "Shot") do NOT change the defensive group's master/exact/extra; (c) a `wrong_stat` paired row (master present, analyst present, status "wrong_stat") is NOT counted as an extra (`extra` stays 0 for that row, master counts it once); (d) `master === 0 && extras > 0` -> group `pct === 0` (not null); (e) `master === 0 && extras === 0` -> group `pct === null`; (f) a pure all-exact group with no extras still yields `pct === 1` (regression guard for the looser-pass rule and the denominator when extras=0). Add brief comments tying each case to the semantics (no-double-count, null/zero).
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\player-accuracy.test.ts`
+      Verify: `npx vitest --run lib/comparison/player-accuracy.test.ts` — all new cases pass.
+
+- [ ] 8. Extend the AFL test suite with an extras case and re-baseline shifted assertions.
+      In `lib/comparison/afl-player-accuracy.test.ts`, add a case: an AFL group with N exact master events plus M analyst-only extras (status "extra", master null) whose analyst stat classifies via `aflClassify` into the same group -> group `pct === N/(N+M)` and `extra === M`; also assert an extra classifying into a different group leaves this group's `extra` at 0. Then re-baseline any EXISTING assertion whose expected value shifts because of the denominator change — note that current AFL fixtures use no extras so `pct` values (e.g. `1/3`, `1`, null) should be UNCHANGED; if any assertion does move, update it with a comment explaining the extras re-baseline and do NOT delete coverage.
+      Files: `c:\Users\AndyDin\reporting-dashboard\.worktrees\golden-extras\reporting-ui\lib\comparison\afl-player-accuracy.test.ts`
+      Verify: `npx vitest --run lib/comparison/afl-player-accuracy.test.ts` — all cases (existing + new) pass.
+
+- [ ] 9. Full regression and build gate.
+      Run the entire test suite and the production build to confirm nothing else regressed (stored-shape readers, scope tests, group-membership tests). Fix any type or test fallout from the additive `extra` field. Do NOT run any in-app "Recompute all" — stored checks keep their OLD pct until the orchestrator recomputes after merge.
+      Files: none (verification only)
+      Verify: `npm test` passes (all suites green) AND `npm run build` succeeds.
+
+## Notes / assumptions
+
+- Backward compatibility: stored `player_accuracy` JSON written before this change lacks `extra`; every reader (the `?? 0` guards in items 4–6 and the card in item 5) must treat missing `extra` as 0, so old rows render exactly as before until recomputed.
+- The `overall` group needs no special extras handling: it is a `buildGroup` over a combined part list, so each extra reclassifies against the overall parts the same way master events do.
+- Line numbers above are approximate (the task brief cited line 224 for `groupPct`, but it is actually at approx line 301, and `PlayerAccuracyCard` at approx line 827); locate by symbol name, not line number.
+- AGENTS.md: read the relevant guide under `node_modules/next/dist/docs/` before touching any Next API. This change edits existing client components and adds no Next API surface, so no Next API is expected to be touched — but honor the rule if an edit drifts into one.

@@ -267,14 +267,17 @@ describe("foldOtherParts", () => {
 
 describe("passingCellFromGroup", () => {
   it("maps an exact-match AccuracyGroup to a passing CategoryCell", () => {
+    // `extra: 0` added on group + parts for the over-coding denominator
+    // change; with no extras this cell maps exactly as before.
     const group: AccuracyGroup = {
       master: 12,
       exact: 9,
+      extra: 0,
       pct: 9 / 12,
       parts: [
-        { label: "Player Passes", master: 8, exact: 7 },
-        { label: "Through balls", master: 2, exact: 1 },
-        { label: "Crosses", master: 2, exact: 1 },
+        { label: "Player Passes", master: 8, exact: 7, extra: 0 },
+        { label: "Through balls", master: 2, exact: 1, extra: 0 },
+        { label: "Crosses", master: 2, exact: 1, extra: 0 },
       ],
     };
     const cell = passingCellFromGroup(group);
@@ -292,7 +295,13 @@ describe("passingCellFromGroup", () => {
   });
 
   it("master 0 ⇒ pct null (no data, rendered —)", () => {
-    const group: AccuracyGroup = { master: 0, exact: 0, pct: null, parts: [] };
+    const group: AccuracyGroup = {
+      master: 0,
+      exact: 0,
+      extra: 0,
+      pct: null,
+      parts: [],
+    };
     const cell = passingCellFromGroup(group);
     expect(cell.a).toBe(0);
     expect(cell.m).toBe(0);
