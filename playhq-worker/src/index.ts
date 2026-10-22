@@ -1249,6 +1249,14 @@ async function pushFixtureToTT(
     return { id: shortId, fullId, error: e instanceof Error ? e.message : "summary_failed" };
   }
 
+  // Passive, best-effort player ingestion from the summary we already have (no
+  // extra PlayHQ call). Double-guarded so it can never affect the push.
+  try {
+    await ingestPlayers(summary, env);
+  } catch {
+    /* ingestion is best-effort; never affect the push */
+  }
+
   // Team lists stay sourced from the REST summary (the authoritative full
   // roster), as does the summary-derived score used as a FINAL/pre-game and
   // failure fallback below.
@@ -1474,6 +1482,137 @@ async function sbInsert(
   });
   if (!res.ok && res.status !== 409) {
     throw new Error(`supabase insert ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+}
+
+// Supabase UPSERT (merge-duplicates): like sbInsert but updates rows on
+// conflict rather than ignoring them, so we keep the LATEST values. `table`
+// includes the on_conflict query (e.g. "playhq_players?on_conflict=id").
+// Env-guarded and 409-tolerant, mirroring sbInsert; never used by the existing
+// competitor_posts path (which must stay ignore-duplicates).
+async function sbUpsert(
+  env: Env,
+  table: string,
+  rows: Record<string, unknown>[]
+): Promise<void> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY || rows.length === 0) return;
+  const res = await fetch(`${env.SUPABASE_URL}/rest/v1/${table}`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify(rows),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok && res.status !== 409) {
+    throw new Error(`supabase upsert ${res.status}: ${(await res.text()).slice(0, 120)}`);
+  }
+}
+
+// Sum the `value` of the scoreSubTotal entry whose `type` matches, else 0.
+function subValFor(
+  sub: Array<{ type?: string; value?: number }> | undefined,
+  type: string
+): number {
+  if (!Array.isArray(sub)) return 0;
+  const hit = sub.find((s) => s?.type === type);
+  return typeof hit?.value === "number" ? hit.value : 0;
+}
+
+// Pure extractor: turn a REST game summary into `playhq_players` +
+// `playhq_player_appearances` rows. Coaches (and any non-'Player' roleType) and
+// entries without an id are skipped at source. No I/O, no throwing.
+function playersFromSummary(summary: Record<string, unknown>): {
+  players: Record<string, unknown>[];
+  appearances: Record<string, unknown>[];
+} {
+  const gameId = String(summary?.id ?? "");
+  const rawAppearances = Array.isArray(summary?.appearances)
+    ? (summary.appearances as Array<Record<string, unknown>>)
+    : null;
+  if (!gameId || !rawAppearances) return { players: [], appearances: [] };
+
+  // teamId -> team name, from competitors[].
+  const comps = Array.isArray(summary.competitors)
+    ? (summary.competitors as Array<Record<string, unknown>>)
+    : [];
+  const teamName = new Map<string, string>();
+  for (const c of comps) {
+    const id = c?.id != null ? String(c.id) : null;
+    if (id && typeof c.name === "string") teamName.set(id, c.name);
+  }
+
+  const players: Record<string, unknown>[] = [];
+  const appearances: Record<string, unknown>[] = [];
+  const seenPlayers = new Set<string>();
+
+  for (const a of rawAppearances) {
+    if (a?.roleType !== "Player") continue; // skip Coach / other roles
+    const playerId = a?.id != null ? String(a.id) : "";
+    if (!playerId) continue; // skip missing id
+
+    const teamId = a.teamID != null ? String(a.teamID) : null;
+    const name = teamId ? teamName.get(teamId) ?? null : null;
+
+    if (!seenPlayers.has(playerId)) {
+      seenPlayers.add(playerId);
+      players.push({
+        id: playerId,
+        first_name: a.firstName ?? null,
+        last_name: a.lastName ?? null,
+        last_team_id: teamId,
+        last_team_name: name,
+      });
+    }
+
+    const sub = a.scoreSubTotal as Array<{ type?: string; value?: number }> | undefined;
+    const scoreTotal = +(a.scoreTotal as number);
+    appearances.push({
+      player_id: playerId,
+      game_id: gameId,
+      team_id: teamId,
+      team_name: name,
+      player_number: a.playerNumber ?? null, // keep as string
+      player_position: a.playerPosition ?? null,
+      captain_role: a.captainRole ?? null,
+      is_fill_in: !!a.isFillIn,
+      is_emergency: !!a.isEmergency,
+      score_total: Number.isFinite(scoreTotal) ? scoreTotal : null,
+      goals: Math.floor(subValFor(sub, "6_POINT_SCORE") / 6),
+      behinds: subValFor(sub, "1_POINT_SCORE"),
+      best_player: a.bestPlayer == null ? null : +(a.bestPlayer as number),
+      raw: a,
+    });
+  }
+
+  return { players, appearances };
+}
+
+// Best-effort passive ingest of players + appearances from a game summary.
+// Env-guarded and fully swallowed: never throws into the caller, never changes
+// any response. Players UPSERT with merge-duplicates (keep latest name/team/
+// last_seen); appearances UPSERT on (player_id,game_id) so a re-fetch after
+// more scoring updates the row.
+async function ingestPlayers(
+  summary: Record<string, unknown>,
+  env: Env
+): Promise<void> {
+  try {
+    const { players, appearances } = playersFromSummary(summary);
+    if (players.length === 0 && appearances.length === 0) return;
+    const now = new Date().toISOString();
+    const playerRows = players.map((p) => ({ ...p, last_seen_at: now }));
+    await sbUpsert(env, "playhq_players?on_conflict=id", playerRows);
+    await sbUpsert(
+      env,
+      "playhq_player_appearances?on_conflict=player_id,game_id",
+      appearances
+    );
+  } catch (e) {
+    console.warn("ingestPlayers failed:", e instanceof Error ? e.message : e);
   }
 }
 
@@ -1773,6 +1912,8 @@ export default {
         const full = await resolveFullGame(sid, env);
         if (!full) return json({ error: "not_found" }, 404, cors);
         const summary = await fetchGameSummary(String(full.id), env);
+        // Passive, best-effort ingest — no added latency (runs after response).
+        ctx.waitUntil(ingestPlayers(summary, env));
         const payload = summaryToScorersPeriods(sid, summary);
         const bodyText = JSON.stringify(payload);
         const sTtl = Math.max(0, Number(env.LIVE_TTL_SECONDS ?? "15") || 15);
@@ -1833,6 +1974,8 @@ export default {
         const full = await resolveFullGame(tid, env);
         if (full) {
           const summary = await fetchGameSummary(String(full.id), env);
+          // Passive, best-effort ingest — no added latency (runs after response).
+          ctx.waitUntil(ingestPlayers(summary, env));
           payload = summaryToTeamLists(tid, summary);
         }
       } catch {
