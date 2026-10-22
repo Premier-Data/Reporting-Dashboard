@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { UserCog, Plus, Trash2, RotateCcw } from "lucide-react";
+import { UserCog, Plus, Trash2, RotateCcw, Pencil, Check, X } from "lucide-react";
 import {
     listUsers,
     createUser,
     updateUserRole,
+    updateUsername,
     resetUserPassword,
     deleteUser,
     type UserAccount,
@@ -35,6 +36,11 @@ export default function UsersPage() {
     // Reset password
     const [resetId, setResetId] = useState<number | null>(null);
     const [resetPw, setResetPw] = useState("");
+
+    // Inline username edit (which row is being renamed, and the draft value).
+    const [editId, setEditId] = useState<number | null>(null);
+    const [editUsername, setEditUsername] = useState("");
+    const [savingName, setSavingName] = useState(false);
 
     async function load() {
         try {
@@ -116,6 +122,34 @@ export default function UsersPage() {
             await load();
         } catch (err) {
             alert(err instanceof Error ? err.message : "Failed to update role.");
+        }
+    }
+
+    function startEditUsername(u: UserAccount) {
+        setEditId(u.id);
+        setEditUsername(u.username);
+    }
+
+    function cancelEditUsername() {
+        setEditId(null);
+        setEditUsername("");
+    }
+
+    async function handleSaveUsername(id: number) {
+        const next = editUsername.trim();
+        if (!next) {
+            alert("Username is required.");
+            return;
+        }
+        setSavingName(true);
+        try {
+            await updateUsername(id, next);
+            cancelEditUsername();
+            await load();
+        } catch (err) {
+            alert(err instanceof Error ? err.message : "Failed to update username.");
+        } finally {
+            setSavingName(false);
         }
     }
 
@@ -281,7 +315,52 @@ export default function UsersPage() {
                                     className="border-t border-slate-100 hover:bg-slate-50"
                                 >
                                     <td className="px-4 py-3 font-medium text-slate-800">
-                                        {u.username}
+                                        {editId === u.id ? (
+                                            <div className="flex items-center gap-1.5">
+                                                <input
+                                                    value={editUsername}
+                                                    onChange={(e) =>
+                                                        setEditUsername(e.target.value)
+                                                    }
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter")
+                                                            handleSaveUsername(u.id);
+                                                        if (e.key === "Escape")
+                                                            cancelEditUsername();
+                                                    }}
+                                                    autoFocus
+                                                    disabled={savingName}
+                                                    className="w-40 rounded-lg border border-slate-300 px-2 py-1 text-sm outline-none focus:border-blue-500"
+                                                />
+                                                <button
+                                                    onClick={() => handleSaveUsername(u.id)}
+                                                    disabled={savingName}
+                                                    className="rounded p-1.5 text-slate-400 hover:bg-emerald-50 hover:text-emerald-600 disabled:opacity-40"
+                                                    title="Save username"
+                                                >
+                                                    <Check size={15} />
+                                                </button>
+                                                <button
+                                                    onClick={cancelEditUsername}
+                                                    disabled={savingName}
+                                                    className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40"
+                                                    title="Cancel"
+                                                >
+                                                    <X size={15} />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <div className="group flex items-center gap-1.5">
+                                                <span>{u.username}</span>
+                                                <button
+                                                    onClick={() => startEditUsername(u)}
+                                                    className="rounded p-1 text-slate-300 opacity-0 transition hover:bg-blue-50 hover:text-blue-600 group-hover:opacity-100"
+                                                    title="Edit username"
+                                                >
+                                                    <Pencil size={13} />
+                                                </button>
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="px-4 py-3 text-slate-600">
                                         {u.analyst_name || "—"}

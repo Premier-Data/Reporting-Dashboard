@@ -350,6 +350,28 @@ export async function updateUserRole(id: number, role: Role): Promise<void> {
     }
 }
 
+/**
+ * Rename a user account. Trims the input, requires a non-empty value, and
+ * surfaces the unique-constraint violation (code 23505) as a friendly message
+ * — mirroring createUser's username handling so renames and creates enforce
+ * the same rule.
+ */
+export async function updateUsername(id: number, username: string): Promise<void> {
+    const next = username.trim();
+    if (!next) throw new Error("Username is required.");
+    const { error } = await supabase
+        .from("user_accounts")
+        .update({ username: next })
+        .eq("id", id);
+    if (error) {
+        if (error.code === "23505") {
+            throw new Error(`Username "${next}" already exists.`);
+        }
+        console.error("Failed updating username:", error);
+        throw new Error(error.message || "Failed updating username");
+    }
+}
+
 export async function resetUserPassword(
     id: number,
     newPassword: string
