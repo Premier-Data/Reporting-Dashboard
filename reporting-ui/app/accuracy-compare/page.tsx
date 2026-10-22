@@ -1809,7 +1809,8 @@ function AccuracyCompareInner() {
       } else if (check.xml_master) {
         // Infer sport: compare the master against an empty analyst so every
         // master instance is a row, then check if any football stats grouped.
-        const masterInstances = parseInstances(check.xml_master);
+        // JSON-aware so a JSON-feed master infers sport correctly too.
+        const masterInstances = instancesFromRaw(check.xml_master);
         const cmp = compareInstances(masterInstances, [], check.tolerance ?? 3);
         const fb = computePlayerAccuracy(cmp.rows);
         // Overall excludes the standalone Other group, so also count Other
@@ -2542,9 +2543,11 @@ function AccuracyCompareInner() {
     let text: string;
     try {
       text = await f.text();
-      const parsed = parseInstances(text);
+      // Parse JSON-aware (the override file can be an XML or a JSON feed), so
+      // a valid JSON master isn't wrongly rejected as having "no entries".
+      const parsed = loadedFileFromRaw(f.name, text).instances;
       if (parsed.length === 0) {
-        setSaveMsg("That file has no <instance> entries.");
+        setSaveMsg("That file has no match entries (XML <instance> or JSON events).");
         return;
       }
     } catch {
@@ -2576,10 +2579,9 @@ function AccuracyCompareInner() {
     setMasterSaveMsg(null);
     try {
       const res = await propagateMasterCorrection(fileName, text);
-      // Reflect the new master in the current view immediately.
-      setMaster((cur) =>
-        cur ? { ...cur, instances: parseInstances(text), raw: text } : cur
-      );
+      // Reflect the new master in the current view immediately (JSON-aware, and
+      // keep the stored master name as the identity).
+      setMaster((cur) => (cur ? loadedFileFromRaw(cur.name, text) : cur));
       setMasterSaveMsg(
         `Master overridden across ${res.updated} check` +
           `${res.updated === 1 ? "" : "s"}` +
@@ -2723,11 +2725,12 @@ function AccuracyCompareInner() {
                     try {
                       const xml = await getSavedMasterXml(sm.checkId);
                       if (!xml) return;
-                      setMaster({
-                        name: sm.fileName,
-                        instances: parseInstances(xml),
-                        raw: xml,
-                      });
+                      // Use loadedFileFromRaw (not parseInstances directly): a
+                      // saved master can be a JSON feed, which parseInstances
+                      // returns [] for — that's what showed "0 instances
+                      // parsed". loadedFileFromRaw detects JSON vs XML and sets
+                      // kind correctly.
+                      setMaster(loadedFileFromRaw(sm.fileName, xml));
                       // If this master had a video and none is set yet,
                       // prefill it too.
                       if (sm.videoUrl && !videoUrl) setVideoUrl(sm.videoUrl);
@@ -2765,11 +2768,7 @@ function AccuracyCompareInner() {
                   } else if (change.type === "replace") {
                     setMaster((cur) =>
                       cur && cur.name === change.name
-                        ? {
-                            ...cur,
-                            instances: parseInstances(change.raw),
-                            raw: change.raw,
-                          }
+                        ? loadedFileFromRaw(change.name, change.raw)
                         : cur
                     );
                   } else if (change.type === "delete") {
