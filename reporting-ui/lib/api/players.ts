@@ -11,6 +11,13 @@ import { supabase } from "@/lib/supabase";
 export type AppearanceRow = {
   gameId: string;
   teamName: string | null;
+  /**
+   * Human match label "TeamA vs TeamB", derived from the two distinct
+   * team_names recorded against this game_id in the appearances table (both
+   * sides' players are ingested). Falls back to the player's own team, then
+   * the game id, when the opponent can't be resolved.
+   */
+  matchName: string;
   number: string | null;
   position: string | null;
   goals: number;
@@ -70,16 +77,54 @@ export async function getPlayerProfile(
 
   const rawRows = appsErr ? [] : rows ?? [];
 
-  const appearances: AppearanceRow[] = rawRows.map((r) => ({
-    gameId: String(r.game_id),
-    teamName: r.team_name ?? null,
-    number: r.player_number != null ? String(r.player_number) : null,
-    position: r.player_position ?? null,
-    goals: Number(r.goals) || 0,
-    behinds: Number(r.behinds) || 0,
-    bestPlayer: r.best_player == null ? null : Number(r.best_player),
-    createdAt: r.created_at ?? null,
-  }));
+  // Derive a "TeamA vs TeamB" label per game from the appearances table: both
+  // sides' players are ingested, so the distinct team_names recorded against a
+  // game_id are its two teams. One extra query over just this player's games.
+  const gameIds = Array.from(new Set(rawRows.map((r) => String(r.game_id))));
+  const teamsByGame = new Map<string, string[]>();
+  if (gameIds.length > 0) {
+    const { data: gameTeams } = await supabase
+      .from("playhq_player_appearances")
+      .select("game_id, team_name")
+      .in("game_id", gameIds);
+    for (const g of gameTeams ?? []) {
+      const gid = String(g.game_id);
+      const name = (g.team_name ?? "").trim();
+      if (!name) continue;
+      const list = teamsByGame.get(gid) ?? [];
+      if (!list.includes(name)) list.push(name);
+      teamsByGame.set(gid, list);
+    }
+  }
+  const matchNameFor = (gameId: string, ownTeam: string | null): string => {
+    const teams = teamsByGame.get(gameId) ?? [];
+    if (teams.length >= 2) {
+      // Put the player's own team first for readability when known.
+      const ordered =
+        ownTeam && teams.includes(ownTeam)
+          ? [ownTeam, ...teams.filter((t) => t !== ownTeam)]
+          : teams;
+      return ordered.slice(0, 2).join(" vs ");
+    }
+    if (teams.length === 1) return teams[0];
+    return ownTeam || gameId;
+  };
+
+  const appearances: AppearanceRow[] = rawRows.map((r) => {
+    const gameId = String(r.game_id);
+    const teamName = r.team_name ?? null;
+    return {
+      gameId,
+      teamName,
+      matchName: matchNameFor(gameId, teamName),
+      number: r.player_number != null ? String(r.player_number) : null,
+      position: r.player_position ?? null,
+      goals: Number(r.goals) || 0,
+      behinds: Number(r.behinds) || 0,
+      bestPlayer: r.best_player == null ? null : Number(r.best_player),
+      createdAt: r.created_at ?? null,
+    };
+  });
 
   // Distinct non-null positions, preserving first-seen order.
   const positions: string[] = [];

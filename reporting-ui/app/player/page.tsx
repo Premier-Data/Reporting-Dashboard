@@ -183,36 +183,43 @@ function PlayerProfileInner() {
               </div>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full text-left text-sm">
+                <table className="w-full min-w-[640px] text-left text-sm">
                   <thead>
                     <tr className="border-b border-white/10 text-xs uppercase tracking-wide text-slate-400">
-                      <th className="px-3 py-2 font-semibold">Game</th>
-                      <th className="px-3 py-2 font-semibold">Team</th>
-                      <th className="px-3 py-2 text-center font-semibold">No.</th>
-                      <th className="px-3 py-2 font-semibold">Position</th>
-                      <th className="px-3 py-2 text-center font-semibold">G</th>
-                      <th className="px-3 py-2 text-center font-semibold">B</th>
-                      <th className="px-3 py-2 text-center font-semibold">Best</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-semibold">Game</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-semibold">Team</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-center font-semibold">No.</th>
+                      <th className="whitespace-nowrap px-3 py-2 font-semibold">Position</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-center font-semibold">G</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-center font-semibold">B</th>
+                      <th className="whitespace-nowrap px-3 py-2 text-center font-semibold">Best</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-white/5">
                     {profile.appearances.map((a, i) => (
                       <tr key={`${a.gameId}-${i}`} className="text-slate-200">
-                        <td className="px-3 py-2 font-mono text-xs text-slate-400">
-                          {a.gameId}
+                        <td
+                          className="max-w-[16rem] truncate px-3 py-2"
+                          title={a.matchName}
+                        >
+                          {a.matchName}
                         </td>
-                        <td className="px-3 py-2">{a.teamName ?? "—"}</td>
-                        <td className="px-3 py-2 text-center tabular-nums">
+                        <td className="whitespace-nowrap px-3 py-2" title={a.teamName ?? undefined}>
+                          {a.teamName ?? "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-center tabular-nums">
                           {a.number ?? "—"}
                         </td>
-                        <td className="px-3 py-2">{a.position ?? "—"}</td>
-                        <td className="px-3 py-2 text-center tabular-nums">
+                        <td className="whitespace-nowrap px-3 py-2">
+                          {a.position ?? "—"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-center tabular-nums">
                           {a.goals}
                         </td>
-                        <td className="px-3 py-2 text-center tabular-nums">
+                        <td className="whitespace-nowrap px-3 py-2 text-center tabular-nums">
                           {a.behinds}
                         </td>
-                        <td className="px-3 py-2 text-center tabular-nums">
+                        <td className="whitespace-nowrap px-3 py-2 text-center tabular-nums">
                           {a.bestPlayer != null ? a.bestPlayer : "—"}
                         </td>
                       </tr>
