@@ -7,6 +7,7 @@
 // does. A back arrow returns to the Live Scores list.
 
 import { Suspense, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Loader2, AlertTriangle } from "lucide-react";
 
@@ -107,19 +108,38 @@ function TeamRoster({
         <span>{roster.length} players</span>
       </div>
       <ul className="divide-y divide-white/5">
-        {roster.map((p, i) => (
-          <li key={`${p.name}-${i}`} className="flex items-center gap-3 py-2.5">
-            <span
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold"
-              style={{ backgroundColor: badge.bg, color: badge.fg }}
-            >
-              {p.number || "-"}
-            </span>
-            <span className="truncate text-sm font-medium text-slate-100">
-              {p.name}
-            </span>
-          </li>
-        ))}
+        {roster.map((p, i) => {
+          // The number badge + name, shared by the linked and plain variants.
+          const content = (
+            <>
+              <span
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-xs font-bold"
+                style={{ backgroundColor: badge.bg, color: badge.fg }}
+              >
+                {p.number || "-"}
+              </span>
+              <span className="truncate text-sm font-medium text-slate-100">
+                {p.name}
+              </span>
+            </>
+          );
+          // Clickable → player profile only once the player has been ingested
+          // (has a PlayHQ id). Pre-ingest players render as plain text.
+          return (
+            <li key={`${p.name}-${i}`}>
+              {p.id ? (
+                <Link
+                  href={`/player?id=${encodeURIComponent(p.id)}`}
+                  className="-mx-2 flex cursor-pointer items-center gap-3 rounded-md px-2 py-2.5 transition hover:bg-white/5"
+                >
+                  {content}
+                </Link>
+              ) : (
+                <div className="flex items-center gap-3 py-2.5">{content}</div>
+              )}
+            </li>
+          );
+        })}
         {roster.length === 0 && (
           <li className="py-8 text-center text-sm text-slate-400">
             No team list available yet. Lists appear once a match is live or

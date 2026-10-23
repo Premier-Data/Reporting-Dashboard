@@ -407,8 +407,13 @@ function statVal(
   return typeof hit?.count === "number" ? hit.count : null;
 }
 
-// One player on a team list (name + jumper number).
-type TeamListPlayer = { name: string; number: string | null };
+// One player on a team list (PlayHQ player id + name + jumper number + position).
+type TeamListPlayer = {
+  id: string | null;
+  name: string;
+  number: string | null;
+  position: string | null;
+};
 
 // Extract one side's full team list from the game's player statistics
 // (statistics.{home,away}.players[]). PlayHQ populates this with every named
@@ -424,8 +429,11 @@ function teamListFrom(
     ? (sideObj.players as Array<Record<string, unknown>>)
     : [];
   const out: TeamListPlayer[] = players.map((p) => ({
+    // The spectator-stats feed carries no per-player PlayHQ id/position.
+    id: null,
     name: (p.name as string) ?? "",
     number: (p.playerNumber as string) ?? null,
+    position: null,
   }));
   const num = (n: string | null) => {
     const v = Number(n);
@@ -788,8 +796,10 @@ function summaryToTeamLists(
       const name = `${a.firstName ?? ""} ${a.lastName ?? ""}`.trim();
       if (!name) continue;
       out.push({
+        id: a.id != null ? String(a.id) : null,
         name,
         number: a.playerNumber != null ? String(a.playerNumber) : null,
+        position: (a.playerPosition as string) ?? null,
       });
     }
     out.sort((x, y) => num(x.number) - num(y.number) || x.name.localeCompare(y.name));

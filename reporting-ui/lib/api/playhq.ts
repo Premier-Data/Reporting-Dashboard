@@ -179,7 +179,13 @@ export async function getLiveScore(
 
 // PlayHQ team lists (named players + jumper numbers), via the Worker. Populated
 // once a game is live/final; empty pre-game (PlayHQ has no pre-game lineup).
-export type TeamListPlayer = { name: string; number: string | null };
+export type TeamListPlayer = {
+  /** PlayHQ player UUID; null pre-ingest (no appearance row yet). */
+  id: string | null;
+  name: string;
+  number: string | null;
+  position: string | null;
+};
 
 export type TeamListSide = {
   id: string | null;
