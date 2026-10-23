@@ -10,13 +10,20 @@
 // the custom secret guards every request. The Deputy token and service role
 // key are read from Edge Function secrets and never logged or returned.
 //
+// Deputy auth: a PERMANENT token (DEPUTY_API_TOKEN), sent as
+// `Authorization: OAuth <token>`. For a single Deputy install this is Deputy's
+// recommended server-to-server method — it does not expire, so there is no
+// refresh flow. (Generating a new token via "Get An Access Token" in the
+// install's OAuth client page invalidates the previous one, so keep it stable.)
+//
 // Deploy:  supabase functions deploy deputy-sync --no-verify-jwt
 // Secrets: supabase secrets set DEPUTY_BASE_URL=... DEPUTY_API_TOKEN=... \
 //          DEPUTY_SYNC_SECRET=... SUPABASE_SERVICE_ROLE_KEY=...
 //
-// NOTE: not yet run against the live Deputy API — the provided token returned
-// 401 in testing. The pure logic (mapping/pagination/dedupe/retry) is unit-
-// tested with mocked responses; see mappers.test.ts.
+// STATUS: Phase 1 (Company, OperationalUnit, Employee) validated live against
+// the 6ac52f24123110 Deputy tenant and the Supabase `deputy` schema — a real
+// round-trip synced 2 companies + 124 employees, idempotent on re-run. The pure
+// logic (mapping/pagination/dedupe/retry) is also unit-tested; see mappers.test.ts.
 
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import {

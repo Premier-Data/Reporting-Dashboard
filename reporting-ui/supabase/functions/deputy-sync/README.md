@@ -10,11 +10,28 @@ approves, or edits anything in Deputy.
 |---|---|
 | DB schema (`deputy.*`, 11 tables) | ✅ applied (see `migrations/001_deputy_integration.sql`) |
 | Pure logic (mapping, pagination, dedupe, retry) | ✅ unit-tested (`lib/deputy/deputySync.test.ts`, 18 tests) |
-| Phase 1 handlers (Company, OperationalUnit, Employee) | ✅ implemented |
-| Phase 2–4 handlers (Roster, Timesheet, Leave) | ✅ implemented (same engine + date window) |
-| **Live run against Deputy API** | ❌ **NOT done** — the provided token returned 401. Needs a valid `DEPUTY_API_TOKEN`. |
-| Deploy to Supabase | ❌ not deployed (needs approval + valid secrets) |
+| Phase 1 handlers (Company, OperationalUnit, Employee) | ✅ **live-validated** — synced 2 companies + 124 employees, idempotent on re-run |
+| Phase 2–4 handlers (Roster, Timesheet, Leave) | ✅ implemented (same engine + date window); not yet live-run |
+| Deploy to Supabase | ❌ not deployed (needs approval + secrets) |
 | Scheduling (pg_cron) | ❌ not set up (later phase) |
+
+## Authentication: Deputy permanent token
+
+For a single Deputy install, Deputy's recommended server-to-server method is a
+**permanent token** — it does not expire, so there is no OAuth refresh flow.
+
+- Generate it from the install's OAuth client page
+  (`https://<install>/exec/devapp/oauth_clients` → open the client → **Get An
+  Access Token**). The token is shown once; store it securely.
+- Set it as `DEPUTY_API_TOKEN`. The function sends it as
+  `Authorization: OAuth <token>`.
+- **Caveat:** clicking "Get An Access Token" again generates a NEW permanent
+  token and invalidates the previous one. Keep a single stable token for the
+  sync; don't regenerate it unless you also update `DEPUTY_API_TOKEN`.
+
+> Note: the global `once.deputy.com` authorization-code OAuth flow is for
+> multi-tenant apps serving many installs. This install-specific client returns
+> `invalid_client` there — which is expected; use the permanent token instead.
 
 ## What it does
 
@@ -40,6 +57,8 @@ See `.env.example`. Set with:
 supabase secrets set DEPUTY_BASE_URL=... DEPUTY_API_TOKEN=... \
   DEPUTY_SYNC_SECRET=... SUPABASE_SERVICE_ROLE_KEY=...
 ```
+`SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are injected automatically in the
+deployed function; set them only for local testing.
 
 ## Test locally (pure logic, no secrets needed)
 
@@ -74,10 +93,14 @@ Start with `"dryRun": true` to validate before writing.
 
 ## Known limitations / open questions
 
-- Deputy auth unverified live (401 with the supplied token).
+- Phase 1 is live-validated; Phase 2–4 (Roster/Timesheet/Leave) share the same
+  engine but have not yet been run against live data.
+- Employee `email` comes back null from `Employee/QUERY` (Deputy keeps contact
+  details on a separate `Contact` object) — a Contact join can enrich it later.
 - `TotalTime` / `Cost` units/semantics not yet confirmed against real data —
   stored verbatim, not treated as verified payroll values.
 - Incremental sync uses a date window; a reliable `Modified` cursor is TBD
   pending live response inspection.
-- Reading `deputy.*` from the dashboard needs the Data API "Exposed schemas"
-  setting updated (currently only `public, graphql_public`).
+- The `deputy` schema + its tables must be exposed in the Data API ("Exposed
+  schemas" + "Exposed tables") for the service role to reach them via
+  supabase-js. (Already done for the live project.)
