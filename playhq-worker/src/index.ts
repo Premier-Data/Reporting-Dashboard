@@ -49,6 +49,11 @@ export interface Env {
   SUPABASE_ANON_KEY?: string;
   // Poll cadence (minutes) for competitor RSS/YouTube feeds.
   COMPETITOR_POLL_MINUTES?: string;
+  // Secret bearer token gating the admin player-backfill endpoint
+  // (POST/GET /api/admin/backfill-players). A SECRET — set with
+  // `wrangler secret put BACKFILL_TOKEN`, never committed. When unset the
+  // endpoint always returns 401.
+  BACKFILL_TOKEN?: string;
 }
 
 // Default grades the /live endpoint searches to resolve a game's teams.
@@ -1616,6 +1621,75 @@ async function ingestPlayers(
   }
 }
 
+// Result of one backfill batch — a resumable cursor the caller loops on.
+type BackfillBatchResult = {
+  grade: string;
+  totalGames: number;
+  offset: number;
+  limit: number;
+  processed: number;
+  skipped: number;
+  nextOffset: number | null;
+  done: boolean;
+};
+
+// Process a SMALL, resumable slice of a grade's games for player backfill. The
+// Cloudflare free plan caps ~50 subrequests per invocation; fetchGradeGames
+// spends several paginating, and each game costs 1 summary fetch + 2 Supabase
+// upserts. So we only touch `limit` games (hard-capped) per call and hand back
+// a cursor (`nextOffset`/`done`) for the caller to loop. Games are processed
+// SEQUENTIALLY with a small inter-game delay to bound subrequest bursts and be
+// gentle on PlayHQ; each game is wrapped in try/catch so a single failed
+// summary (404/forbidden/etc.) is counted as `skipped` and never aborts the
+// batch. Reuses fetchGradeGames/fetchGameSummary/ingestPlayers unchanged;
+// re-running overlapping offsets is safe because ingestPlayers upserts.
+async function runBackfillBatch(
+  grade: string,
+  offset: number,
+  limit: number,
+  env: Env
+): Promise<BackfillBatchResult> {
+  const games = (await fetchGradeGames(grade, env)) as Array<Record<string, unknown>>;
+  const totalGames = games.length;
+  const slice = games.slice(offset, offset + limit);
+
+  let processed = 0;
+  let skipped = 0;
+  for (let i = 0; i < slice.length; i++) {
+    const g = slice[i];
+    const fullId = String(g.id ?? "");
+    if (!fullId) {
+      skipped++;
+      continue;
+    }
+    try {
+      const summary = await fetchGameSummary(fullId, env);
+      await ingestPlayers(summary, env);
+      processed++;
+    } catch {
+      // Per-game failure (404/forbidden/rate-limit/etc.) — count and continue,
+      // never abort the batch.
+      skipped++;
+    }
+    // Gentle pacing between games (skip after the last one).
+    if (i < slice.length - 1) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+
+  const reachedEnd = offset + limit >= totalGames;
+  return {
+    grade,
+    totalGames,
+    offset,
+    limit,
+    processed,
+    skipped,
+    nextOffset: reachedEnd ? null : offset + limit,
+    done: reachedEnd,
+  };
+}
+
 // Pull the text content of the FIRST matching tag inside a block.
 function tagText(block: string, tag: string): string | null {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
@@ -1767,6 +1841,60 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
     }
+
+    // POST/GET /api/admin/backfill-players — token-gated, BATCHED + resumable
+    // player backfill for a grade. The free plan caps ~50 subrequests per
+    // invocation, so a single call only processes a SMALL slice of games
+    // (`limit`, hard-capped at 12) and returns a cursor (`nextOffset`/`done`)
+    // for the caller to loop. Accepts GET (easy curl) or POST — both require
+    // the token. Declared BEFORE the GET-only guard so POST reaches it.
+    if (url.pathname === "/api/admin/backfill-players") {
+      // Auth (token-gated): accept the token from an Authorization: Bearer
+      // header, the x-backfill-token header, or a ?token= query param. Any
+      // mismatch — or an unset BACKFILL_TOKEN — is a 401.
+      const bearer = (request.headers.get("Authorization") ?? "").replace(
+        /^Bearer\s+/i,
+        ""
+      );
+      const provided =
+        bearer ||
+        request.headers.get("x-backfill-token") ||
+        url.searchParams.get("token") ||
+        "";
+      if (!env.BACKFILL_TOKEN || provided !== env.BACKFILL_TOKEN) {
+        return json({ error: "unauthorized" }, 401, cors);
+      }
+
+      // Validate the grade UUID.
+      const grade = url.searchParams.get("grade") ?? "";
+      if (!UUID_RE.test(grade)) {
+        return json({ error: "invalid_grade_id" }, 400, cors);
+      }
+
+      // offset (default 0) and limit (default 10, hard-capped at 12) keep
+      // subrequests well under the free-plan ceiling (limit*3 + pagination).
+      const offsetRaw = Number(url.searchParams.get("offset") ?? "0");
+      const offset =
+        Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+      const limitRaw = Number(url.searchParams.get("limit") ?? "10");
+      const limit =
+        Number.isFinite(limitRaw) && limitRaw > 0
+          ? Math.min(12, Math.floor(limitRaw))
+          : 10;
+
+      try {
+        const result = await runBackfillBatch(grade, offset, limit, env);
+        return json(result, 200, cors);
+      } catch (err) {
+        if (err instanceof UpstreamError) {
+          const extra: HeadersInit =
+            err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+          return json({ error: err.message }, err.status, extra);
+        }
+        return json({ error: "backfill_failed" }, 502, cors);
+      }
+    }
+
     if (request.method !== "GET") {
       return json({ error: "method_not_allowed" }, 405, cors);
     }
