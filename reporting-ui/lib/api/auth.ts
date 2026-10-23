@@ -86,6 +86,10 @@ export const PAGES: PageDef[] = [
 // to denied for existing roles).
 const PAGE_KEY_ALIASES: Record<string, string> = {
     "/push-log": "live-scores",
+    // Player profiles are opened by clicking a player in the Live Scores team
+    // lists, so they're a sub-view of Live Scores and inherit its permission
+    // (rather than mapping to no key -> denied -> redirect to the dashboard).
+    "/player": "live-scores",
 };
 
 /** Map a route pathname to its page key, or null if unknown. */
