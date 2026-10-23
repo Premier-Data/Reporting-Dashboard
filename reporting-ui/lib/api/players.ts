@@ -1,5 +1,13 @@
 import { supabase } from "@/lib/supabase";
 
+// Worker base URL — resolved the SAME way as lib/api/playhq.ts and
+// lib/api/competitors.ts (each declares its own local constant). Points the
+// live career proxy at our Cloudflare Worker; falls back to the workers.dev
+// default so the feature works before a custom domain is wired up.
+const WORKER_BASE =
+  process.env.NEXT_PUBLIC_PLAYHQ_WORKER_URL?.replace(/\/$/, "") ||
+  "https://playhq-scores.premier-data-enterprise.workers.dev";
+
 // ======================================================================
 // Player profiles: aggregate a single PlayHQ player's history from OUR
 // Supabase tables (playhq_players + playhq_player_appearances), NOT a live
@@ -145,5 +153,87 @@ export async function getPlayerProfile(
       bestPlayerCount: appearances.filter((a) => a.bestPlayer != null).length,
       positions,
     },
+  };
+}
+
+// ======================================================================
+// Full PlayHQ player career: a player's COMPLETE career (career totals +
+// every game ever played), sourced LIVE from PlayHQ's public Discovery
+// GraphQL API and proxied through OUR Cloudflare Worker (never PlayHQ
+// directly). The worker flattens the deep GraphQL payload into the
+// CareerProfile shape below, so this is a thin typed fetch. Read client-side
+// — no auth, no token. Used by the /player profile page.
+// ======================================================================
+
+/** One career total / per-game stat, e.g. { type: "GOAL_COUNT", value: 767 }. */
+export type CareerStat = { type: string; value: number };
+
+/** One game in a player's flattened career history (every field null-safe). */
+export type CareerGame = {
+  gameId: string;
+  season: string | null;
+  competition: string | null;
+  organisation: string | null;
+  club: string | null;
+  team: string | null;
+  grade: string | null;
+  round: string | null;
+  date: string | null;
+  home: string | null;
+  away: string | null;
+  /** Human match label "Home vs Away" (never the id when both sides known). */
+  matchName: string;
+  venue: string | null;
+  stats: CareerStat[];
+};
+
+/** A player's identity + flattened LIVE PlayHQ career (totals + every game). */
+export type CareerProfile = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  /** Every career total type present (APPEARANCE, GOAL_COUNT, BEST_PLAYER, …). */
+  totals: CareerStat[];
+  /** Every game ever played, most-recent first. */
+  games: CareerGame[];
+};
+
+/**
+ * Read a PlayHQ player's COMPLETE public career via the Worker proxy. Returns
+ * the flattened CareerProfile, or null on a not-found player. A PRIVATE profile
+ * (no public career data) resolves to a profile with empty totals/games rather
+ * than throwing, so the page can show a friendly empty state. Throws an Error
+ * (carrying the worker's error message when present) on other failures.
+ */
+export async function getPlayerCareer(
+  playerId: string,
+  tenant = "afl"
+): Promise<CareerProfile | null> {
+  if (!playerId) return null;
+
+  const res = await fetch(
+    `${WORKER_BASE}/api/player/${playerId}/profile?tenant=${encodeURIComponent(tenant)}`,
+    { cache: "no-store" }
+  );
+
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    let message = `Failed loading player career (HTTP ${res.status})`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body?.error) message = `Failed loading player career (${body.error})`;
+    } catch {
+      /* non-JSON error body — keep the generic message */
+    }
+    throw new Error(message);
+  }
+
+  const profile = (await res.json()) as CareerProfile;
+  return {
+    id: profile.id,
+    firstName: profile.firstName ?? null,
+    lastName: profile.lastName ?? null,
+    totals: Array.isArray(profile.totals) ? profile.totals : [],
+    games: Array.isArray(profile.games) ? profile.games : [],
   };
 }

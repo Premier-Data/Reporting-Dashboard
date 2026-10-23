@@ -229,6 +229,231 @@ const GAME_QUERY = `query game($id: ID!, $scope: PeriodScore) { game(id: $id) { 
 // Only accept that shape so the id can't be used to smuggle anything upstream.
 const ID_RE = /^[a-zA-Z0-9_-]{4,64}$/;
 
+// ── Public player career (Discovery GraphQL) ────────────────────────────────
+// PlayHQ's public player-statistics lives on the Discovery GraphQL endpoint
+// (api.playhq.com/graphql), NOT the spectator one. It serves a player's COMPLETE
+// career (career totals + every game ever played) with NO auth, provided the
+// request looks like a browser AND carries the `tenant` header (lowercase,
+// value "afl"). Confirmed empirically against Sam Dunstan
+// (803aa666-2648-4ec9-b348-dbae149e0baf): HTTP 200 with APPEARANCE=321,
+// GOAL_COUNT=767, BEST_PLAYER=132. A naive fetch without a Chrome User-Agent is
+// the 403 risk; without the `tenant` header the statistics resolver returns the
+// GraphQL error "tenant header is missing".
+const PLAYHQ_GRAPH = "https://api.playhq.com/graphql";
+
+// A realistic Chrome UA — required so PlayHQ doesn't 403 the proxy as a bot.
+const BROWSER_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+
+// The career GraphQL document. Operation `publicProfileStatistics`, variable
+// `$profileID: ID!` (capital-ID spelling). Each statistic entry is
+// `{ count, details { value }, gameFormat }` where `details` is a SINGLE object
+// (NOT an array) and `details.value` is the stat-type string (APPEARANCE,
+// GOAL_COUNT, BEST_PLAYER, …); `count` is the numeric value. Verified live.
+const CAREER_QUERY = `query publicProfileStatistics($profileID: ID!) {
+  publicProfileStatistics(profileID: $profileID) {
+    careerStatistics {
+      totalStatistics { count details { value } gameFormat }
+      clubStatistics { id club { id name } statistics { count details { value } gameFormat } }
+    }
+    seasonStatistics {
+      name
+      statistics {
+        season { id name competition { id name organisation { id name } } }
+        role
+        club { id name }
+        teamStatistics {
+          team { ... on DiscoverTeam { id name } }
+          gradeStatistics {
+            grade { id name }
+            gameStatistics {
+              game {
+                id
+                round { name }
+                home { ... on DiscoverTeam { id name } }
+                away { ... on DiscoverTeam { id name } }
+                date
+                allocation { court { abbreviatedName venue { name } } }
+              }
+              statistics { count details { value } gameFormat }
+            }
+          }
+        }
+      }
+    }
+  }
+  publicProfile(profileID: $profileID) { id firstName lastName }
+}`;
+
+// One career total / per-game stat, flattened to a readable { type, value }.
+type CareerStat = { type: string; value: number };
+
+// One game in a player's flattened career history.
+type CareerGame = {
+  gameId: string;
+  season: string | null;
+  competition: string | null;
+  organisation: string | null;
+  club: string | null;
+  team: string | null;
+  grade: string | null;
+  round: string | null;
+  date: string | null;
+  home: string | null;
+  away: string | null;
+  matchName: string;
+  venue: string | null;
+  stats: CareerStat[];
+};
+
+// A player's identity + flattened career (totals + every game), as the worker
+// returns it to the dashboard. This is the single, chosen place to flatten.
+type CareerProfile = {
+  id: string;
+  firstName: string | null;
+  lastName: string | null;
+  totals: CareerStat[];
+  games: CareerGame[];
+};
+
+// Map a raw PlayHQ statistics[] array to flattened { type, value } entries.
+// Reads `count` for the value and `details.value` for the type (details is a
+// single object, verified live — NOT an array). Skips entries missing a type.
+function flattenStats(raw: unknown): CareerStat[] {
+  if (!Array.isArray(raw)) return [];
+  const out: CareerStat[] = [];
+  for (const s of raw as Array<Record<string, unknown>>) {
+    const details = (s?.details ?? null) as { value?: unknown } | null;
+    const type = details?.value;
+    if (typeof type !== "string" || !type) continue;
+    const count = typeof s?.count === "number" ? s.count : 0;
+    out.push({ type, value: count });
+  }
+  return out;
+}
+
+// Read a named string field off a nullable object (null-safe).
+function strOf(obj: unknown, key: string): string | null {
+  if (!obj || typeof obj !== "object") return null;
+  const v = (obj as Record<string, unknown>)[key];
+  return typeof v === "string" && v ? v : null;
+}
+
+// Flatten the raw Discovery `data` (from fetchPlayerCareer) into a CareerProfile.
+// Defensive against every array/object being absent or null — a PRIVATE profile
+// returns `publicProfileStatistics: null`, in which case identity still comes
+// from `publicProfile` and totals/games are empty (never throws).
+function flattenCareer(data: Record<string, unknown>): CareerProfile {
+  const profile = (data.publicProfile ?? {}) as Record<string, unknown>;
+  const stats = (data.publicProfileStatistics ?? null) as Record<
+    string,
+    unknown
+  > | null;
+
+  const id = strOf(profile, "id") ?? "";
+  const firstName = strOf(profile, "firstName");
+  const lastName = strOf(profile, "lastName");
+
+  if (!stats) {
+    return { id, firstName, lastName, totals: [], games: [] };
+  }
+
+  const career = (stats.careerStatistics ?? {}) as Record<string, unknown>;
+  const totals = flattenStats(career.totalStatistics);
+
+  const games: CareerGame[] = [];
+  const seasons = Array.isArray(stats.seasonStatistics)
+    ? (stats.seasonStatistics as Array<Record<string, unknown>>)
+    : [];
+  for (const s of seasons) {
+    const outerSeasonName = strOf(s, "name");
+    const statsList = Array.isArray(s.statistics)
+      ? (s.statistics as Array<Record<string, unknown>>)
+      : [];
+    for (const st of statsList) {
+      const seasonObj = (st.season ?? {}) as Record<string, unknown>;
+      const seasonName = strOf(seasonObj, "name") ?? outerSeasonName;
+      const competitionObj = (seasonObj.competition ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const competition = strOf(competitionObj, "name");
+      const organisation = strOf(
+        (competitionObj.organisation ?? {}) as Record<string, unknown>,
+        "name"
+      );
+      const club = strOf((st.club ?? {}) as Record<string, unknown>, "name");
+
+      const teamStats = Array.isArray(st.teamStatistics)
+        ? (st.teamStatistics as Array<Record<string, unknown>>)
+        : [];
+      for (const ts of teamStats) {
+        const team = strOf((ts.team ?? {}) as Record<string, unknown>, "name");
+        const gradeStats = Array.isArray(ts.gradeStatistics)
+          ? (ts.gradeStatistics as Array<Record<string, unknown>>)
+          : [];
+        for (const gs of gradeStats) {
+          const grade = strOf(
+            (gs.grade ?? {}) as Record<string, unknown>,
+            "name"
+          );
+          const gameStats = Array.isArray(gs.gameStatistics)
+            ? (gs.gameStatistics as Array<Record<string, unknown>>)
+            : [];
+          for (const g of gameStats) {
+            const game = (g.game ?? {}) as Record<string, unknown>;
+            const home = strOf(
+              (game.home ?? {}) as Record<string, unknown>,
+              "name"
+            );
+            const away = strOf(
+              (game.away ?? {}) as Record<string, unknown>,
+              "name"
+            );
+            const court = (((game.allocation ?? {}) as Record<string, unknown>)
+              .court ?? {}) as Record<string, unknown>;
+            const venue = strOf(
+              (court.venue ?? {}) as Record<string, unknown>,
+              "name"
+            );
+            const matchName =
+              home && away
+                ? `${home} vs ${away}`
+                : team || strOf(game, "id") || "Unknown match";
+            games.push({
+              gameId: strOf(game, "id") ?? "",
+              season: seasonName,
+              competition,
+              organisation,
+              club,
+              team,
+              grade,
+              round: strOf((game.round ?? {}) as Record<string, unknown>, "name"),
+              date: strOf(game, "date"),
+              home,
+              away,
+              matchName,
+              venue,
+              stats: flattenStats(g.statistics),
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Most-recent first by ISO date; undated games sort last (stable).
+  games.sort((a, b) => {
+    const da = a.date ? Date.parse(a.date) : NaN;
+    const db = b.date ? Date.parse(b.date) : NaN;
+    const va = Number.isNaN(da) ? -Infinity : da;
+    const vb = Number.isNaN(db) ? -Infinity : db;
+    return vb - va;
+  });
+
+  return { id, firstName, lastName, totals, games };
+}
+
 function corsHeaders(env: Env, requestOrigin: string | null): HeadersInit {
   const allowed = (env.ALLOWED_ORIGINS ?? "*")
     .split(",")
@@ -549,6 +774,49 @@ async function fetchGame(id: string, env: Env): Promise<unknown> {
   if (data.errors?.length) throw new UpstreamError("graphql_errors", 502);
   if (!data.data?.game) throw new UpstreamError("not_found", 404);
   return data.data.game;
+}
+
+// Fetch a player's COMPLETE career from the Discovery GraphQL endpoint and
+// return the raw `data` (publicProfile + publicProfileStatistics). Sends
+// browser-like headers + the lowercase `tenant` header so PlayHQ doesn't 403
+// the proxy as a bot and the statistics resolver doesn't reject a missing
+// tenant. Throws a tagged UpstreamError the route maps to an HTTP status.
+async function fetchPlayerCareer(
+  id: string,
+  tenant: string,
+  env: Env
+): Promise<Record<string, unknown>> {
+  const upstream = await fetch(PLAYHQ_GRAPH, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "*/*",
+      "User-Agent": BROWSER_UA,
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.playhq.com",
+      Referer: "https://www.playhq.com/",
+      tenant: tenant || env.PHQ_TENANT || "afl",
+    },
+    body: JSON.stringify({
+      operationName: "publicProfileStatistics",
+      variables: { profileID: id },
+      query: CAREER_QUERY,
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+
+  if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
+  if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
+  if (upstream.status === 404) throw new UpstreamError("not_found", 404);
+  if (!upstream.ok) throw new UpstreamError("upstream_error", 502);
+
+  const data = (await upstream.json()) as {
+    data?: Record<string, unknown>;
+    errors?: unknown[];
+  };
+  if (data.errors?.length) throw new UpstreamError("graphql_errors", 502);
+  if (!data.data) throw new UpstreamError("not_found", 404);
+  return data.data;
 }
 
 class UpstreamError extends Error {
@@ -2025,6 +2293,68 @@ export default {
           return json({ error: err.message }, err.status, extra);
         }
         return json({ error: "unable_to_retrieve_games" }, 502, cors);
+      }
+    }
+
+    // /api/player/:id/profile — a PlayHQ player's COMPLETE public career
+    // (career totals + every game ever played), flattened IN THE WORKER into
+    // the CareerProfile shape the dashboard renders directly. Read-only, public
+    // (no token). Proxies the Discovery GraphQL endpoint with browser-like
+    // headers + the `tenant` header so PlayHQ returns 200, not 403. Short edge
+    // cache so repeated profile opens don't re-hit PlayHQ.
+    const careerMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/profile$/);
+    if (careerMatch) {
+      const pid = decodeURIComponent(careerMatch[1]);
+      if (!UUID_RE.test(pid)) {
+        return json({ error: "invalid_player_id" }, 400, cors);
+      }
+      const tenant = url.searchParams.get("tenant") || env.PHQ_TENANT || "afl";
+      const careerKey = new Request(
+        `https://playhq-cache/player-career/${pid}/${tenant}`
+      );
+      const careerHit = await cache.match(careerKey);
+      if (careerHit) {
+        return new Response(await careerHit.text(), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "HIT",
+            ...cors,
+          },
+        });
+      }
+      try {
+        const data = await fetchPlayerCareer(pid, tenant, env);
+        const profile = flattenCareer(data);
+        const bodyText = JSON.stringify(profile);
+        const careerTtl = 300;
+        ctx.waitUntil(
+          cache.put(
+            careerKey,
+            new Response(bodyText, {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": `public, max-age=${careerTtl}`,
+              },
+            })
+          )
+        );
+        return new Response(bodyText, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "MISS",
+            "Cache-Control": `public, max-age=${careerTtl}`,
+            ...cors,
+          },
+        });
+      } catch (err) {
+        if (err instanceof UpstreamError) {
+          const extra: HeadersInit =
+            err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+          return json({ error: err.message }, err.status, extra);
+        }
+        return json({ error: "unable_to_retrieve_career" }, 502, cors);
       }
     }
 
