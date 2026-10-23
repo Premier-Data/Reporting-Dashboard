@@ -1,0 +1,18 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Games expectation corrected downward",
+      "severity": "info",
+      "confidence": "confirmed",
+      "detail": "Plan expected >300 per-game rows, but PlayHQ's public Discovery API exposes per-game detail for only 6 of 28 seasons, so 98 rows render. Career totals remain career-wide (APPEARANCE=321). Not a bug; documented in the plan evidence and commit message. No action."
+    },
+    {
+      "label": "Live-200 gate not independently re-run",
+      "severity": "info",
+      "confidence": "confirmed",
+      "detail": "Per the review instructions the reviewer relied on recorded evidence rather than re-hitting PlayHQ. Evidence is present and specific: HTTP 200 for Sam Dunstan with APPEARANCE=321 / GOAL_COUNT=767 / BEST_PLAYER=132, plus worker tsc, dashboard tsc, and next build static export all recorded. No action."
+    }
+  ],
+  "reviewDoc": "c:\\Users\\AndyDin\\reporting-dashboard\\.worktrees\\player-career/reporting-ui/.agents/tasks/career-review.md"
+}
