@@ -117,7 +117,7 @@ function PlayerProfileInner() {
         <span className="text-sm font-semibold">Player</span>
       </div>
 
-      <div className="mx-auto w-full max-w-2xl flex-1 px-4 py-5">
+      <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-5 sm:px-6">
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-20 text-sm text-slate-400">
             <Loader2 size={18} className="animate-spin" /> Loading player…
@@ -183,7 +183,7 @@ function PlayerProfileInner() {
               </div>
             ) : (
               <div className="overflow-x-auto rounded-xl border border-white/10">
-                <table className="w-full min-w-[640px] text-left text-sm">
+                <table className="w-full text-left text-sm">
                   <thead>
                     <tr className="border-b border-white/10 text-xs uppercase tracking-wide text-slate-400">
                       <th className="whitespace-nowrap px-3 py-2 font-semibold">Game</th>
@@ -199,7 +199,7 @@ function PlayerProfileInner() {
                     {profile.appearances.map((a, i) => (
                       <tr key={`${a.gameId}-${i}`} className="text-slate-200">
                         <td
-                          className="max-w-[16rem] truncate px-3 py-2"
+                          className="max-w-[22rem] truncate px-3 py-2"
                           title={a.matchName}
                         >
                           {a.matchName}
