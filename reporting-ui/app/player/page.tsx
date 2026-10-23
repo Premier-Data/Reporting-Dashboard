@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 
 import { getPlayerCareer, type CareerProfile } from "@/lib/api/players";
+import AnalystSelect from "@/app/analyst-compare/AnalystSelect";
 
 // One dark-theme summary card (icon + label + value).
 function StatCard({
@@ -268,36 +269,32 @@ function PlayerProfileInner() {
                     are no games to filter. */}
                 {profile.games.length > 0 && (
                   <div className="mb-3 flex flex-wrap items-center gap-3">
-                    <label className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
                       Season
-                      <select
-                        value={seasonFilter}
-                        onChange={(e) => setSeasonFilter(e.target.value)}
-                        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-white/30"
-                      >
-                        <option value="all">All seasons</option>
-                        {seasonOptions.map((s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                      <div className="min-w-[12rem]">
+                        <AnalystSelect
+                          options={["All seasons", ...seasonOptions]}
+                          value={
+                            seasonFilter === "all" ? "All seasons" : seasonFilter
+                          }
+                          onChange={(v) =>
+                            setSeasonFilter(v === "All seasons" ? "all" : v)
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs font-medium text-slate-400">
                       Team
-                      <select
-                        value={teamFilter}
-                        onChange={(e) => setTeamFilter(e.target.value)}
-                        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-white/30"
-                      >
-                        <option value="all">All teams</option>
-                        {teamOptions.map((t) => (
-                          <option key={t} value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                      <div className="min-w-[12rem]">
+                        <AnalystSelect
+                          options={["All teams", ...teamOptions]}
+                          value={teamFilter === "all" ? "All teams" : teamFilter}
+                          onChange={(v) =>
+                            setTeamFilter(v === "All teams" ? "all" : v)
+                          }
+                        />
+                      </div>
+                    </div>
                   </div>
                 )}
 
