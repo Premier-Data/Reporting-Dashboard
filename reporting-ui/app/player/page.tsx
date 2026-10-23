@@ -107,6 +107,11 @@ function PlayerProfileInner() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Client-side filters for the per-game history table. "all" = no filter.
+  // These only scope the TABLE below — the career totals cards stay career-wide.
+  const [seasonFilter, setSeasonFilter] = useState("all");
+  const [teamFilter, setTeamFilter] = useState("all");
+
   const back = () => router.back();
 
   useEffect(() => {
@@ -140,11 +145,46 @@ function PlayerProfileInner() {
     };
   }, [id]);
 
+  // Reset filters whenever a different player loads, so a selection from the
+  // previous player doesn't carry over.
+  useEffect(() => {
+    setSeasonFilter("all");
+    setTeamFilter("all");
+  }, [id]);
+
   const displayName = useMemo(() => {
     if (!profile) return "";
     const full = `${profile.firstName ?? ""} ${profile.lastName ?? ""}`.trim();
     return full || "Unknown player";
   }, [profile]);
+
+  // Distinct non-null seasons, preserving the games' order (already
+  // most-recent-first), for the Year/Season filter.
+  const seasonOptions = useMemo(() => {
+    const seen: string[] = [];
+    for (const g of profile?.games ?? []) {
+      if (g.season && !seen.includes(g.season)) seen.push(g.season);
+    }
+    return seen;
+  }, [profile]);
+
+  // Distinct non-null teams, sorted alphabetically, for the Team filter.
+  const teamOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const g of profile?.games ?? []) {
+      if (g.team) seen.add(g.team);
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b));
+  }, [profile]);
+
+  // The table rows after applying both filters (AND). Totals are unaffected.
+  const filteredGames = useMemo(() => {
+    return (profile?.games ?? []).filter(
+      (g) =>
+        (seasonFilter === "all" || g.season === seasonFilter) &&
+        (teamFilter === "all" || g.team === teamFilter)
+    );
+  }, [profile, seasonFilter, teamFilter]);
 
   // A public profile with no career data (private or empty) → friendly state,
   // not a crash.
@@ -212,13 +252,55 @@ function PlayerProfileInner() {
                 )}
 
                 {/* Full per-game career history */}
-                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-semibold uppercase tracking-wide text-slate-400">
                   Career history
-                  <span className="ml-2 font-normal normal-case text-slate-500">
-                    {profile.games.length} game
-                    {profile.games.length === 1 ? "" : "s"}
+                  <span className="font-normal normal-case text-slate-500">
+                    {profile.games.length > 0 &&
+                    filteredGames.length !== profile.games.length
+                      ? `showing ${filteredGames.length} of ${profile.games.length} games`
+                      : `${profile.games.length} game${
+                          profile.games.length === 1 ? "" : "s"
+                        }`}
                   </span>
                 </div>
+
+                {/* Client-side filters: Year/Season + Team. Hidden when there
+                    are no games to filter. */}
+                {profile.games.length > 0 && (
+                  <div className="mb-3 flex flex-wrap items-center gap-3">
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                      Season
+                      <select
+                        value={seasonFilter}
+                        onChange={(e) => setSeasonFilter(e.target.value)}
+                        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-white/30"
+                      >
+                        <option value="all">All seasons</option>
+                        {seasonOptions.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 text-xs font-medium text-slate-400">
+                      Team
+                      <select
+                        value={teamFilter}
+                        onChange={(e) => setTeamFilter(e.target.value)}
+                        className="rounded-lg border border-white/10 bg-white/5 px-2 py-1.5 text-sm text-slate-100 outline-none focus:border-white/30"
+                      >
+                        <option value="all">All teams</option>
+                        {teamOptions.map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                )}
+
                 {profile.games.length === 0 ? (
                   <div className="rounded-xl border border-white/10 bg-white/5 px-4 py-8 text-center text-sm text-slate-400">
                     No games on record.
@@ -252,7 +334,17 @@ function PlayerProfileInner() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
-                        {profile.games.map((g, i) => {
+                        {filteredGames.length === 0 ? (
+                          <tr>
+                            <td
+                              colSpan={7}
+                              className="px-3 py-8 text-center text-sm text-slate-400"
+                            >
+                              No games match these filters.
+                            </td>
+                          </tr>
+                        ) : null}
+                        {filteredGames.map((g, i) => {
                           const gradeComp =
                             [g.grade, g.competition]
                               .filter(Boolean)
