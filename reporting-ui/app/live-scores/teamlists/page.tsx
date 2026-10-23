@@ -7,7 +7,6 @@
 // does. A back arrow returns to the Live Scores list.
 
 import { Suspense, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ChevronLeft, Loader2, AlertTriangle } from "lucide-react";
 
@@ -83,10 +82,14 @@ function Crest({
 function TeamRoster({
   team,
   badge,
+  onPlayerClick,
 }: {
   team: TeamListSide;
   // The player-number badge colours: square background + number text.
   badge: { bg: string; fg: string };
+  // Navigate to a player's profile (passed from the parent, which holds the
+  // router). Only called for players that have a PlayHQ id.
+  onPlayerClick: (playerId: string) => void;
 }) {
   // The worker already returns players in jumper-number order; keep as-is but
   // be defensive in case of ties.
@@ -125,15 +128,17 @@ function TeamRoster({
           );
           // Clickable → player profile only once the player has been ingested
           // (has a PlayHQ id). Pre-ingest players render as plain text.
+          const pid = p.id;
           return (
             <li key={`${p.name}-${i}`}>
-              {p.id ? (
-                <Link
-                  href={`/player?id=${encodeURIComponent(p.id)}`}
-                  className="-mx-2 flex cursor-pointer items-center gap-3 rounded-md px-2 py-2.5 transition hover:bg-white/5"
+              {pid ? (
+                <button
+                  type="button"
+                  onClick={() => onPlayerClick(pid)}
+                  className="-mx-2 flex w-full cursor-pointer items-center gap-3 rounded-md px-2 py-2.5 text-left transition hover:bg-white/5"
                 >
                   {content}
-                </Link>
+                </button>
               ) : (
                 <div className="flex items-center gap-3 py-2.5">{content}</div>
               )}
@@ -358,6 +363,9 @@ function TeamListsInner() {
               <TeamRoster
                 team={activeTeam}
                 badge={side === "home" ? colors.home : colors.away}
+                onPlayerClick={(playerId) =>
+                  router.push(`/player?id=${encodeURIComponent(playerId)}`)
+                }
               />
             </>
           ) : null}
