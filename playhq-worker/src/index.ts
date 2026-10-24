@@ -1295,6 +1295,13 @@ export function isSpectatorLive(status: unknown): boolean {
   return s === "IN_PROGRESS" || s === "LIVE";
 }
 
+// A finished game. PlayHQ reports "FINAL" (and some feeds "COMPLETED") once the
+// match is over — this is the state whose score must be pushed one last time.
+export function isFinalStatus(status: unknown): boolean {
+  const s = String(status ?? "").trim().toUpperCase();
+  return s === "FINAL" || s === "COMPLETED" || s === "COMPLETE";
+}
+
 // Worth probing the spectator feed? True when the REST status is one the feed
 // never resolves while in play — unknown ("" / "NULL") OR "UPCOMING" (the NTFL
 // feed uses UPCOMING, not empty) — AND kickoff falls inside the window. FINAL /
@@ -1653,6 +1660,115 @@ async function liveFixtureIds(env: Env): Promise<string[]> {
   }
 
   return [...ids];
+}
+
+// How long after kickoff a FINAL fixture stays eligible for the one-time final
+// push. Matches the live window's tail so a just-finished game is caught, but
+// old games (and earlier rounds) are never re-scanned. 6h covers a full match.
+const FINAL_WINDOW_AFTER_MS = 6 * 60 * 60 * 1000;
+
+// Find fixtures across the known grades that are now FINAL and were scheduled
+// recently (within FINAL_WINDOW_AFTER_MS of kickoff). These are the games whose
+// final score must be pushed once — they have dropped out of liveFixtureIds
+// because a FINAL game is no longer "live". Pure selection (no push, no guard);
+// the caller dedupes against the already-pushed set. Returns FULL ids.
+//
+// When `ignoreWindow` is true, the kickoff-window filter is skipped so a manual
+// backfill can settle an entire round's finals regardless of age.
+async function finalFixtureIds(env: Env, ignoreWindow = false): Promise<string[]> {
+  const gradeIds = (env.KNOWN_GRADE_IDS ?? DEFAULT_GRADE_IDS.join(","))
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const ids = new Set<string>();
+  const now = Date.now();
+  for (const gradeId of gradeIds) {
+    if (!UUID_RE.test(gradeId)) continue;
+    let games: Array<Record<string, unknown>> = [];
+    try {
+      games = (await fetchGradeGames(gradeId, env)) as Array<Record<string, unknown>>;
+    } catch {
+      continue;
+    }
+    for (const g of games) {
+      const fullId = String(g.id ?? "");
+      if (!fullId) continue;
+      if (!isFinalStatus(g.status)) continue;
+      if (ignoreWindow) {
+        ids.add(fullId);
+        continue;
+      }
+      const schedule = (g.schedule ?? {}) as { date?: string | null; time?: string | null };
+      const kickoff = scheduledKickoffMs(schedule);
+      // Keep only recently-kicked-off finals so we don't rescan old rounds.
+      if (kickoff == null) continue;
+      if (now >= kickoff && now <= kickoff + FINAL_WINDOW_AFTER_MS) ids.add(fullId);
+    }
+  }
+  return [...ids];
+}
+
+// ── Final-push guard (KV) ─────────────────────────────────────────────────────
+// A FINAL score must be pushed exactly ONCE — otherwise every 2-min tick would
+// re-send the same final to TT and flood the push log. We persist the set of
+// already-settled fixture ids in KV (one key, id -> ISO ts) and skip any id
+// already present. Capped so it can't grow unbounded across a long season.
+const FINALS_PUSHED_KEY = "finals_pushed";
+const FINALS_PUSHED_MAX = 500;
+
+async function readFinalsPushed(env: Env): Promise<Record<string, string>> {
+  if (!env.PUSH_LOG) return {};
+  try {
+    const raw = await env.PUSH_LOG.get(FINALS_PUSHED_KEY);
+    const obj = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    return obj && typeof obj === "object" ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeFinalsPushed(env: Env, map: Record<string, string>): Promise<void> {
+  if (!env.PUSH_LOG) return;
+  try {
+    // Cap: keep the most recent FINALS_PUSHED_MAX by timestamp.
+    const entries = Object.entries(map);
+    if (entries.length > FINALS_PUSHED_MAX) {
+      entries.sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]));
+      map = Object.fromEntries(entries.slice(0, FINALS_PUSHED_MAX));
+    }
+    await env.PUSH_LOG.put(FINALS_PUSHED_KEY, JSON.stringify(map));
+  } catch (e) {
+    console.log("finals-pushed write failed:", e instanceof Error ? e.message : "error");
+  }
+}
+
+// Push the final score+team list for each eligible fixture that hasn't been
+// settled yet. Records each in the push log and the guard. Returns the results
+// (empty when nothing to do). Used by the cron and the manual backfill.
+async function pushFinals(
+  env: Env,
+  base: string,
+  ignoreWindow = false
+): Promise<Array<Record<string, unknown>>> {
+  const candidates = await finalFixtureIds(env, ignoreWindow);
+  if (candidates.length === 0) return [];
+  const pushed = await readFinalsPushed(env);
+  const todo = candidates.filter((id) => !pushed[id]);
+  if (todo.length === 0) return [];
+
+  const results: Array<Record<string, unknown>> = [];
+  const nowIso = new Date().toISOString();
+  for (const id of todo) {
+    const r = await pushFixtureToTT(id, env);
+    logPushResult(r, base);
+    results.push(r);
+    // Only mark settled when the fixture actually resolved to a FINAL push —
+    // a transient fetch failure should be retried next tick, not suppressed.
+    if (isFinalStatus(r.status)) pushed[String(r.fullId ?? id)] = nowIso;
+  }
+  await writeFinalsPushed(env, pushed);
+  if (results.length > 0) await recordPushLog(env, base, results);
+  return results;
 }
 
 // One side of a fixture — the PlayHQ competitor (team) id plus its name.
@@ -2532,6 +2648,61 @@ export default {
       return json({ count: results.length, results }, 200, cors);
     }
 
+    // /api/push-finals — push the FINAL score + team list for finished fixtures
+    // that haven't been settled yet (the same one-time push the cron now does).
+    //   ?grade=<uuid>  REQUIRED for a backfill — scope to ONE grade so a single
+    //                  request stays well under the Worker wall-clock limit.
+    //                  Without it, only the recent-window finals across grades
+    //                  are settled (same bounded set the cron handles).
+    //   ?round=<n>     optional — within the grade, only fixtures whose round
+    //                  name contains <n> (e.g. round=4). Keeps the burst tiny.
+    //   ?force=1       also re-push finals already marked settled in the guard
+    //                  (to correct a final pushed with a stale/wrong score).
+    // Records to the push log so the correction shows up in the dashboard feed.
+    if (url.pathname === "/api/push-finals") {
+      const pushBase = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
+      const grade = url.searchParams.get("grade");
+      const roundFilter = url.searchParams.get("round");
+      const force = url.searchParams.get("force") === "1";
+
+      // Scoped backfill: one grade (optionally one round). Bounded + safe.
+      if (grade) {
+        if (!UUID_RE.test(grade)) return json({ error: "invalid_grade" }, 400, cors);
+        let games: Array<Record<string, unknown>> = [];
+        try {
+          games = (await fetchGradeGames(grade, env)) as Array<Record<string, unknown>>;
+        } catch (e) {
+          return json({ error: "grade_fetch_failed", detail: e instanceof Error ? e.message : "error" }, 502, cors);
+        }
+        const finals = games.filter((g) => {
+          if (!isFinalStatus(g.status)) return false;
+          if (!roundFilter) return true;
+          const rn = String(((g.round ?? {}) as Record<string, unknown>).name ?? "");
+          return rn.toLowerCase().includes(roundFilter.toLowerCase()) || /(\d+)/.exec(rn)?.[1] === roundFilter;
+        });
+        const pushed = await readFinalsPushed(env);
+        const todo = finals
+          .map((g) => String(g.id ?? ""))
+          .filter(Boolean)
+          .filter((id) => force || !pushed[id]);
+        const results: Array<Record<string, unknown>> = [];
+        const nowIso = new Date().toISOString();
+        for (const id of todo) {
+          const r = await pushFixtureToTT(id, env);
+          logPushResult(r, pushBase);
+          results.push(r);
+          if (isFinalStatus(r.status)) pushed[String(r.fullId ?? id)] = nowIso;
+        }
+        await writeFinalsPushed(env, pushed);
+        if (results.length > 0) await recordPushLog(env, pushBase, results);
+        return json({ grade, round: roundFilter, count: results.length, forced: force, results }, 200, cors);
+      }
+
+      // No grade: settle only the recent-window finals (bounded, same as cron).
+      const results = await pushFinals(env, pushBase, false);
+      return json({ count: results.length, results }, 200, cors);
+    }
+
     // /api/collect-competitors — manually run the competitor feed collector
     // (same work the cron does). Returns how many sources were polled and
     // items upserted. Lets you populate the activity feed on demand.
@@ -2915,6 +3086,25 @@ export default {
       await recordPushLog(env, base, results);
     })();
     ctx.waitUntil(task);
+
+    // Final-score push: send each just-finished fixture's FINAL score exactly
+    // once. A FINAL game drops out of liveFixtureIds, so without this the last
+    // score pushed is the final in-play figure, never the real full-time score.
+    // Guarded by KV so a final is never re-pushed on subsequent ticks.
+    ctx.waitUntil(
+      (async () => {
+        const base = (env.TT_BASE_URL ?? TT_BASE_DEFAULT).replace(/\/$/, "");
+        const ts = () => new Date().toISOString();
+        try {
+          const finals = await pushFinals(env, base);
+          if (finals.length > 0) {
+            console.log(`[${ts()}] TT final push: settled ${finals.length} fixture(s)`);
+          }
+        } catch (e) {
+          console.log(`[${ts()}] TT final push failed:`, e instanceof Error ? e.message : "error");
+        }
+      })()
+    );
 
     // Competitor-intelligence collector — runs on cron ticks that are a
     // multiple of COMPETITOR_POLL_MINUTES (default 30), independent of the
