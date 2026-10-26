@@ -858,6 +858,28 @@ type SeasonGrades = {
   grades: SeasonGrade[];
 };
 
+// Retry wrapper for the Discovery GraphQL fetchers used by the competition
+// sweep. Runs `doFetch` and, when PlayHQ throttles (HTTP 403 or 429) and
+// attempts remain, waits an exponential backoff (base 500ms → ~500/1500/3000ms)
+// with +/-20% jitter before retrying. Returns the Response otherwise, including
+// a final throttled Response once attempts are exhausted, so each caller's
+// existing status→UpstreamError mapping still runs. Does NOT alter the wrapped
+// fetch's headers, body, or 12s AbortSignal timeout.
+async function discoverFetchWithRetry(
+  doFetch: () => Promise<Response>,
+  attempts = 4
+): Promise<Response> {
+  const base = 500;
+  for (let n = 1; ; n++) {
+    const res = await doFetch();
+    const throttled = res.status === 403 || res.status === 429;
+    if (!throttled || n >= attempts) return res;
+    const backoff = base * 2 ** (n - 1);
+    const jitter = backoff * (Math.random() * 0.4 - 0.2); // +/-20%
+    await new Promise((r) => setTimeout(r, Math.max(0, backoff + jitter)));
+  }
+}
+
 // Fetch a season's competition/organisation + ALL grades from the PlayHQ
 // Discovery GraphQL endpoint. Mirrors fetchPlayerCareer's browser header set
 // (incl. the lowercase `tenant` header) so PlayHQ returns 200, not 403. Throws
@@ -868,24 +890,26 @@ async function fetchSeasonGrades(
   seasonId: string,
   env: Env
 ): Promise<SeasonGrades> {
-  const upstream = await fetch(PLAYHQ_GRAPH, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "*/*",
-      "User-Agent": BROWSER_UA,
-      "Accept-Language": "en-US,en;q=0.9",
-      Origin: "https://www.playhq.com",
-      Referer: "https://www.playhq.com/",
-      tenant: env.PHQ_TENANT ?? "afl",
-    },
-    body: JSON.stringify({
-      operationName: "gradeListDiscoverSeason",
-      variables: { id: seasonId },
-      query: GRADE_LIST_QUERY,
-    }),
-    signal: AbortSignal.timeout(12_000),
-  });
+  const upstream = await discoverFetchWithRetry(() =>
+    fetch(PLAYHQ_GRAPH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "*/*",
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        Origin: "https://www.playhq.com",
+        Referer: "https://www.playhq.com/",
+        tenant: env.PHQ_TENANT ?? "afl",
+      },
+      body: JSON.stringify({
+        operationName: "gradeListDiscoverSeason",
+        variables: { id: seasonId },
+        query: GRADE_LIST_QUERY,
+      }),
+      signal: AbortSignal.timeout(12_000),
+    })
+  );
 
   if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
   if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
@@ -981,24 +1005,26 @@ async function fetchGradeGameIds(
   gradeId: string,
   env: Env
 ): Promise<string[]> {
-  const upstream = await fetch(PLAYHQ_GRAPH, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "*/*",
-      "User-Agent": BROWSER_UA,
-      "Accept-Language": "en-US,en;q=0.9",
-      Origin: "https://www.playhq.com",
-      Referer: "https://www.playhq.com/",
-      tenant: env.PHQ_TENANT ?? "afl",
-    },
-    body: JSON.stringify({
-      operationName: "gradeGames",
-      variables: { id: gradeId },
-      query: GRADE_GAMES_QUERY,
-    }),
-    signal: AbortSignal.timeout(12_000),
-  });
+  const upstream = await discoverFetchWithRetry(() =>
+    fetch(PLAYHQ_GRAPH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "*/*",
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        Origin: "https://www.playhq.com",
+        Referer: "https://www.playhq.com/",
+        tenant: env.PHQ_TENANT ?? "afl",
+      },
+      body: JSON.stringify({
+        operationName: "gradeGames",
+        variables: { id: gradeId },
+        query: GRADE_GAMES_QUERY,
+      }),
+      signal: AbortSignal.timeout(12_000),
+    })
+  );
 
   if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
   if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
@@ -1048,24 +1074,26 @@ async function fetchGameAppearancesSummary(
   gameId: string,
   env: Env
 ): Promise<Record<string, unknown> | null> {
-  const upstream = await fetch(PLAYHQ_GRAPH, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "*/*",
-      "User-Agent": BROWSER_UA,
-      "Accept-Language": "en-US,en;q=0.9",
-      Origin: "https://www.playhq.com",
-      Referer: "https://www.playhq.com/",
-      tenant: env.PHQ_TENANT ?? "afl",
-    },
-    body: JSON.stringify({
-      operationName: "gameStats",
-      variables: { id: gameId },
-      query: GAME_STATS_QUERY,
-    }),
-    signal: AbortSignal.timeout(12_000),
-  });
+  const upstream = await discoverFetchWithRetry(() =>
+    fetch(PLAYHQ_GRAPH, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "*/*",
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "en-US,en;q=0.9",
+        Origin: "https://www.playhq.com",
+        Referer: "https://www.playhq.com/",
+        tenant: env.PHQ_TENANT ?? "afl",
+      },
+      body: JSON.stringify({
+        operationName: "gameStats",
+        variables: { id: gameId },
+        query: GAME_STATS_QUERY,
+      }),
+      signal: AbortSignal.timeout(12_000),
+    })
+  );
 
   if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
   if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
@@ -2347,6 +2375,13 @@ type BackfillBatchResult = {
   skipped: number;
   nextOffset: number | null;
   done: boolean;
+  // Optional sweep throttle signals (only set by runSweepBatch; the REST
+  // runBackfillBatch leaves them undefined). `throttled`/`retryable` mark a
+  // transient 403/429 the caller should retry at the SAME offset after
+  // `retryAfterMs`; on a normal success `retryAfterMs` is the suggested pace.
+  retryable?: boolean;
+  throttled?: boolean;
+  retryAfterMs?: number;
 };
 
 // Process a SMALL, resumable slice of a grade's games for player backfill. The
@@ -2418,7 +2453,33 @@ async function runSweepBatch(
   limit: number,
   env: Env
 ): Promise<BackfillBatchResult> {
-  const ids = await fetchGradeGameIds(gradeShortId, env);
+  // The pre-loop grade-level enumeration is the one Discovery call that can
+  // abort the whole batch. On a transient throttle (403/429) return a resumable
+  // cursor at the SAME offset instead of throwing, so the caller can retry.
+  let ids: string[];
+  try {
+    ids = await fetchGradeGameIds(gradeShortId, env);
+  } catch (err) {
+    if (
+      err instanceof UpstreamError &&
+      (err.status === 403 || err.status === 429)
+    ) {
+      return {
+        grade: gradeShortId,
+        totalGames: 0,
+        offset,
+        limit,
+        processed: 0,
+        skipped: 0,
+        nextOffset: offset,
+        done: false,
+        retryable: true,
+        throttled: true,
+        retryAfterMs: 5000,
+      };
+    }
+    throw err;
+  }
   const totalGames = ids.length;
   const slice = ids.slice(offset, offset + limit);
 
@@ -2446,7 +2507,7 @@ async function runSweepBatch(
     }
     // Gentle pacing between games (skip after the last one).
     if (i < slice.length - 1) {
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
 
@@ -2460,6 +2521,7 @@ async function runSweepBatch(
     skipped,
     nextOffset: reachedEnd ? null : offset + limit,
     done: reachedEnd,
+    retryAfterMs: 800,
   };
 }
 
@@ -2774,11 +2836,15 @@ export default {
         const gradeId = grades[gradeIndex].id;
         const batch = await runSweepBatch(gradeId, offset, limit, env);
 
-        // Compute the next cursor: keep paging within this grade while it has
-        // more games, else advance to the next grade (offset 0), else done.
+        // Compute the next cursor: a transient throttle resumes the SAME grade
+        // at the SAME offset; otherwise keep paging within this grade while it
+        // has more games, else advance to the next grade (offset 0), else done.
         let done: boolean;
         let next: { gradeIndex: number; offset: number } | null;
-        if (batch.nextOffset != null) {
+        if (batch.throttled) {
+          done = false;
+          next = { gradeIndex, offset };
+        } else if (batch.nextOffset != null) {
           done = false;
           next = { gradeIndex, offset: batch.nextOffset };
         } else {
@@ -2803,6 +2869,9 @@ export default {
             skipped: batch.skipped,
             done,
             next,
+            retryable: batch.retryable ?? false,
+            throttled: batch.throttled ?? false,
+            retryAfterMs: batch.retryAfterMs ?? 800,
           },
           200,
           cors
