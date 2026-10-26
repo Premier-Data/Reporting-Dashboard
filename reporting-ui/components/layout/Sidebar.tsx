@@ -32,6 +32,7 @@ import {
   Radio,
   SlidersHorizontal,
   Radar,
+  ScanLine,
   X,
 } from "lucide-react";
 
@@ -102,6 +103,11 @@ const sections = [
         title: "Admin Configuration",
         href: "/admin-config",
         icon: SlidersHorizontal,
+      },
+      {
+        title: "Player Sweep",
+        href: "/player-sweep",
+        icon: ScanLine,
       },
     ],
   },

@@ -90,6 +90,10 @@ const PAGE_KEY_ALIASES: Record<string, string> = {
     // lists, so they're a sub-view of Live Scores and inherit its permission
     // (rather than mapping to no key -> denied -> redirect to the dashboard).
     "/player": "live-scores",
+    // The competition player sweep is an admin tool that reuses the Admin
+    // Configuration surface, so it inherits the "admin-config" permission
+    // rather than defining its own key (which would default to denied).
+    "/player-sweep": "admin-config",
 };
 
 /** Map a route pathname to its page key, or null if unknown. */
