@@ -525,7 +525,7 @@ export default function DisputesPage() {
 
     return (
         <div className="min-h-full bg-slate-100 text-slate-900">
-            <div className="mx-auto max-w-6xl p-6 lg:p-8">
+            <div className="mx-auto max-w-7xl p-6 lg:p-8">
                 <div className="mb-6">
                     <h1 className="flex items-center gap-2 text-3xl font-bold tracking-tight text-slate-900">
                         <Flag size={26} /> Disputes
@@ -664,8 +664,8 @@ export default function DisputesPage() {
                         No {filter === "all" ? "" : filter} disputes.
                     </div>
                 ) : (
-                    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                        <table className="w-full border-collapse text-sm">
+                    <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
+                        <table className="w-full min-w-[56rem] border-collapse text-sm">
                             <thead>
                                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                                     <th className="w-8 px-3 py-2.5" />
