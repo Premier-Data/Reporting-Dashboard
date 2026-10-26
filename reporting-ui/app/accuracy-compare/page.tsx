@@ -2711,14 +2711,10 @@ function AccuracyCompareInner() {
                     </button>
                   )}
                 </div>
-                <select
-                  value=""
+                <MasterCombobox
+                  masters={savedMasters}
                   disabled={loadingSavedMaster}
-                  onChange={async (e) => {
-                    const sm = savedMasters.find(
-                      (m) => m.fileName === e.target.value
-                    );
-                    if (!sm) return;
+                  onPick={async (sm) => {
                     // The XML isn't loaded with the dropdown list (it's
                     // large); fetch just the picked master's XML now.
                     setLoadingSavedMaster(true);
@@ -2738,15 +2734,7 @@ function AccuracyCompareInner() {
                       setLoadingSavedMaster(false);
                     }
                   }}
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 focus:border-slate-500 focus:outline-none disabled:cursor-wait disabled:opacity-60"
-                >
-                  <option value="">Select a saved master...</option>
-                  {savedMasters.map((m) => (
-                    <option key={m.fileName} value={m.fileName}>
-                      {m.fileName}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
             )}
             {canManageMasters && manageMastersOpen && (
@@ -4608,6 +4596,101 @@ function AnalystCombobox({
                 }`}
               >
                 {o}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Searchable saved-master picker: masters listed alphabetically by file name,
+// type to filter, scrollable list, click to load. Replaces the native <select>
+// (which can't be typed into and listed masters in insertion order). Selecting
+// an option calls onPick with the chosen SavedMaster; the parent fetches its
+// XML on demand (the list carries file names only).
+function MasterCombobox({
+  masters,
+  onPick,
+  disabled = false,
+}: {
+  masters: SavedMaster[];
+  onPick: (m: SavedMaster) => void;
+  disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  // Close on outside click.
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  // Alphabetical by file name (case-insensitive, numeric-aware), then filter by
+  // the typed query against the file name.
+  const filtered = useMemo(() => {
+    const sorted = [...masters].sort((a, b) =>
+      a.fileName.localeCompare(b.fileName, undefined, {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
+    const q = query.trim().toLowerCase();
+    if (!q) return sorted;
+    return sorted.filter((m) => m.fileName.toLowerCase().includes(q));
+  }, [masters, query]);
+
+  return (
+    <div ref={boxRef} className="relative">
+      <input
+        type="text"
+        value={query}
+        placeholder="Type to search saved masters..."
+        disabled={disabled}
+        onFocus={() => setOpen(true)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          if (!open) setOpen(true);
+        }}
+        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none disabled:cursor-wait disabled:opacity-60"
+      />
+      {query && (
+        <button
+          onClick={() => setQuery("")}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700"
+          title="Clear"
+          type="button"
+        >
+          <XIcon size={14} />
+        </button>
+      )}
+      {open && !disabled && (
+        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {filtered.length === 0 ? (
+            <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
+          ) : (
+            filtered.map((m) => (
+              <button
+                key={m.fileName}
+                type="button"
+                onClick={() => {
+                  onPick(m);
+                  setOpen(false);
+                  setQuery("");
+                }}
+                className="block w-full truncate px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-100"
+                title={m.fileName}
+              >
+                {m.fileName}
               </button>
             ))
           )}
