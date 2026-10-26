@@ -40,6 +40,15 @@ const SWEEP_LIMIT = 10;
 // forever. Counts consecutive failed batches.
 const MAX_CONSECUTIVE_ERRORS = 3;
 
+// Throttle valve: PlayHQ Discovery occasionally rate-limits (403/429). The
+// worker now reports this as a resumable throttle rather than a hard error;
+// we back off and retry the SAME slice, giving up only after this many
+// consecutive throttles.
+const MAX_CONSECUTIVE_THROTTLES = 5;
+
+// Small async sleep used for backoff and inter-batch pacing.
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 type SweepProgress = {
   running: boolean;
   gradeIndex: number;
@@ -135,6 +144,7 @@ export default function PlayerSweepPage() {
     let totalSkipped = 0;
     let batches = 0;
     let consecutiveErrors = 0;
+    let throttleCount = 0;
 
     // Client-driven resumable loop: one slice per request, follow `next`.
     while (!cancelRef.current) {
@@ -165,6 +175,29 @@ export default function PlayerSweepPage() {
         continue;
       }
 
+      // Transient throttle: the worker returned a resumable slice (403/429
+      // backoff upstream). Treat it as a pause-and-retry of the SAME cursor,
+      // NOT a failure — don't count it as processed and don't advance.
+      if (result.retryable || result.throttled) {
+        throttleCount += 1;
+        if (throttleCount >= MAX_CONSECUTIVE_THROTTLES) {
+          setSweepError(
+            `PlayHQ kept rate-limiting after ${MAX_CONSECUTIVE_THROTTLES} attempts — giving up (grade ${cursor.gradeIndex + 1} of ${totalGrades}, offset ${cursor.offset}). Try again later.`
+          );
+          break;
+        }
+        setSweepError(
+          `Rate-limited by PlayHQ — backing off and retrying… (grade ${cursor.gradeIndex + 1} of ${totalGrades})`
+        );
+        await sleep(Math.min(2000 * 2 ** (throttleCount - 1), 15000));
+        // Retry the same {gradeIndex, offset} without touching the cursor.
+        continue;
+      }
+
+      // Normal slice: clear any transient throttle banner and reset the count.
+      throttleCount = 0;
+      setSweepError(null);
+
       batches += 1;
       totalProcessed += result.processed;
       totalSkipped += result.skipped;
@@ -182,6 +215,8 @@ export default function PlayerSweepPage() {
       });
 
       if (result.done || !result.next) break;
+      // Gentle inter-batch pacing to avoid tripping the upstream rate limiter.
+      await sleep(result.retryAfterMs ?? 800);
       cursor = result.next;
     }
 

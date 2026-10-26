@@ -51,6 +51,12 @@ export type SweepBatchResult = {
   skipped: number;
   done: boolean;
   next: { gradeIndex: number; offset: number } | null;
+  // FEAT-001 added these optional throttle-signal fields to the worker's
+  // sweep response; the dashboard loop consumes them to back off and retry a
+  // rate-limited slice. Optional so older callers are unaffected.
+  retryable?: boolean;
+  throttled?: boolean;
+  retryAfterMs?: number;
 };
 
 /**
