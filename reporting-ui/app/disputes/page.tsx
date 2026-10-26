@@ -60,6 +60,7 @@ type CheckGroup = {
     label: string;
     analyst: string;
     masterBy: string;
+    masterFile: string;
     date: string | null;
     disputes: Dispute[];
     openCount: number;
@@ -135,6 +136,8 @@ export default function DisputesPage() {
     const [sportFilter, setSportFilter] = useState<SportFilter>("all");
     // Analyst filter for the table ("all" = every analyst).
     const [analystFilter, setAnalystFilter] = useState<string>("all");
+    // Master-file filter for the table ("all" = every master file).
+    const [masterFileFilter, setMasterFileFilter] = useState<string>("all");
     // Flag-category filter ("all" | one of the DisputeCategory codes |
     // "uncategorised" for legacy disputes without a category).
     const [categoryFilter, setCategoryFilter] = useState<
@@ -292,10 +295,16 @@ export default function DisputesPage() {
             const label = labelFor(checkId);
             const analyst = c?.analyst_name ?? "";
             const masterBy = c?.master_analyst_name ?? "";
+            const masterFile = c?.file_name_master?.trim() ?? "";
             if (q && !label.toLowerCase().includes(q)) continue;
             if (
                 analystFilter !== "all" &&
                 analyst.trim().toLowerCase() !== analystFilter.trim().toLowerCase()
+            )
+                continue;
+            if (
+                masterFileFilter !== "all" &&
+                masterFile.toLowerCase() !== masterFileFilter.trim().toLowerCase()
             )
                 continue;
             result.push({
@@ -303,6 +312,7 @@ export default function DisputesPage() {
                 label,
                 analyst,
                 masterBy,
+                masterFile,
                 date: c?.created_at ?? null,
                 disputes: ds.sort(
                     (a, b) =>
@@ -327,6 +337,8 @@ export default function DisputesPage() {
                     return dir * cmpStr(a.analyst, b.analyst);
                 case "masterBy":
                     return dir * cmpStr(a.masterBy, b.masterBy);
+                case "masterFile":
+                    return dir * cmpStr(a.masterFile, b.masterFile);
                 case "total":
                     return dir * (a.disputes.length - b.disputes.length);
                 case "open":
@@ -347,6 +359,7 @@ export default function DisputesPage() {
         search,
         sportFilter,
         analystFilter,
+        masterFileFilter,
         categoryFilter,
         statFilter,
         sort,
@@ -363,6 +376,23 @@ export default function DisputesPage() {
         }
         return Array.from(set).sort((a, b) =>
             a.localeCompare(b, undefined, { sensitivity: "base" })
+        );
+    }, [disputes, checkById]);
+
+    // Distinct master file names present in the disputed checks, for the Master
+    // file dropdown. Deduped case-insensitively (a representative original-case
+    // label kept) and sorted alphabetically (numeric-aware). Built independent
+    // of the master-file filter itself.
+    const masterFileOptions = useMemo(() => {
+        const byLower = new Map<string, string>();
+        for (const d of disputes) {
+            const name = checkById.get(d.check_id)?.file_name_master?.trim();
+            if (!name) continue;
+            const key = name.toLowerCase();
+            if (!byLower.has(key)) byLower.set(key, name);
+        }
+        return Array.from(byLower.values()).sort((a, b) =>
+            a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" })
         );
     }, [disputes, checkById]);
 
@@ -542,6 +572,19 @@ export default function DisputesPage() {
                         ))}
                     </select>
                     <select
+                        value={masterFileFilter}
+                        onChange={(e) => setMasterFileFilter(e.target.value)}
+                        className="max-w-[16rem] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-slate-500"
+                        aria-label="Filter by master file"
+                    >
+                        <option value="all">All master files</option>
+                        {masterFileOptions.map((name) => (
+                            <option key={name} value={name}>
+                                {name}
+                            </option>
+                        ))}
+                    </select>
+                    <select
                         value={categoryFilter}
                         onChange={(e) =>
                             setCategoryFilter(
@@ -654,6 +697,13 @@ export default function DisputesPage() {
                                         className="w-40"
                                     />
                                     <SortHeader
+                                        label="Master file"
+                                        col="masterFile"
+                                        sort={sort}
+                                        onSort={toggleSort}
+                                        className="w-48"
+                                    />
+                                    <SortHeader
                                         label="Open"
                                         col="open"
                                         sort={sort}
@@ -707,6 +757,14 @@ export default function DisputesPage() {
                                                         {g.masterBy || "—"}
                                                     </span>
                                                 </td>
+                                                <td className="px-3 py-2.5 align-middle text-slate-600">
+                                                    <span
+                                                        className="block max-w-[14rem] truncate"
+                                                        title={g.masterFile || undefined}
+                                                    >
+                                                        {g.masterFile || "—"}
+                                                    </span>
+                                                </td>
                                                 <td className="px-3 py-2.5 text-right align-middle">
                                                     {g.openCount > 0 ? (
                                                         <span className="inline-block rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-bold text-amber-700">
@@ -725,7 +783,7 @@ export default function DisputesPage() {
                                             {isOpen && (
                                                 <tr className="border-b border-slate-100">
                                                     <td
-                                                        colSpan={7}
+                                                        colSpan={8}
                                                         className="bg-slate-50/60 p-3"
                                                     >
                                                         {canResolve && g.analyst && (
