@@ -832,6 +832,121 @@ class UpstreamError extends Error {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// ── Competition season grades (Discovery GraphQL) ───────────────────────────
+// The TRIMMED `gradeListDiscoverSeason` document (whitespace-collapsed from the
+// browser cURL, confirmed live HTTP 200 for season ce93ea21 → 10 grades incl
+// ce56b707 "Division One Senior Men"). Served by the SAME Discovery endpoint as
+// the career query (api.playhq.com/graphql), NO auth, provided the request
+// looks like a browser AND carries the lowercase `tenant` header. Returns the
+// season's competition/organisation and the list of grades (short ids).
+const GRADE_LIST_QUERY = `query gradeListDiscoverSeason($id: String!) { discoverSeason(seasonID: $id) { id name competition { id name type organisation { id type name __typename } __typename } status { name value __typename } grades { id name day { name value __typename } gender { name value __typename } age { name value __typename } __typename } __typename } }`;
+
+// A single grade in a season, flattened to readable scalars.
+type SeasonGrade = {
+  id: string;
+  name: string | null;
+  gender: string | null;
+  age: string | null;
+  day: string | null;
+};
+
+// The cleaned season resolver result the sweep + public grades route return.
+type SeasonGrades = {
+  season: { id: string; name: string | null; status: string | null };
+  competition: { id: string; name: string | null; type: string | null };
+  organisation: { id: string; name: string | null; type: string | null };
+  grades: SeasonGrade[];
+};
+
+// Fetch a season's competition/organisation + ALL grades from the PlayHQ
+// Discovery GraphQL endpoint. Mirrors fetchPlayerCareer's browser header set
+// (incl. the lowercase `tenant` header) so PlayHQ returns 200, not 403. Throws
+// a tagged UpstreamError the route maps to an HTTP status. The returned shape
+// is null-safe: a null grades list becomes [], and each enum ({name,value}) is
+// flattened to its string `value`.
+async function fetchSeasonGrades(
+  seasonId: string,
+  env: Env
+): Promise<SeasonGrades> {
+  const upstream = await fetch(PLAYHQ_GRAPH, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "*/*",
+      "User-Agent": BROWSER_UA,
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.playhq.com",
+      Referer: "https://www.playhq.com/",
+      tenant: env.PHQ_TENANT ?? "afl",
+    },
+    body: JSON.stringify({
+      operationName: "gradeListDiscoverSeason",
+      variables: { id: seasonId },
+      query: GRADE_LIST_QUERY,
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+
+  if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
+  if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
+  if (!upstream.ok) throw new UpstreamError("upstream_error", 502);
+
+  const body = (await upstream.json()) as {
+    data?: { discoverSeason?: Record<string, unknown> | null };
+    errors?: unknown[];
+  };
+  if (body.errors?.length) throw new UpstreamError("graphql_errors", 502);
+  const season = body.data?.discoverSeason;
+  if (!season) throw new UpstreamError("not_found", 404);
+
+  const statusObj = (season.status ?? null) as
+    | { name?: unknown; value?: unknown }
+    | null;
+  const competitionObj = (season.competition ?? {}) as Record<string, unknown>;
+  const organisationObj = (competitionObj.organisation ?? {}) as Record<
+    string,
+    unknown
+  >;
+  // Flatten a nullable { value } / { name } enum to a string (value preferred).
+  const enumVal = (obj: unknown): string | null => {
+    if (!obj || typeof obj !== "object") return null;
+    const o = obj as { value?: unknown; name?: unknown };
+    if (typeof o.value === "string" && o.value) return o.value;
+    if (typeof o.name === "string" && o.name) return o.name;
+    return null;
+  };
+
+  const rawGrades = Array.isArray(season.grades)
+    ? (season.grades as Array<Record<string, unknown>>)
+    : [];
+  const grades: SeasonGrade[] = rawGrades.map((g) => ({
+    id: strOf(g, "id") ?? "",
+    name: strOf(g, "name"),
+    gender: enumVal(g.gender),
+    age: enumVal(g.age),
+    day: enumVal(g.day),
+  }));
+
+  return {
+    season: {
+      id: strOf(season, "id") ?? seasonId,
+      name: strOf(season, "name"),
+      status: enumVal(statusObj),
+    },
+    competition: {
+      id: strOf(competitionObj, "id") ?? "",
+      name: strOf(competitionObj, "name"),
+      type: strOf(competitionObj, "type"),
+    },
+    organisation: {
+      id: strOf(organisationObj, "id") ?? "",
+      name: strOf(organisationObj, "name"),
+      type: strOf(organisationObj, "type"),
+    },
+    grades,
+  };
+}
+
 // Fetch ALL games for a grade from the official PlayHQ REST API, following the
 // cursor pagination (metadata.hasMore / metadata.nextCursor) so a full season
 // comes back in one response. Requires the secret API key.
@@ -2289,6 +2404,153 @@ export default {
       }
     }
 
+    // POST/GET /api/admin/sweep-competition — token-gated, BATCHED + resumable
+    // player sweep across EVERY grade of a PlayHQ season. Resolves the season's
+    // grades (fetchSeasonGrades), then processes ONE small slice of the grade at
+    // `gradeIndex` by REUSING runBackfillBatch UNCHANGED, and hands back a
+    // resumable cursor (`next` = {gradeIndex, offset} or null) for the caller to
+    // loop: advance `offset` within a grade, then step to the next grade, then
+    // `done`. The free plan caps ~50 subrequests per invocation, so a single
+    // call touches at most `limit` games (hard-capped at 12). Uses the EXACT
+    // token gate from /api/admin/backfill-players. Declared BEFORE the GET-only
+    // guard so POST reaches it.
+    if (url.pathname === "/api/admin/sweep-competition") {
+      const bearer = (request.headers.get("Authorization") ?? "").replace(
+        /^Bearer\s+/i,
+        ""
+      );
+      const provided =
+        bearer ||
+        request.headers.get("x-backfill-token") ||
+        url.searchParams.get("token") ||
+        "";
+      if (!env.BACKFILL_TOKEN || provided !== env.BACKFILL_TOKEN) {
+        return json({ error: "unauthorized" }, 401, cors);
+      }
+
+      // The season id is a SHORT PlayHQ id (not a UUID) — validate with ID_RE.
+      const season = url.searchParams.get("season") ?? "";
+      if (!ID_RE.test(season)) {
+        return json({ error: "invalid_season" }, 400, cors);
+      }
+
+      // gradeIndex (default 0), offset (default 0), limit (default 10, capped at
+      // 12 — identical to backfill). All floored, non-negative.
+      const gradeIndexRaw = Number(url.searchParams.get("gradeIndex") ?? "0");
+      const gradeIndex =
+        Number.isFinite(gradeIndexRaw) && gradeIndexRaw > 0
+          ? Math.floor(gradeIndexRaw)
+          : 0;
+      const offsetRaw = Number(url.searchParams.get("offset") ?? "0");
+      const offset =
+        Number.isFinite(offsetRaw) && offsetRaw > 0 ? Math.floor(offsetRaw) : 0;
+      const limitRaw = Number(url.searchParams.get("limit") ?? "10");
+      const limit =
+        Number.isFinite(limitRaw) && limitRaw > 0
+          ? Math.min(12, Math.floor(limitRaw))
+          : 10;
+
+      try {
+        const resolved = await fetchSeasonGrades(season, env);
+        const grades = resolved.grades;
+
+        // No grades at all — nothing to sweep.
+        if (grades.length === 0) {
+          return json(
+            {
+              season: { id: resolved.season.id, name: resolved.season.name },
+              competition: resolved.competition,
+              organisation: resolved.organisation,
+              grades,
+              gradeIndex: 0,
+              gradeId: null,
+              gradeName: null,
+              totalGames: 0,
+              offset: 0,
+              limit,
+              processed: 0,
+              skipped: 0,
+              done: true,
+              next: null,
+            },
+            200,
+            cors
+          );
+        }
+
+        // Clamp gradeIndex; past the end means the sweep is already complete.
+        if (gradeIndex >= grades.length) {
+          return json(
+            {
+              season: { id: resolved.season.id, name: resolved.season.name },
+              competition: resolved.competition,
+              organisation: resolved.organisation,
+              grades,
+              gradeIndex: grades.length,
+              gradeId: null,
+              gradeName: null,
+              totalGames: 0,
+              offset: 0,
+              limit,
+              processed: 0,
+              skipped: 0,
+              done: true,
+              next: null,
+            },
+            200,
+            cors
+          );
+        }
+
+        // Process ONE slice of the current grade. The grade id is the SHORT id
+        // GraphQL returned — passed straight to runBackfillBatch (fetchGradeGames
+        // hits the REST API with it; see FEAT-001 findings on the id form).
+        const gradeId = grades[gradeIndex].id;
+        const batch = await runBackfillBatch(gradeId, offset, limit, env);
+
+        // Compute the next cursor: keep paging within this grade while it has
+        // more games, else advance to the next grade (offset 0), else done.
+        let done: boolean;
+        let next: { gradeIndex: number; offset: number } | null;
+        if (batch.nextOffset != null) {
+          done = false;
+          next = { gradeIndex, offset: batch.nextOffset };
+        } else {
+          const ng = gradeIndex + 1;
+          done = ng >= grades.length;
+          next = done ? null : { gradeIndex: ng, offset: 0 };
+        }
+
+        return json(
+          {
+            season: { id: resolved.season.id, name: resolved.season.name },
+            competition: resolved.competition,
+            organisation: resolved.organisation,
+            grades,
+            gradeIndex,
+            gradeId,
+            gradeName: grades[gradeIndex].name,
+            totalGames: batch.totalGames,
+            offset,
+            limit,
+            processed: batch.processed,
+            skipped: batch.skipped,
+            done,
+            next,
+          },
+          200,
+          cors
+        );
+      } catch (err) {
+        if (err instanceof UpstreamError) {
+          const extra: HeadersInit =
+            err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+          return json({ error: err.message }, err.status, extra);
+        }
+        return json({ error: "sweep_failed" }, 502, cors);
+      }
+    }
+
     if (request.method !== "GET") {
       return json({ error: "method_not_allowed" }, 405, cors);
     }
@@ -2418,6 +2680,67 @@ export default {
     // (no token). Proxies the Discovery GraphQL endpoint with browser-like
     // headers + the `tenant` header so PlayHQ returns 200, not 403. Short edge
     // cache so repeated profile opens don't re-hit PlayHQ.
+    // /api/competition/:seasonId/grades — a PlayHQ season's competition +
+    // organisation + ALL grades (short ids), from the Discovery GraphQL
+    // endpoint. Read-only, public (no token). Short edge cache so repeated
+    // preview opens don't re-hit PlayHQ. Mirrors /api/player/:id/profile.
+    const gradesMatch = url.pathname.match(
+      /^\/api\/competition\/([^/]+)\/grades$/
+    );
+    if (gradesMatch) {
+      const seasonId = decodeURIComponent(gradesMatch[1]);
+      if (!ID_RE.test(seasonId)) {
+        return json({ error: "invalid_season_id" }, 400, cors);
+      }
+      const tenant = url.searchParams.get("tenant") || env.PHQ_TENANT || "afl";
+      const gradesKey = new Request(
+        `https://playhq-cache/competition-grades/${seasonId}/${tenant}`
+      );
+      const gradesHit = await cache.match(gradesKey);
+      if (gradesHit) {
+        return new Response(await gradesHit.text(), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "HIT",
+            ...cors,
+          },
+        });
+      }
+      try {
+        const resolved = await fetchSeasonGrades(seasonId, env);
+        const bodyText = JSON.stringify(resolved);
+        const gradesTtl = 120;
+        ctx.waitUntil(
+          cache.put(
+            gradesKey,
+            new Response(bodyText, {
+              headers: {
+                "Content-Type": "application/json",
+                "Cache-Control": `public, max-age=${gradesTtl}`,
+              },
+            })
+          )
+        );
+        return new Response(bodyText, {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json",
+            "X-Cache": "MISS",
+            "Cache-Control": `public, max-age=${gradesTtl}`,
+            ...cors,
+          },
+        });
+      } catch (err) {
+        if (err instanceof UpstreamError) {
+          const extra: HeadersInit =
+            err.status === 429 ? { "Retry-After": "120", ...cors } : cors;
+          return json({ error: err.message }, err.status, extra);
+        }
+        return json({ error: "unable_to_retrieve_grades" }, 502, cors);
+      }
+    }
+
     const careerMatch = url.pathname.match(/^\/api\/player\/([^/]+)\/profile$/);
     if (careerMatch) {
       const pid = decodeURIComponent(careerMatch[1]);
