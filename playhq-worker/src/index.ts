@@ -947,6 +947,213 @@ async function fetchSeasonGrades(
   };
 }
 
+// ── Competition sweep: Discovery-only grade games + per-game stats ───────────
+// The competition SWEEP path cannot use the REST API: Discovery only ever hands
+// out SHORT grade/game ids (8-hex), and REST /v1/grades/{id}/games +
+// /v1/games/{id}/summary categorically require a FULL UUID (live probe:
+// `id must be a UUID`, HTTP 400). Discovery exposes no full-UUID/externalId
+// field on its game objects, so there is no way to route the sweep back through
+// REST. Instead the sweep enumerates a grade's games AND reads per-player stats
+// entirely from Discovery GraphQL, then builds a SYNTHETIC REST-style summary so
+// the existing playersFromSummary/ingestPlayers pipeline is reused UNCHANGED.
+//
+// Both queries use the SAME browser header set + lowercase `tenant` header as
+// GRADE_LIST_QUERY/CAREER_QUERY so PlayHQ returns 200 (not 403).
+
+// List every game id in a grade, round by round. `discoverGrade(gradeID: ID!)`
+// accepts the SHORT grade id Discovery returned; `rounds[].games[].id` are SHORT
+// Discovery game ids (fed to GAME_STATS_QUERY, NOT to REST).
+const GRADE_GAMES_QUERY = `query gradeGames($id: ID!) { discoverGrade(gradeID: $id) { id name rounds { name games { id status { value } } } } }`;
+
+// Per-game player statistics from Discovery. Select ONLY `type { value }` on
+// each statistic — selecting the inner `type { type }` triggers a
+// non-nullable-field server error that nulls the whole response (proven live).
+// `player.profile.id` is the FULL profile UUID and is IDENTICAL to the REST
+// summary's `appearances[].id` for the same player (verified live), so swept
+// rows join to the dashboard exactly like REST-ingested rows.
+const GAME_STATS_QUERY = `query gameStats($id: ID!) { discoverGame(gameID: $id) { id home { ... on DiscoverTeam { id name } } away { ... on DiscoverTeam { id name } } statistics { home { players { playerNumber player { ... on DiscoverParticipant { id profile { id firstName lastName } } } statistics { count type { value } } } } away { players { playerNumber player { ... on DiscoverParticipant { id profile { id firstName lastName } } } statistics { count type { value } } } } } } }`;
+
+// Enumerate a grade's game ids (SHORT Discovery ids) in round-then-game order.
+// Null-safe: missing grade/rounds/games collapse to []. A null discoverGrade
+// (grade not found) throws not_found(404). Same UpstreamError mapping as the
+// other Discovery fetchers.
+async function fetchGradeGameIds(
+  gradeId: string,
+  env: Env
+): Promise<string[]> {
+  const upstream = await fetch(PLAYHQ_GRAPH, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "*/*",
+      "User-Agent": BROWSER_UA,
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.playhq.com",
+      Referer: "https://www.playhq.com/",
+      tenant: env.PHQ_TENANT ?? "afl",
+    },
+    body: JSON.stringify({
+      operationName: "gradeGames",
+      variables: { id: gradeId },
+      query: GRADE_GAMES_QUERY,
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+
+  if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
+  if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
+  if (!upstream.ok) throw new UpstreamError("upstream_error", 502);
+
+  const body = (await upstream.json()) as {
+    data?: { discoverGrade?: Record<string, unknown> | null };
+    errors?: unknown[];
+  };
+  if (body.errors?.length) throw new UpstreamError("graphql_errors", 502);
+  const grade = body.data?.discoverGrade;
+  if (!grade) throw new UpstreamError("not_found", 404);
+
+  const rounds = Array.isArray(grade.rounds)
+    ? (grade.rounds as Array<Record<string, unknown>>)
+    : [];
+  const ids: string[] = [];
+  for (const round of rounds) {
+    const games = Array.isArray(round?.games)
+      ? (round.games as Array<Record<string, unknown>>)
+      : [];
+    for (const g of games) {
+      const id = g?.id != null ? String(g.id) : "";
+      if (id) ids.push(id);
+    }
+  }
+  return ids;
+}
+
+// Fetch a single game's per-player statistics from Discovery and build a
+// SYNTHETIC summary object in the EXACT shape playersFromSummary already reads
+// ({ id, competitors:[{id,name,isHomeTeam}], appearances:[{ id, firstName,
+// lastName, teamID, roleType:"Player", playerNumber, scoreSubTotal:[{type,
+// value}] }] }) so ingestPlayers consumes it unchanged.
+//
+// Divergence (accepted, documented): the synthetic `id` (→ `game_id`) and the
+// team ids (→ `team_id`) are SHORT Discovery ids, whereas REST-ingested rows use
+// FULL UUIDs. These columns are used only for internal grouping in the
+// dashboard, never displayed as identifiers nor joined to a full-UUID source,
+// and sweep comps don't overlap the REST-ingest grades. The join key that
+// matters — `player_id` — is `player.profile.id`, which is IDENTICAL to the REST
+// path's `appearances[].id` (verified live). Statistics side maps POSITIONALLY
+// to game.home/away (DiscoverGameTeamStatistics has no team field). Returns null
+// when the game is not found (treated as a skippable per-game miss, like a REST
+// 404).
+async function fetchGameAppearancesSummary(
+  gameId: string,
+  env: Env
+): Promise<Record<string, unknown> | null> {
+  const upstream = await fetch(PLAYHQ_GRAPH, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "*/*",
+      "User-Agent": BROWSER_UA,
+      "Accept-Language": "en-US,en;q=0.9",
+      Origin: "https://www.playhq.com",
+      Referer: "https://www.playhq.com/",
+      tenant: env.PHQ_TENANT ?? "afl",
+    },
+    body: JSON.stringify({
+      operationName: "gameStats",
+      variables: { id: gameId },
+      query: GAME_STATS_QUERY,
+    }),
+    signal: AbortSignal.timeout(12_000),
+  });
+
+  if (upstream.status === 429) throw new UpstreamError("rate_limited", 429);
+  if (upstream.status === 403) throw new UpstreamError("forbidden", 403);
+  if (!upstream.ok) throw new UpstreamError("upstream_error", 502);
+
+  const body = (await upstream.json()) as {
+    data?: { discoverGame?: Record<string, unknown> | null };
+    errors?: unknown[];
+  };
+  if (body.errors?.length) throw new UpstreamError("graphql_errors", 502);
+  const game = body.data?.discoverGame;
+  if (!game) return null;
+
+  // Positional teams: statistics.home ↔ game.home, statistics.away ↔ game.away.
+  const homeTeam = (game.home ?? null) as Record<string, unknown> | null;
+  const awayTeam = (game.away ?? null) as Record<string, unknown> | null;
+  const homeTeamId = homeTeam?.id != null ? String(homeTeam.id) : null;
+  const awayTeamId = awayTeam?.id != null ? String(awayTeam.id) : null;
+
+  const competitors: Record<string, unknown>[] = [];
+  if (homeTeamId) {
+    competitors.push({
+      id: homeTeamId,
+      name: strOf(homeTeam, "name"),
+      isHomeTeam: true,
+    });
+  }
+  if (awayTeamId) {
+    competitors.push({
+      id: awayTeamId,
+      name: strOf(awayTeam, "name"),
+      isHomeTeam: false,
+    });
+  }
+
+  const stats = (game.statistics ?? {}) as Record<string, unknown>;
+  const appearances: Record<string, unknown>[] = [];
+
+  // Build appearances for one side's players against its team id.
+  const addSide = (side: unknown, teamId: string | null): void => {
+    if (!side || typeof side !== "object") return;
+    const players = Array.isArray((side as Record<string, unknown>).players)
+      ? ((side as Record<string, unknown>).players as Array<
+          Record<string, unknown>
+        >)
+      : [];
+    for (const p of players) {
+      const player = (p?.player ?? null) as Record<string, unknown> | null;
+      const profile = (player?.profile ?? null) as Record<
+        string,
+        unknown
+      > | null;
+      const profileId = profile?.id != null ? String(profile.id) : "";
+      // Skip unregistered/guest participants with no profile — mirrors the REST
+      // path skipping appearances without an id.
+      if (!profileId) continue;
+
+      const rawStats = Array.isArray(p?.statistics)
+        ? (p.statistics as Array<Record<string, unknown>>)
+        : [];
+      const scoreSubTotal = rawStats.map((s) => ({
+        type: strOf(s?.type, "value") ?? undefined,
+        value: typeof s?.count === "number" ? (s.count as number) : undefined,
+      }));
+
+      appearances.push({
+        id: profileId,
+        firstName: strOf(profile, "firstName"),
+        lastName: strOf(profile, "lastName"),
+        teamID: teamId,
+        roleType: "Player",
+        playerNumber: p?.playerNumber ?? null,
+        scoreSubTotal,
+      });
+    }
+  };
+
+  addSide((stats as Record<string, unknown>).home, homeTeamId);
+  addSide((stats as Record<string, unknown>).away, awayTeamId);
+
+  return {
+    // SHORT Discovery game id (divergence documented above).
+    id: gameId,
+    competitors,
+    appearances,
+  };
+}
+
 // Fetch ALL games for a grade from the official PlayHQ REST API, following the
 // cursor pagination (metadata.hasMore / metadata.nextCursor) so a full season
 // comes back in one response. Requires the secret API key.
@@ -2199,6 +2406,63 @@ async function runBackfillBatch(
   };
 }
 
+// Discovery-only variant of runBackfillBatch for the competition SWEEP. Same
+// resumable-cursor contract and per-game skip discipline, but it enumerates the
+// grade's games AND reads player stats from Discovery GraphQL (the REST API
+// rejects the SHORT grade/game ids Discovery hands out). The grade id stays the
+// SHORT Discovery id — no UUID guard. Re-running overlapping offsets is safe
+// because ingestPlayers upserts.
+async function runSweepBatch(
+  gradeShortId: string,
+  offset: number,
+  limit: number,
+  env: Env
+): Promise<BackfillBatchResult> {
+  const ids = await fetchGradeGameIds(gradeShortId, env);
+  const totalGames = ids.length;
+  const slice = ids.slice(offset, offset + limit);
+
+  let processed = 0;
+  let skipped = 0;
+  for (let i = 0; i < slice.length; i++) {
+    const id = slice[i];
+    if (!id) {
+      skipped++;
+      continue;
+    }
+    try {
+      const summary = await fetchGameAppearancesSummary(id, env);
+      if (!summary) {
+        // Game not found on Discovery — skip like a per-game REST 404.
+        skipped++;
+      } else {
+        await ingestPlayers(summary, env);
+        processed++;
+      }
+    } catch {
+      // Per-game failure (forbidden/rate-limit/graphql/etc.) — count and
+      // continue, never abort the batch.
+      skipped++;
+    }
+    // Gentle pacing between games (skip after the last one).
+    if (i < slice.length - 1) {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+
+  const reachedEnd = offset + limit >= totalGames;
+  return {
+    grade: gradeShortId,
+    totalGames,
+    offset,
+    limit,
+    processed,
+    skipped,
+    nextOffset: reachedEnd ? null : offset + limit,
+    done: reachedEnd,
+  };
+}
+
 // Pull the text content of the FIRST matching tag inside a block.
 function tagText(block: string, tag: string): string | null {
   const m = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
@@ -2503,10 +2767,12 @@ export default {
         }
 
         // Process ONE slice of the current grade. The grade id is the SHORT id
-        // GraphQL returned — passed straight to runBackfillBatch (fetchGradeGames
-        // hits the REST API with it; see FEAT-001 findings on the id form).
+        // Discovery returned — runSweepBatch enumerates the grade's games and
+        // reads player stats via Discovery GraphQL, building a synthetic
+        // REST-style summary (the official REST API rejects these short ids with
+        // "id must be a UUID"). No UUID guard: the sweep grade id is never a UUID.
         const gradeId = grades[gradeIndex].id;
-        const batch = await runBackfillBatch(gradeId, offset, limit, env);
+        const batch = await runSweepBatch(gradeId, offset, limit, env);
 
         // Compute the next cursor: keep paging within this grade while it has
         // more games, else advance to the next grade (offset 0), else done.
