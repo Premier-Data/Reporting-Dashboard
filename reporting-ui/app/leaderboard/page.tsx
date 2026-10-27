@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { supabase } from "@/lib/supabase";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
+import { seasonsFromTT, dateInSeason } from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
 import type { AnalystMetrics } from "@/types/analyst";
 import type { DeputyShift } from "@/types/deputy";
@@ -52,9 +53,12 @@ async function fetchAll<T>(table: string): Promise<T[]> {
 }
 
 export default function LeaderboardPage() {
-  const [analysts, setAnalysts] = useState<AnalystMetrics[]>([]);
+  const [shiftRows, setShiftRows] = useState<DeputyShift[]>([]);
+  const [gameRows, setGameRows] = useState<TTGame[]>([]);
   const [loading, setLoading] = useState(true);
   const [team, setTeam] = useState<Team>("AUS");
+  // Season filter: games by explicit season, shifts by Oct→Sep window.
+  const [season, setSeason] = useState<string>("all");
 
   useEffect(() => {
     async function load() {
@@ -65,14 +69,47 @@ export default function LeaderboardPage() {
         fetchAll<TTGame>("TT_Games"),
       ]);
 
-      const metrics = buildAnalystMetrics(shifts, games);
-
-      setAnalysts(metrics);
+      setShiftRows(shifts);
+      setGameRows(games);
       setLoading(false);
     }
 
     load();
   }, []);
+
+  const seasonInfo = useMemo(() => seasonsFromTT(gameRows), [gameRows]);
+
+  // Default to the latest season once data loads.
+  useEffect(() => {
+    if (season === "all" && seasonInfo.years.length > 0) {
+      setSeason(String(seasonInfo.years[0]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasonInfo.years.length]);
+
+  // Analyst metrics rebuilt from season-scoped shifts + games.
+  const analysts = useMemo(() => {
+    let games = gameRows;
+    let shifts = shiftRows;
+    if (season !== "all") {
+      if (season === "unknown") {
+        games = gameRows.filter(
+          (g) => g.season == null || !Number.isFinite(Number(g.season))
+        );
+        // Unknown-season has no reliable date window, so leave shifts unscoped.
+      } else {
+        const yr = Number(season);
+        games = gameRows.filter((g) => Number(g.season) === yr);
+        shifts = shiftRows.filter((r) => {
+          const sd = (r as { shift_date?: string }).shift_date;
+          if (!sd) return false;
+          const d = new Date(sd);
+          return !Number.isNaN(d.getTime()) && dateInSeason(d, yr);
+        });
+      }
+    }
+    return buildAnalystMetrics(shifts, games);
+  }, [shiftRows, gameRows, season]);
 
   // Ranked within the selected team only, by overall score.
   const ranked = useMemo(() => {
@@ -119,10 +156,20 @@ export default function LeaderboardPage() {
             </p>
           </div>
 
-          <TeamToggle
-            value={team}
-            onChange={setTeam}
-          />
+          <div className="flex flex-wrap items-center gap-3">
+            {(seasonInfo.years.length > 0 || seasonInfo.hasUnknown) && (
+              <SeasonToggle
+                years={seasonInfo.years}
+                hasUnknown={seasonInfo.hasUnknown}
+                value={season}
+                onChange={setSeason}
+              />
+            )}
+            <TeamToggle
+              value={team}
+              onChange={setTeam}
+            />
+          </div>
 
         </div>
 
@@ -181,6 +228,44 @@ function TeamToggle({
 
       ))}
 
+    </div>
+  );
+}
+
+// Season toggle — seasons newest-first, plus optional Unknown + All. Styled to
+// match TeamToggle so they sit together cleanly.
+function SeasonToggle({
+  years,
+  hasUnknown,
+  value,
+  onChange,
+}: {
+  years: number[];
+  hasUnknown: boolean;
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  const options: { key: string; label: string }[] = [
+    ...years.map((y) => ({ key: String(y), label: String(y) })),
+    ...(hasUnknown ? [{ key: "unknown", label: "Unknown" }] : []),
+    { key: "all", label: "All" },
+  ];
+  return (
+    <div className="flex rounded-lg border border-slate-700 bg-[#0f1b2d] p-1">
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          onClick={() => onChange(o.key)}
+          className={`rounded-md px-4 py-2 text-sm font-semibold transition ${
+            value === o.key
+              ? "bg-sky-600 text-white"
+              : "text-slate-400 hover:text-white"
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
     </div>
   );
 }

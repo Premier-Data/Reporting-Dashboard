@@ -10,6 +10,7 @@ import AnalystHero from "../analyst-profile/AnalystHero";
 import AttributeRatings from "../analyst-profile/AttributeRatings";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
 import { buildAnalystBenchmark } from "@/lib/analytics/buildAnalystBenchmark";
+import { seasonsFromTT, dateInSeason } from "@/lib/analytics/season";
 import ComparisonSummary from "./ComparisonSummary";
 import ComparisonKPIs from "./ComparisonKPIs";
 // recharts-based comparison charts — load lazily (they live in tabs) so
@@ -79,6 +80,8 @@ export default function AnalystComparePage() {
 
     const [analystA, setAnalystA] = useState("");
     const [analystB, setAnalystB] = useState("");
+    // Season filter: TT games by explicit season, shifts by Oct→Sep window.
+    const [season, setSeason] = useState<string>("all");
 
     useEffect(() => {
 
@@ -101,18 +104,47 @@ export default function AnalystComparePage() {
 
     }, []);
 
+    const seasonInfo = useMemo(() => seasonsFromTT(ttRows), [ttRows]);
+
+    // Default to the latest season once data loads.
+    useEffect(() => {
+        if (season === "all" && seasonInfo.years.length > 0) {
+            setSeason(String(seasonInfo.years[0]));
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [seasonInfo.years.length]);
+
     const benchmark = useMemo(() => {
 
         if (!shiftRows.length) return [];
 
+        let games = ttRows;
+        let shifts = shiftRows;
+        if (season !== "all") {
+            if (season === "unknown") {
+                games = ttRows.filter(
+                    (g: any) =>
+                        g.season == null || !Number.isFinite(Number(g.season))
+                );
+            } else {
+                const yr = Number(season);
+                games = ttRows.filter((g: any) => Number(g.season) === yr);
+                shifts = shiftRows.filter((r: any) => {
+                    if (!r.shift_date) return false;
+                    const d = new Date(r.shift_date);
+                    return !Number.isNaN(d.getTime()) && dateInSeason(d, yr);
+                });
+            }
+        }
+
         return buildAnalystBenchmark(
             buildAnalystMetrics(
-                shiftRows,
-                ttRows
+                shifts,
+                games
             )
         );
 
-    }, [shiftRows, ttRows]);
+    }, [shiftRows, ttRows, season]);
 
     const analysts = useMemo(() => {
 
@@ -191,19 +223,49 @@ export default function AnalystComparePage() {
 
                     </div>
 
-                    <Link
-                        href="/analyst-profile"
-                        className="
-                            rounded-lg
-                            border
-                            border-slate-700
-                            px-4
-                            py-2
-                            hover:bg-slate-800
-                        "
-                    >
-                        Back
-                    </Link>
+                    <div className="flex items-center gap-3">
+                        {(seasonInfo.years.length > 0 || seasonInfo.hasUnknown) && (
+                            <div className="flex rounded-lg border border-slate-700 bg-[#0f1b2d] p-1">
+                                {[
+                                    ...seasonInfo.years.map((y) => ({
+                                        key: String(y),
+                                        label: String(y),
+                                    })),
+                                    ...(seasonInfo.hasUnknown
+                                        ? [{ key: "unknown", label: "Unknown" }]
+                                        : []),
+                                    { key: "all", label: "All" },
+                                ].map((o) => (
+                                    <button
+                                        key={o.key}
+                                        type="button"
+                                        onClick={() => setSeason(o.key)}
+                                        className={`rounded-md px-3 py-1.5 text-sm font-semibold transition ${
+                                            season === o.key
+                                                ? "bg-sky-600 text-white"
+                                                : "text-slate-400 hover:text-white"
+                                        }`}
+                                    >
+                                        {o.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+
+                        <Link
+                            href="/analyst-profile"
+                            className="
+                                rounded-lg
+                                border
+                                border-slate-700
+                                px-4
+                                py-2
+                                hover:bg-slate-800
+                            "
+                        >
+                            Back
+                        </Link>
+                    </div>
 
                 </div>
 
