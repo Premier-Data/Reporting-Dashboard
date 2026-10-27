@@ -161,22 +161,24 @@ export async function sweepCompetitionBatch(args: {
 }
 
 /**
- * One row of the per-competition sweep log (FEAT-001's GET /api/sweep-log).
- * The worker returns snake_case rows; getSweepLog() maps them to this shape.
+ * One row of the sweep log (FEAT-001's GET /api/sweep-log). One entry per
+ * swept (season, grade). The worker returns snake_case rows; getSweepLog()
+ * maps them to this shape.
  */
 export type SweepLogEntry = {
   seasonId: string;
+  gradeId: string;
   competitionName: string;
   organisationName: string;
+  gradeName: string;
   playerCount: number;
   lastSweptAt: string;
 };
 
 /**
- * Read the per-competition sweep log. Public, read-only, no token. Returns one
- * entry per swept season/competition ordered by last-swept desc (as ordered by
- * the worker). Throws an Error carrying the worker's { error } field on a
- * non-ok response (mirrors getSeasonGrades).
+ * Read the sweep log. Public, read-only, no token. Returns one entry per swept
+ * (season, grade) ordered by the worker. Throws an Error carrying the worker's
+ * { error } field on a non-ok response (mirrors getSeasonGrades).
  */
 export async function getSweepLog(): Promise<SweepLogEntry[]> {
   const res = await fetch(`${WORKER_BASE}/api/sweep-log`, {
@@ -187,8 +189,10 @@ export async function getSweepLog(): Promise<SweepLogEntry[]> {
 
   return ((await res.json()) as Array<Record<string, unknown>>).map((r) => ({
     seasonId: String(r.season_id ?? ""),
+    gradeId: String(r.grade_id ?? ""),
     competitionName: String(r.competition_name ?? ""),
     organisationName: String(r.organisation_name ?? ""),
+    gradeName: String(r.grade_name ?? ""),
     playerCount: Number(r.player_count ?? 0),
     lastSweptAt: String(r.last_swept_at ?? ""),
   }));

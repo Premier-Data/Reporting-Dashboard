@@ -255,6 +255,15 @@ export default function PlayerSweepPage() {
   const running = progress.running;
   const totalGrades = season?.grades.length ?? 0;
 
+  // Grand total = sum of ALL per-grade player counts across every entry.
+  const grandTotal = sweepLog.reduce((sum, entry) => sum + entry.playerCount, 0);
+
+  // Derive the grouped view IN RENDER (no new state): group sweep-log entries
+  // by competition keyed on seasonId; each group lists its grade rows sorted by
+  // gradeName asc, carries a per-competition subtotal, and a lastSweptAt that is
+  // the max of its grades'. Groups are sorted by most-recent lastSweptAt desc.
+  const sweptGroups = buildSweptGroups(sweepLog);
+
   return (
     <div className="min-h-full bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
       <div className="mx-auto max-w-6xl px-4 py-6 md:px-6 md:py-8">
@@ -482,26 +491,24 @@ export default function PlayerSweepPage() {
           {/* Grand-total header card. */}
           <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
             <div className="text-2xl font-bold text-emerald-300">
-              {sweepLog
-                .reduce((sum, entry) => sum + entry.playerCount, 0)
-                .toLocaleString()}
+              {grandTotal.toLocaleString()}
             </div>
             <div className="mt-0.5 text-sm text-slate-200">
-              Players swept across {sweepLog.length} competition
+              Players swept across {sweptGroups.length} competition
+              {sweptGroups.length === 1 ? "" : "s"} / {sweepLog.length} grade
               {sweepLog.length === 1 ? "" : "s"}
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              This is the total of per-competition player counts (player-
-              competition memberships), not a count of globally-distinct people
-              — someone who plays in two competitions is counted in each.
+              This sums per-GRADE distinct counts (player-grade memberships), not
+              a count of globally-distinct people — someone who plays in two
+              grades is counted in each.
             </p>
 
             <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
               <table className="w-full min-w-[560px] text-sm">
                 <thead>
                   <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
-                    <th className="px-3 py-2 font-semibold">Competition</th>
-                    <th className="px-3 py-2 font-semibold">Organisation</th>
+                    <th className="px-3 py-2 font-semibold">Grade</th>
                     <th className="px-3 py-2 text-right font-semibold">
                       Players
                     </th>
@@ -509,28 +516,13 @@ export default function PlayerSweepPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sweepLog.map((entry) => (
-                    <tr key={entry.seasonId} className="border-b border-white/5">
-                      <td className="px-3 py-2 font-medium text-slate-100">
-                        {entry.competitionName || "—"}
-                      </td>
-                      <td className="px-3 py-2 text-slate-300">
-                        {entry.organisationName || "—"}
-                      </td>
-                      <td className="px-3 py-2 text-right font-semibold text-emerald-300">
-                        {entry.playerCount.toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2 text-slate-400">
-                        {entry.lastSweptAt
-                          ? new Date(entry.lastSweptAt).toLocaleString()
-                          : "—"}
-                      </td>
-                    </tr>
+                  {sweptGroups.map((group) => (
+                    <GradeGroup key={group.seasonId} group={group} />
                   ))}
-                  {sweepLog.length === 0 && (
+                  {sweptGroups.length === 0 && (
                     <tr>
                       <td
-                        colSpan={4}
+                        colSpan={3}
                         className="px-3 py-8 text-center text-slate-400"
                       >
                         No competitions swept yet.
@@ -544,6 +536,88 @@ export default function PlayerSweepPage() {
         </section>
       </div>
     </div>
+  );
+}
+
+// A competition group derived from the flat sweep log: all grade rows that
+// share a seasonId, with a per-competition subtotal and the most-recent
+// lastSweptAt across its grades.
+type SweptGroup = {
+  seasonId: string;
+  label: string; // `competitionName · organisationName`
+  grades: SweepLogEntry[]; // sorted by gradeName asc
+  subtotal: number; // sum of this group's grade playerCounts
+  lastSweptAt: string; // max of its grades' lastSweptAt (ISO or "")
+};
+
+// Group a flat SweepLogEntry[] by competition (seasonId) for the grouped panel.
+// Pure/derived — called in render, keeps no state.
+function buildSweptGroups(entries: SweepLogEntry[]): SweptGroup[] {
+  const bySeason = new Map<string, SweptGroup>();
+
+  for (const entry of entries) {
+    let group = bySeason.get(entry.seasonId);
+    if (!group) {
+      group = {
+        seasonId: entry.seasonId,
+        label: `${entry.competitionName || "—"} · ${entry.organisationName || "—"}`,
+        grades: [],
+        subtotal: 0,
+        lastSweptAt: "",
+      };
+      bySeason.set(entry.seasonId, group);
+    }
+    group.grades.push(entry);
+    group.subtotal += entry.playerCount;
+    if (entry.lastSweptAt > group.lastSweptAt) {
+      group.lastSweptAt = entry.lastSweptAt;
+    }
+  }
+
+  const groups = Array.from(bySeason.values());
+  // Sort each group's grade rows by gradeName asc.
+  for (const group of groups) {
+    group.grades.sort((a, b) => a.gradeName.localeCompare(b.gradeName));
+  }
+  // Sort competition groups by most-recent lastSweptAt desc.
+  groups.sort((a, b) => b.lastSweptAt.localeCompare(a.lastSweptAt));
+  return groups;
+}
+
+// One competition block: a sub-header row (label + subtotal + last swept),
+// its grade rows underneath, each with its own player count and last-swept date.
+function GradeGroup({ group }: { group: SweptGroup }) {
+  return (
+    <>
+      <tr className="border-b border-white/10 bg-white/[0.04]">
+        <td className="px-3 py-2 font-semibold text-slate-100">
+          {group.label}
+        </td>
+        <td className="px-3 py-2 text-right font-semibold text-emerald-300">
+          {group.subtotal.toLocaleString()}
+        </td>
+        <td className="px-3 py-2 text-xs text-slate-400">
+          {group.lastSweptAt
+            ? new Date(group.lastSweptAt).toLocaleString()
+            : "—"}
+        </td>
+      </tr>
+      {group.grades.map((grade) => (
+        <tr key={grade.gradeId} className="border-b border-white/5">
+          <td className="px-3 py-2 pl-6 text-slate-300">
+            {grade.gradeName || "—"}
+          </td>
+          <td className="px-3 py-2 text-right text-slate-200">
+            {grade.playerCount.toLocaleString()}
+          </td>
+          <td className="px-3 py-2 text-slate-400">
+            {grade.lastSweptAt
+              ? new Date(grade.lastSweptAt).toLocaleString()
+              : "—"}
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 
