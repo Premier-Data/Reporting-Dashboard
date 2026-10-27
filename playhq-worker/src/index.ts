@@ -2348,7 +2348,9 @@ function playersFromSummary(summary: Record<string, unknown>): {
 async function ingestPlayers(
   summary: Record<string, unknown>,
   env: Env,
-  seasonId?: string
+  seasonId?: string,
+  gradeId?: string,
+  gradeName?: string
 ): Promise<void> {
   try {
     const { players, appearances } = playersFromSummary(summary);
@@ -2356,9 +2358,19 @@ async function ingestPlayers(
     const now = new Date().toISOString();
     const playerRows = players.map((p) => ({ ...p, last_seen_at: now }));
     await sbUpsert(env, "playhq_players?on_conflict=id", playerRows);
-    const appearanceRows = seasonId
-      ? appearances.map((a) => ({ ...a, season_id: seasonId }))
-      : appearances;
+    // SWEEP path (seasonId present): stamp season_id and, when provided,
+    // grade_id/grade_name onto each appearance. Only defined keys are added so
+    // nothing extra lands on the row. REST/live/backfill callers pass no
+    // seasonId and their rows stay byte-for-byte unchanged (no grade keys).
+    let appearanceRows: Record<string, unknown>[];
+    if (seasonId) {
+      const overlay: Record<string, unknown> = { season_id: seasonId };
+      if (gradeId != null) overlay.grade_id = gradeId;
+      if (gradeName != null) overlay.grade_name = gradeName;
+      appearanceRows = appearances.map((a) => ({ ...a, ...overlay }));
+    } else {
+      appearanceRows = appearances;
+    }
     await sbUpsert(
       env,
       "playhq_player_appearances?on_conflict=player_id,game_id",
@@ -2456,7 +2468,8 @@ async function runSweepBatch(
   offset: number,
   limit: number,
   env: Env,
-  seasonId?: string
+  seasonId?: string,
+  gradeName?: string
 ): Promise<BackfillBatchResult> {
   // The pre-loop grade-level enumeration is the one Discovery call that can
   // abort the whole batch. On a transient throttle (403/429) return a resumable
@@ -2502,7 +2515,7 @@ async function runSweepBatch(
         // Game not found on Discovery — skip like a per-game REST 404.
         skipped++;
       } else {
-        await ingestPlayers(summary, env, seasonId);
+        await ingestPlayers(summary, env, seasonId, gradeShortId, gradeName);
         processed++;
       }
     } catch {
@@ -2530,31 +2543,36 @@ async function runSweepBatch(
   };
 }
 
-// Best-effort per-batch sweep log. Recomputes the distinct player_id count for
-// this season from playhq_player_appearances and upserts a single
-// playhq_sweep_log row (on_conflict=season_id). Env-guarded via sbGet/sbUpsert
-// (no-op when Supabase env is unset) and fully swallowed: never throws into the
-// sweep handler, never changes the response.
+// Best-effort per-batch sweep log, keyed per-(season_id, grade_id). Recomputes
+// the distinct player_id count for THIS grade (filtered by both season_id and
+// grade_id) from playhq_player_appearances and upserts a single
+// playhq_sweep_log row (on_conflict=season_id,grade_id). Env-guarded via
+// sbGet/sbUpsert (no-op when Supabase env is unset) and fully swallowed: never
+// throws into the sweep handler, never changes the response.
 async function updateSweepLog(
   env: Env,
   resolved: SeasonGrades,
-  seasonId: string
+  seasonId: string,
+  gradeId: string,
+  gradeName: string
 ): Promise<void> {
   try {
     const rows = await sbGet(
       env,
       `playhq_player_appearances?select=player_id&season_id=eq.${encodeURIComponent(
         seasonId
-      )}&limit=50000`
+      )}&grade_id=eq.${encodeURIComponent(gradeId)}&limit=50000`
     );
     const count = new Set(
       (rows as Array<{ player_id?: unknown }>).map((r) => String(r.player_id))
     ).size;
-    await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id", [
+    await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id,grade_id", [
       {
         season_id: seasonId,
+        grade_id: gradeId,
         competition_name: resolved.competition.name,
         organisation_name: resolved.organisation.name,
+        grade_name: gradeName,
         player_count: count,
         last_swept_at: new Date().toISOString(),
       },
@@ -2878,12 +2896,20 @@ export default {
           offset,
           limit,
           env,
-          resolved.season.id
+          resolved.season.id,
+          grades[gradeIndex].name ?? undefined
         );
 
         // Best-effort per-batch sweep log (distinct player_count for this
-        // season). Never throws into the handler; does not change the response.
-        await updateSweepLog(env, resolved, resolved.season.id);
+        // season+grade). Never throws into the handler; does not change the
+        // response.
+        await updateSweepLog(
+          env,
+          resolved,
+          resolved.season.id,
+          gradeId,
+          grades[gradeIndex].name ?? ""
+        );
 
         // Compute the next cursor: a transient throttle resumes the SAME grade
         // at the SAME offset; otherwise keep paging within this grade while it
@@ -3129,7 +3155,7 @@ export default {
       try {
         const rows = await sbGet(
           env,
-          "playhq_sweep_log?select=season_id,competition_name,organisation_name,player_count,last_swept_at&order=last_swept_at.desc"
+          "playhq_sweep_log?select=season_id,grade_id,competition_name,organisation_name,grade_name,player_count,last_swept_at&order=competition_name.asc,grade_name.asc"
         );
         return json(rows, 200, { "Cache-Control": "public, max-age=15", ...cors });
       } catch {
