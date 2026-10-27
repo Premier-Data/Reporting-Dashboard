@@ -17,15 +17,17 @@
 // Static-export safe: a plain (non-dynamic) 'use client' page — no server
 // routes/handlers/actions and no generateStaticParams.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, AlertTriangle, Search, Play, Square } from "lucide-react";
 
 import {
   getSeasonGrades,
   sweepCompetitionBatch,
+  getSweepLog,
   parseSeasonId,
   type SeasonGradesResponse,
   type SweepBatchResult,
+  type SweepLogEntry,
 } from "@/lib/api/playerSweep";
 
 // Shared input style — matches admin-config's inputCls exactly.
@@ -88,6 +90,21 @@ export default function PlayerSweepPage() {
   const [progress, setProgress] = useState<SweepProgress>(EMPTY_PROGRESS);
   // Cooperative cancellation flag, toggled by Stop and read inside the loop.
   const cancelRef = useRef(false);
+
+  // ── Swept-competitions log ───────────────────────────────────────────
+  const [sweepLog, setSweepLog] = useState<SweepLogEntry[]>([]);
+  // Non-fatal refresh: if the worker read fails, keep the last-known panel.
+  const refreshSweepLog = async () => {
+    try {
+      setSweepLog(await getSweepLog());
+    } catch {
+      /* non-fatal: panel just won't refresh */
+    }
+  };
+  // Load the log once on mount so the panel is populated before any sweep.
+  useEffect(() => {
+    void refreshSweepLog();
+  }, []);
 
   async function onPreview() {
     const seasonId = parseSeasonId(input);
@@ -214,6 +231,10 @@ export default function PlayerSweepPage() {
         done: false,
       });
 
+      // Refresh the per-competition log after a successful (non-throttled)
+      // batch so its counts climb live during the sweep.
+      await refreshSweepLog();
+
       if (result.done || !result.next) break;
       // Gentle inter-batch pacing to avoid tripping the upstream rate limiter.
       await sleep(result.retryAfterMs ?? 800);
@@ -226,6 +247,9 @@ export default function PlayerSweepPage() {
       running: false,
       done: !cancelRef.current,
     }));
+
+    // One final refresh so the panel reflects the last batch(es).
+    await refreshSweepLog();
   }
 
   const running = progress.running;
@@ -448,6 +472,76 @@ export default function PlayerSweepPage() {
             )}
           </section>
         )}
+
+        {/* ── Swept competitions log ─────────────────────────────────── */}
+        <section className="mt-8">
+          <h2 className="mb-3 text-sm font-bold uppercase tracking-wide text-sky-300">
+            Swept competitions
+          </h2>
+
+          {/* Grand-total header card. */}
+          <div className="rounded-xl border border-white/10 bg-white/[0.02] p-4">
+            <div className="text-2xl font-bold text-emerald-300">
+              {sweepLog
+                .reduce((sum, entry) => sum + entry.playerCount, 0)
+                .toLocaleString()}
+            </div>
+            <div className="mt-0.5 text-sm text-slate-200">
+              Players swept across {sweepLog.length} competition
+              {sweepLog.length === 1 ? "" : "s"}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              This is the total of per-competition player counts (player-
+              competition memberships), not a count of globally-distinct people
+              — someone who plays in two competitions is counted in each.
+            </p>
+
+            <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
+              <table className="w-full min-w-[560px] text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
+                    <th className="px-3 py-2 font-semibold">Competition</th>
+                    <th className="px-3 py-2 font-semibold">Organisation</th>
+                    <th className="px-3 py-2 text-right font-semibold">
+                      Players
+                    </th>
+                    <th className="px-3 py-2 font-semibold">Last swept</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sweepLog.map((entry) => (
+                    <tr key={entry.seasonId} className="border-b border-white/5">
+                      <td className="px-3 py-2 font-medium text-slate-100">
+                        {entry.competitionName || "—"}
+                      </td>
+                      <td className="px-3 py-2 text-slate-300">
+                        {entry.organisationName || "—"}
+                      </td>
+                      <td className="px-3 py-2 text-right font-semibold text-emerald-300">
+                        {entry.playerCount.toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2 text-slate-400">
+                        {entry.lastSweptAt
+                          ? new Date(entry.lastSweptAt).toLocaleString()
+                          : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                  {sweepLog.length === 0 && (
+                    <tr>
+                      <td
+                        colSpan={4}
+                        className="px-3 py-8 text-center text-slate-400"
+                      >
+                        No competitions swept yet.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       </div>
     </div>
   );
