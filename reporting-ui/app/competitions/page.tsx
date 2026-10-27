@@ -72,6 +72,9 @@ export default function CompetitionsPage() {
     const [loading, setLoading] = useState(true);
     const [games, setGames] = useState<TTGame[]>([]);
     const [selectedCompetition, setSelectedCompetition] = useState("");
+    // Season filter ("all" = every season). The season is stamped per sheet in
+    // sync-deputy.js, so a 1 Oct 2026 fixture in the 2027 sheet reads 2027.
+    const [selectedSeason, setSelectedSeason] = useState<string>("all");
 
     useEffect(() => {
 
@@ -90,24 +93,62 @@ export default function CompetitionsPage() {
     }, []);
 
     // -------------------------
+    // SEASON LIST
+    // -------------------------
+    // Distinct seasons present, newest first. Rows synced before the season
+    // column exists have a null season — surfaced as an "Unknown" bucket so
+    // they're still reachable rather than silently dropped.
+    const seasons = useMemo(() => {
+        const set = new Set<number>();
+        let hasUnknown = false;
+        for (const g of games) {
+            if (g.season == null || !Number.isFinite(Number(g.season))) {
+                hasUnknown = true;
+            } else {
+                set.add(Number(g.season));
+            }
+        }
+        const years = [...set].sort((a, b) => b - a);
+        return { years, hasUnknown };
+    }, [games]);
+
+    // Games scoped to the selected season. Everything below (competitions,
+    // fixtures, analyst/team tallies) derives from this, so one selector
+    // filters the whole page. "all" = no season filter.
+    const seasonGames = useMemo(() => {
+        if (selectedSeason === "all") return games;
+        if (selectedSeason === "unknown") {
+            return games.filter(
+                (g) => g.season == null || !Number.isFinite(Number(g.season))
+            );
+        }
+        const yr = Number(selectedSeason);
+        return games.filter((g) => Number(g.season) === yr);
+    }, [games, selectedSeason]);
+
+    // -------------------------
     // COMPETITION LIST
     // -------------------------
     const competitions = useMemo(() => {
 
         const unique = new Set<string>();
 
-        games.forEach((g) => {
+        seasonGames.forEach((g) => {
             const name = normaliseCompetition(g.Competition);
             if (name) unique.add(name);
         });
 
         return [...unique].sort((a, b) => a.localeCompare(b));
 
-    }, [games]);
+    }, [seasonGames]);
 
     useEffect(() => {
 
-        if (!selectedCompetition && competitions.length) {
+        // Default to the first competition, and also re-select when the current
+        // choice isn't in the list for the active season (otherwise switching
+        // season could leave a competition selected that has no fixtures).
+        if (competitions.length === 0) return;
+        if (!selectedCompetition || !competitions.includes(selectedCompetition)) {
             setSelectedCompetition(competitions[0]);
         }
 
@@ -118,7 +159,7 @@ export default function CompetitionsPage() {
     // -------------------------
     const fixtures = useMemo(() => {
 
-        return games
+        return seasonGames
             .filter(
                 (g) =>
                     normaliseCompetition(g.Competition) ===
@@ -302,38 +343,75 @@ export default function CompetitionsPage() {
 
                 </div>
 
-                {/* COMPETITION SELECT */}
-                <div className="mb-6">
+                {/* SEASON + COMPETITION SELECT */}
+                <div className="mb-6 flex flex-wrap gap-4">
 
-                    <label className="mb-2 block text-sm text-slate-400">
-                        Competition
-                    </label>
+                    <div>
+                        <label className="mb-2 block text-sm text-slate-400">
+                            Season
+                        </label>
 
-                    <select
-                        value={selectedCompetition}
-                        onChange={(e) => setSelectedCompetition(e.target.value)}
-                        className="
-                            w-full
-                            max-w-md
-                            rounded-lg
-                            border
-                            border-slate-700
-                            bg-[#0f1b2d]
-                            px-4
-                            py-3
-                            text-sm
-                            text-slate-200
-                            focus:outline-none
-                            focus:ring-1
-                            focus:ring-sky-400
-                        "
-                    >
-                        {competitions.map((c) => (
-                            <option key={c} value={c}>
-                                {c}
-                            </option>
-                        ))}
-                    </select>
+                        <select
+                            value={selectedSeason}
+                            onChange={(e) => setSelectedSeason(e.target.value)}
+                            className="
+                                w-full
+                                rounded-lg
+                                border
+                                border-slate-700
+                                bg-[#0f1b2d]
+                                px-4
+                                py-3
+                                text-sm
+                                text-slate-200
+                                focus:outline-none
+                                focus:ring-1
+                                focus:ring-sky-400
+                            "
+                        >
+                            <option value="all">All seasons</option>
+                            {seasons.years.map((y) => (
+                                <option key={y} value={String(y)}>
+                                    {y} season
+                                </option>
+                            ))}
+                            {seasons.hasUnknown && (
+                                <option value="unknown">Unknown season</option>
+                            )}
+                        </select>
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                        <label className="mb-2 block text-sm text-slate-400">
+                            Competition
+                        </label>
+
+                        <select
+                            value={selectedCompetition}
+                            onChange={(e) => setSelectedCompetition(e.target.value)}
+                            className="
+                                w-full
+                                max-w-md
+                                rounded-lg
+                                border
+                                border-slate-700
+                                bg-[#0f1b2d]
+                                px-4
+                                py-3
+                                text-sm
+                                text-slate-200
+                                focus:outline-none
+                                focus:ring-1
+                                focus:ring-sky-400
+                            "
+                        >
+                            {competitions.map((c) => (
+                                <option key={c} value={c}>
+                                    {c}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
 
                 </div>
 

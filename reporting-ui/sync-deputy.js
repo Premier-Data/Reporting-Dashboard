@@ -109,6 +109,10 @@ function excelDateToJS(value) {
 // ----------------------
 // SHEET PICKER
 // ----------------------
+// Fuzzy (substring) match. Kept for the Deputy sheet. NOTE: the TT sheet uses
+// an EXACT match instead — "TTRawData" is a substring of both the old
+// "TTRawData" and season sheets like "2027_TTRawData", so a fuzzy match would
+// ambiguously pick whichever appears first in the workbook.
 function getSheet(workbook, names) {
   const found = workbook.SheetNames.find(name =>
     names.some(n => name.toLowerCase().includes(n.toLowerCase()))
@@ -120,6 +124,40 @@ function getSheet(workbook, names) {
 
   return workbook.Sheets[found];
 }
+
+// Exact sheet match (case-insensitive, whitespace-trimmed). Used for the TT
+// season sheet so there is no ambiguity between "TTRawData", "2027_TTRawData",
+// "2028_TTRawData", etc. which all share the "TTRawData" substring.
+function getSheetExact(workbook, name) {
+  const target = String(name).trim().toLowerCase();
+  const found = workbook.SheetNames.find(
+    n => n.trim().toLowerCase() === target
+  );
+
+  if (!found) {
+    throw new Error(
+      `Sheet "${name}" not found. Available: ${workbook.SheetNames.join(", ")}`
+    );
+  }
+
+  return workbook.Sheets[found];
+}
+
+// The active TT season sheet. Rolling to a new season each year is a one-line
+// change: set TT_SHEET_NAME in the environment (e.g. TT_SHEET_NAME=2028_TTRawData).
+// Defaults to the 2027 season sheet.
+const TT_SHEET_NAME = process.env.TT_SHEET_NAME || "2027_TTRawData";
+
+// Derive the season (year) from the sheet name's leading 4-digit year, e.g.
+// "2027_TTRawData" -> 2027. Falls back to the current calendar year when the
+// sheet name carries no year (e.g. the legacy "TTRawData"). Stamped on every TT
+// row so seasons can be filtered/reported without separate tables.
+function seasonFromSheetName(name) {
+  const m = String(name).match(/(\d{4})/);
+  return m ? Number(m[1]) : new Date().getFullYear();
+}
+
+const TT_SEASON = seasonFromSheetName(TT_SHEET_NAME);
 
 // ----------------------
 // AUTH (GRAPH)
@@ -230,7 +268,8 @@ function parseDeputyData(buffer) {
 function parseTTData(buffer) {
 
   const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheet = getSheet(workbook, ["TTRawData"]);
+  const sheet = getSheetExact(workbook, TT_SHEET_NAME);
+  console.log(`📄 TT sheet: "${TT_SHEET_NAME}" (season ${TT_SEASON})`);
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
@@ -314,6 +353,11 @@ function parseTTData(buffer) {
         expected_day: clean(r[11]),  // Completion day
 
         videoURL: cleanUrl(r[12]),
+
+        // Season (year) this row belongs to, derived from the source sheet
+        // name (TT_SHEET_NAME). Lets the UI filter/report by season without
+        // separate per-year tables.
+        season: TT_SEASON,
 
       };
     })
