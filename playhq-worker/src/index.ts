@@ -2347,7 +2347,8 @@ function playersFromSummary(summary: Record<string, unknown>): {
 // more scoring updates the row.
 async function ingestPlayers(
   summary: Record<string, unknown>,
-  env: Env
+  env: Env,
+  seasonId?: string
 ): Promise<void> {
   try {
     const { players, appearances } = playersFromSummary(summary);
@@ -2355,10 +2356,13 @@ async function ingestPlayers(
     const now = new Date().toISOString();
     const playerRows = players.map((p) => ({ ...p, last_seen_at: now }));
     await sbUpsert(env, "playhq_players?on_conflict=id", playerRows);
+    const appearanceRows = seasonId
+      ? appearances.map((a) => ({ ...a, season_id: seasonId }))
+      : appearances;
     await sbUpsert(
       env,
       "playhq_player_appearances?on_conflict=player_id,game_id",
-      appearances
+      appearanceRows
     );
   } catch (e) {
     console.warn("ingestPlayers failed:", e instanceof Error ? e.message : e);
@@ -2451,7 +2455,8 @@ async function runSweepBatch(
   gradeShortId: string,
   offset: number,
   limit: number,
-  env: Env
+  env: Env,
+  seasonId?: string
 ): Promise<BackfillBatchResult> {
   // The pre-loop grade-level enumeration is the one Discovery call that can
   // abort the whole batch. On a transient throttle (403/429) return a resumable
@@ -2497,7 +2502,7 @@ async function runSweepBatch(
         // Game not found on Discovery — skip like a per-game REST 404.
         skipped++;
       } else {
-        await ingestPlayers(summary, env);
+        await ingestPlayers(summary, env, seasonId);
         processed++;
       }
     } catch {
@@ -2523,6 +2528,40 @@ async function runSweepBatch(
     done: reachedEnd,
     retryAfterMs: 800,
   };
+}
+
+// Best-effort per-batch sweep log. Recomputes the distinct player_id count for
+// this season from playhq_player_appearances and upserts a single
+// playhq_sweep_log row (on_conflict=season_id). Env-guarded via sbGet/sbUpsert
+// (no-op when Supabase env is unset) and fully swallowed: never throws into the
+// sweep handler, never changes the response.
+async function updateSweepLog(
+  env: Env,
+  resolved: SeasonGrades,
+  seasonId: string
+): Promise<void> {
+  try {
+    const rows = await sbGet(
+      env,
+      `playhq_player_appearances?select=player_id&season_id=eq.${encodeURIComponent(
+        seasonId
+      )}&limit=50000`
+    );
+    const count = new Set(
+      (rows as Array<{ player_id?: unknown }>).map((r) => String(r.player_id))
+    ).size;
+    await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id", [
+      {
+        season_id: seasonId,
+        competition_name: resolved.competition.name,
+        organisation_name: resolved.organisation.name,
+        player_count: count,
+        last_swept_at: new Date().toISOString(),
+      },
+    ]);
+  } catch (e) {
+    console.warn("updateSweepLog failed:", e instanceof Error ? e.message : e);
+  }
 }
 
 // Pull the text content of the FIRST matching tag inside a block.
@@ -2834,7 +2873,17 @@ export default {
         // REST-style summary (the official REST API rejects these short ids with
         // "id must be a UUID"). No UUID guard: the sweep grade id is never a UUID.
         const gradeId = grades[gradeIndex].id;
-        const batch = await runSweepBatch(gradeId, offset, limit, env);
+        const batch = await runSweepBatch(
+          gradeId,
+          offset,
+          limit,
+          env,
+          resolved.season.id
+        );
+
+        // Best-effort per-batch sweep log (distinct player_count for this
+        // season). Never throws into the handler; does not change the response.
+        await updateSweepLog(env, resolved, resolved.season.id);
 
         // Compute the next cursor: a transient throttle resumes the SAME grade
         // at the SAME offset; otherwise keep paging within this grade while it
@@ -3073,6 +3122,18 @@ export default {
           return json({ error: err.message }, err.status, extra);
         }
         return json({ error: "unable_to_retrieve_grades" }, 502, cors);
+      }
+    }
+
+    if (url.pathname === "/api/sweep-log") {
+      try {
+        const rows = await sbGet(
+          env,
+          "playhq_sweep_log?select=season_id,competition_name,organisation_name,player_count,last_swept_at&order=last_swept_at.desc"
+        );
+        return json(rows, 200, { "Cache-Control": "public, max-age=15", ...cors });
+      } catch {
+        return json({ error: "sweep_log_failed" }, 502, cors);
       }
     }
 
