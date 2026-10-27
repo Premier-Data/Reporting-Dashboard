@@ -49,6 +49,10 @@ import AnalystHeaderCard from "@/app/analyst-profile/AnalystHeaderCard";
 import {
   buildAnalystMetrics,
 } from "@/lib/analytics/buildAnalystMetrics";
+import {
+  seasonsFromTT,
+  dateInSeason,
+} from "@/lib/analytics/season";
 
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/UI/tabs";
 import DashboardLayout from "./DashboardLayout";
@@ -100,10 +104,53 @@ export default function DashboardClient({
   const [ttAnalyst, setTtAnalyst] = useState("all");
 
   // -------------------------
+  // SEASON TOGGLE
+  // -------------------------
+  // The 2027 season runs 1 Oct 2026 – 30 Sep 2027. TT_Games carry an explicit
+  // `season` column (stamped per sheet in sync-deputy.js); deputy_shifts don't,
+  // so they're scoped by the season's Oct→Sep date window instead.
+  const seasonInfo = useMemo(() => seasonsFromTT(ttData ?? []), [ttData]);
+  const [season, setSeason] = useState<string>("all");
+
+  // Default to the most recent season once data loads (keeps "all" only if no
+  // season data exists). Runs when the available seasons change.
+  useEffect(() => {
+    if (season === "all" && seasonInfo.years.length > 0) {
+      setSeason(String(seasonInfo.years[0]));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasonInfo.years.length]);
+
+  // Base datasets scoped to the chosen season. Everything below filters these
+  // instead of the raw props, so the season toggle drives the whole dashboard.
+  const seasonTT = useMemo(() => {
+    const safe = ttData ?? [];
+    if (season === "all") return safe;
+    if (season === "unknown") {
+      return safe.filter(
+        (r) => r.season == null || !Number.isFinite(Number(r.season))
+      );
+    }
+    const yr = Number(season);
+    return safe.filter((r) => Number(r.season) === yr);
+  }, [ttData, season]);
+
+  const seasonDeputy = useMemo(() => {
+    const safe = deputyData ?? [];
+    if (season === "all" || season === "unknown") return safe;
+    const yr = Number(season);
+    return safe.filter((r) => {
+      if (!r.shift_date) return false;
+      const d = new Date(r.shift_date);
+      return !Number.isNaN(d.getTime()) && dateInSeason(d, yr);
+    });
+  }, [deputyData, season]);
+
+  // -------------------------
   // FILTER DEPUTY DATA
   // -------------------------
   const filtered = useMemo(() => {
-    const safe = deputyData ?? [];
+    const safe = seasonDeputy ?? [];
 
     return safe.filter((r) => {
       const shiftDate = r.shift_date ? new Date(r.shift_date) : null;
@@ -118,7 +165,7 @@ export default function DashboardClient({
         (!end || (shiftDate && shiftDate <= end))
       );
     });
-  }, [deputyData, employee, area, week, startDate, endDate]);
+  }, [seasonDeputy, employee, area, week, startDate, endDate]);
 
   // -------------------------
   // FILTER TT DATA
@@ -126,7 +173,7 @@ export default function DashboardClient({
   const filteredTT = useMemo(() => {
     const selected = normalize(ttAnalyst);
 
-    return (ttData ?? []).filter((r) => {
+    return (seasonTT ?? []).filter((r) => {
       const rowWeek = String(r.week ?? "").trim();
       const home = normalize(r.home_allocated);
       const away = normalize(r.away_allocated);
@@ -136,7 +183,7 @@ export default function DashboardClient({
         (ttAnalyst === "all" || home === selected || away === selected)
       );
     });
-  }, [ttData, ttWeek, ttAnalyst]);
+  }, [seasonTT, ttWeek, ttAnalyst]);
 
   // -------------------------
   // KPI
@@ -206,15 +253,52 @@ export default function DashboardClient({
             marginBottom: 20,
           }}
         >
-          <h1
-            style={{
-              fontSize: 28,
-              fontWeight: 700,
-              margin: 0,
-            }}
-          >
-            📊 Reporting Dashboard
-          </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <h1
+              style={{
+                fontSize: 28,
+                fontWeight: 700,
+                margin: 0,
+              }}
+            >
+              📊 Reporting Dashboard
+            </h1>
+
+            {/* SEASON TOGGLE — scopes the whole dashboard. Games use TT_Games'
+                explicit season; shifts use the season's Oct→Sep date window. */}
+            {(seasonInfo.years.length > 0 || seasonInfo.hasUnknown) && (
+              <div
+                style={{
+                  display: "inline-flex",
+                  borderRadius: 10,
+                  background: "#E2E8F0",
+                  padding: 3,
+                  gap: 2,
+                }}
+              >
+                {seasonInfo.years.map((y) => (
+                  <SeasonButton
+                    key={y}
+                    label={`${y}`}
+                    active={season === String(y)}
+                    onClick={() => setSeason(String(y))}
+                  />
+                ))}
+                {seasonInfo.hasUnknown && (
+                  <SeasonButton
+                    label="Unknown"
+                    active={season === "unknown"}
+                    onClick={() => setSeason("unknown")}
+                  />
+                )}
+                <SeasonButton
+                  label="All"
+                  active={season === "all"}
+                  onClick={() => setSeason("all")}
+                />
+              </div>
+            )}
+          </div>
 
           <div
             style={{
@@ -297,7 +381,7 @@ export default function DashboardClient({
               }}
             >
               <HoursByEmployee data={filtered} />
-              <CostByArea data={deputyData} />
+              <CostByArea data={seasonDeputy} />
             </div>
 
 
@@ -330,13 +414,13 @@ export default function DashboardClient({
 
           {/* PERFORMANCE */}
           <TabsContent value="performance">
-            <AveHoursTopAnalysts deputyData={deputyData} ttData={ttData} />
+            <AveHoursTopAnalysts deputyData={seasonDeputy} ttData={seasonTT} />
 
             <AnalystInsightsTable analysts={analystMetrics} />
 
             <AveHoursPerGame
-              deputyData={deputyData}
-              ttData={ttData}
+              deputyData={seasonDeputy}
+              ttData={seasonTT}
             />
           </TabsContent>
 
@@ -349,6 +433,39 @@ export default function DashboardClient({
         )}
       </main>
     </DashboardLayout>
+  );
+}
+
+// -------------------------
+// SEASON TOGGLE BUTTON
+// -------------------------
+function SeasonButton({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        border: "none",
+        cursor: "pointer",
+        borderRadius: 8,
+        padding: "6px 14px",
+        fontSize: 13,
+        fontWeight: 600,
+        background: active ? "#0F172A" : "transparent",
+        color: active ? "#FFFFFF" : "#475569",
+        transition: "background 0.15s, color 0.15s",
+      }}
+    >
+      {label}
+    </button>
   );
 }
 
