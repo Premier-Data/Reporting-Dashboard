@@ -96,11 +96,12 @@ export default function DashboardClient({
   // -------------------------
   const [employee, setEmployee] = useState("all");
   const [area, setArea] = useState("all");
+  // ONE week filter drives the whole dashboard (KPIs, charts, tables) for both
+  // deputy shifts and TT games. "all" = every week in the selected season.
   const [week, setWeek] = useState("all");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
 
-  const [ttWeek, setTtWeek] = useState("all");
   const [ttAnalyst, setTtAnalyst] = useState("all");
 
   // -------------------------
@@ -147,10 +148,50 @@ export default function DashboardClient({
   }, [deputyData, season]);
 
   // -------------------------
+  // WEEK FILTER (single, season-scoped)
+  // -------------------------
+  // Week numbers restart each season, so the week list is built from the
+  // season-scoped data. Union of weeks present in BOTH deputy + TT so the one
+  // dropdown covers every table. Sorted numerically.
+  const weekOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of seasonDeputy) {
+      const w = String(r.week ?? "").trim();
+      if (w) set.add(w);
+    }
+    for (const r of seasonTT) {
+      const w = String(r.week ?? r.Week ?? "").trim();
+      if (w) set.add(w);
+    }
+    return [...set].sort((a, b) => Number(a) - Number(b));
+  }, [seasonDeputy, seasonTT]);
+
+  // Week numbers mean different dates per season, so reset the week filter to
+  // "all" whenever the season changes (a stale "W5" from another season would
+  // otherwise show nothing or the wrong week).
+  useEffect(() => {
+    setWeek("all");
+  }, [season]);
+
+  // Season- AND week-scoped base datasets. Everything below (KPIs, charts,
+  // tables, performance) reads these, so the one week dropdown drives the lot.
+  const weekDeputy = useMemo(() => {
+    if (week === "all") return seasonDeputy;
+    return seasonDeputy.filter((r) => String(r.week ?? "").trim() === week);
+  }, [seasonDeputy, week]);
+
+  const weekTT = useMemo(() => {
+    if (week === "all") return seasonTT;
+    return seasonTT.filter(
+      (r) => String(r.week ?? r.Week ?? "").trim() === week
+    );
+  }, [seasonTT, week]);
+
+  // -------------------------
   // FILTER DEPUTY DATA
   // -------------------------
   const filtered = useMemo(() => {
-    const safe = seasonDeputy ?? [];
+    const safe = weekDeputy ?? [];
 
     return safe.filter((r) => {
       const shiftDate = r.shift_date ? new Date(r.shift_date) : null;
@@ -160,12 +201,11 @@ export default function DashboardClient({
       return (
         (employee === "all" || normalize(r.employee_name) === normalize(employee)) &&
         (area === "all" || normalize(r.area_name) === normalize(area)) &&
-        (week === "all" || normalize(r.week) === normalize(week)) &&
         (!start || (shiftDate && shiftDate >= start)) &&
         (!end || (shiftDate && shiftDate <= end))
       );
     });
-  }, [seasonDeputy, employee, area, week, startDate, endDate]);
+  }, [weekDeputy, employee, area, startDate, endDate]);
 
   // -------------------------
   // FILTER TT DATA
@@ -173,17 +213,15 @@ export default function DashboardClient({
   const filteredTT = useMemo(() => {
     const selected = normalize(ttAnalyst);
 
-    return (seasonTT ?? []).filter((r) => {
-      const rowWeek = String(r.week ?? "").trim();
+    return (weekTT ?? []).filter((r) => {
       const home = normalize(r.home_allocated);
       const away = normalize(r.away_allocated);
 
       return (
-        (ttWeek === "all" || rowWeek === ttWeek) &&
-        (ttAnalyst === "all" || home === selected || away === selected)
+        ttAnalyst === "all" || home === selected || away === selected
       );
     });
-  }, [seasonTT, ttWeek, ttAnalyst]);
+  }, [weekTT, ttAnalyst]);
 
   // -------------------------
   // KPI
@@ -298,6 +336,41 @@ export default function DashboardClient({
                 />
               </div>
             )}
+
+            {/* ONE week filter — drives KPI cards, charts and every table. */}
+            <label
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 8,
+                fontSize: 13,
+                fontWeight: 600,
+                color: "#475569",
+              }}
+            >
+              Week
+              <select
+                value={week}
+                onChange={(e) => setWeek(e.target.value)}
+                style={{
+                  borderRadius: 8,
+                  border: "1px solid #CBD5E1",
+                  background: "#FFFFFF",
+                  padding: "7px 12px",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "#0F172A",
+                  cursor: "pointer",
+                }}
+              >
+                <option value="all">All weeks</option>
+                {weekOptions.map((w) => (
+                  <option key={w} value={w}>
+                    Week {w}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           <div
@@ -381,7 +454,7 @@ export default function DashboardClient({
               }}
             >
               <HoursByEmployee data={filtered} />
-              <CostByArea data={seasonDeputy} />
+              <CostByArea data={weekDeputy} />
             </div>
 
 
@@ -414,13 +487,13 @@ export default function DashboardClient({
 
           {/* PERFORMANCE */}
           <TabsContent value="performance">
-            <AveHoursTopAnalysts deputyData={seasonDeputy} ttData={seasonTT} />
+            <AveHoursTopAnalysts deputyData={weekDeputy} ttData={weekTT} />
 
             <AnalystInsightsTable analysts={analystMetrics} />
 
             <AveHoursPerGame
-              deputyData={seasonDeputy}
-              ttData={seasonTT}
+              deputyData={weekDeputy}
+              ttData={weekTT}
             />
           </TabsContent>
 
