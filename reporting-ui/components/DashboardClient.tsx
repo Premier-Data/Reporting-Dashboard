@@ -187,6 +187,32 @@ export default function DashboardClient({
     );
   }, [seasonTT, week]);
 
+  // The actual calendar date range covered by the current selection, from the
+  // shift dates + game dates in scope. Shown beside the Week dropdown so the
+  // user sees which dates "Week N" (or the whole season) actually spans.
+  const dateRangeLabel = useMemo(() => {
+    const isos: string[] = [];
+    for (const r of weekDeputy) {
+      const s = r.shift_date ? String(r.shift_date).slice(0, 10) : "";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) isos.push(s);
+    }
+    for (const r of weekTT) {
+      const s = r.Date ? String(r.Date).slice(0, 10) : "";
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) isos.push(s);
+    }
+    if (isos.length === 0) return "";
+    isos.sort();
+    const fmt = (iso: string) =>
+      new Date(`${iso}T00:00:00`).toLocaleDateString("en-AU", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      });
+    const min = fmt(isos[0]);
+    const max = fmt(isos[isos.length - 1]);
+    return min === max ? min : `${min} – ${max}`;
+  }, [weekDeputy, weekTT]);
+
   // -------------------------
   // FILTER DEPUTY DATA
   // -------------------------
@@ -371,6 +397,20 @@ export default function DashboardClient({
                 ))}
               </select>
             </label>
+
+            {/* Actual date range covered by the current season/week selection. */}
+            {dateRangeLabel && (
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 500,
+                  color: "#64748B",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {dateRangeLabel}
+              </span>
+            )}
           </div>
 
           <div

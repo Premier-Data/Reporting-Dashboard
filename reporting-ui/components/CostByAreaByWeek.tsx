@@ -128,12 +128,14 @@ export default function CostByAreaByWeek({
 }: {
   data: any[];
 }) {
-  const [view, setView] = useState<"week" | "month">("week");
+  const [view, setView] = useState<"day" | "week" | "month">("week");
 
   const { chartData, areas } = useMemo(() => {
     const groupedMap: Record<string, any> = {};
     // Per week-label ordering + date range, keyed by label.
     const weekMeta: Record<string, { season: number; week: number; min: string; max: string }> = {};
+    // Per day-label -> ISO date, for chronological day sorting.
+    const dayMeta: Record<string, string> = {};
 
     data.forEach((row) => {
       const iso = row.shift_date ? String(row.shift_date).slice(0, 10) : null;
@@ -143,7 +145,15 @@ export default function CostByAreaByWeek({
       const area = row.area_name || "Unknown";
 
       let label: string;
-      if (view === "week") {
+      if (view === "day") {
+        // One bucket per calendar day. Label e.g. "Wed 30 Sep".
+        label = date.toLocaleDateString("en-AU", {
+          weekday: "short",
+          day: "2-digit",
+          month: "short",
+        });
+        dayMeta[label] = iso!;
+      } else if (view === "week") {
         // Authoritative week + season from the row (set by the sync).
         const season = Number(row.season);
         const week = Number(row.week);
@@ -179,7 +189,11 @@ export default function CostByAreaByWeek({
     const grouped = Object.values(groupedMap);
 
 const labels =
-  view === "week"
+  view === "day"
+    ? Array.from(new Set(grouped.map((g: any) => g.label)))
+        // Chronological by the day's ISO date.
+        .sort((a, b) => (dayMeta[a] < dayMeta[b] ? -1 : dayMeta[a] > dayMeta[b] ? 1 : 0))
+    : view === "week"
     ? Array.from(new Set(grouped.map((g: any) => g.label)))
         // Sort by season, then by week number — never by a synthetic index.
         .sort((a, b) => {
@@ -272,7 +286,8 @@ const areas = Array.from(
               color: THEME.text,
             }}
           >
-            Cost by Area ({view === "week" ? "Weekly" : "Monthly"})
+            Cost by Area (
+            {view === "day" ? "Daily" : view === "week" ? "Weekly" : "Monthly"})
           </div>
 
           <div
@@ -294,47 +309,27 @@ const areas = Array.from(
             padding: 4,
           }}
         >
-          <button
-            onClick={() => setView("week")}
-            style={{
-              padding: "8px 18px",
-              border: "none",
-              borderRadius: 8,
-              cursor: "pointer",
-              background:
-                view === "week"
-                  ? THEME.primary
-                  : "transparent",
-              color:
-                view === "week"
-                  ? "#fff"
-                  : THEME.text,
-              fontWeight: 600,
-            }}
-          >
-            Weekly
-          </button>
-
-          <button
-            onClick={() => setView("month")}
-            style={{
-              padding: "8px 18px",
-              border: "none",
-              borderRadius: 8,
-              cursor: "pointer",
-              background:
-                view === "month"
-                  ? THEME.primary
-                  : "transparent",
-              color:
-                view === "month"
-                  ? "#fff"
-                  : THEME.text,
-              fontWeight: 600,
-            }}
-          >
-            Monthly
-          </button>
+          {([
+            { key: "day", label: "Daily" },
+            { key: "week", label: "Weekly" },
+            { key: "month", label: "Monthly" },
+          ] as const).map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => setView(opt.key)}
+              style={{
+                padding: "8px 18px",
+                border: "none",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: view === opt.key ? THEME.primary : "transparent",
+                color: view === opt.key ? "#fff" : THEME.text,
+                fontWeight: 600,
+              }}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
       </div>
 
