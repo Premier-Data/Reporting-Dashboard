@@ -416,6 +416,9 @@ export default function BoardReportPage() {
   const months = useMemo(() => recentMonths(18), []);
   const [mode, setMode] = useState<Mode>("month");
   const [month, setMonth] = useState<string>(lastMonthKey());
+  // Week mode is season-qualified (week numbers restart each season). null = no
+  // season chosen yet; defaulted to the latest season once data loads.
+  const [season, setSeason] = useState<number | null>(null);
   const [week, setWeek] = useState<number | null>(null);
   const [customFrom, setCustomFrom] = useState<string>("");
   const [customTo, setCustomTo] = useState<string>("");
@@ -466,12 +469,29 @@ export default function BoardReportPage() {
     };
   }, []);
 
-  // The data weeks present (Wed→Tue week numbers), descending, each with the
-  // actual date span it covers (min/max shift date). Week 0 is the pre-season
-  // catch-all; keep it but label it clearly.
+  // Seasons present in the shift data (descending). Week numbers restart each
+  // season, so the week picker is scoped to the chosen season.
+  const seasonOptions = useMemo(() => {
+    const set = new Set<number>();
+    for (const r of shiftRows) {
+      const s = Number(r.season);
+      if (Number.isFinite(s)) set.add(s);
+    }
+    return [...set].sort((a, b) => b - a);
+  }, [shiftRows]);
+
+  // Default to the latest season once data loads.
+  useEffect(() => {
+    if (season == null && seasonOptions.length > 0) setSeason(seasonOptions[0]);
+  }, [seasonOptions, season]);
+
+  // The data weeks present IN THE SELECTED SEASON (Wed→Tue week numbers),
+  // descending, each with the actual date span it covers. Week 0 is the
+  // pre-season catch-all; keep it but label it clearly.
   const weekOptions = useMemo(() => {
     const bounds = new Map<number, { min: string; max: string }>();
     for (const r of shiftRows) {
+      if (season != null && Number(r.season) !== season) continue;
       const w = Number(r.week);
       if (!Number.isFinite(w)) continue;
       const d = isoDate(r.shift_date);
@@ -483,8 +503,6 @@ export default function BoardReportPage() {
         if (d > b.max) b.max = d;
       }
     }
-    // A short "29 Apr to 5 May" range label (omit year — the week number plus
-    // the current data year make it unambiguous).
     const shortRange = (min: string, max: string): string => {
       const fmt = (iso: string) => {
         const dt = new Date(`${iso}T00:00:00`);
@@ -498,13 +516,21 @@ export default function BoardReportPage() {
     return Array.from(bounds.entries())
       .map(([week, b]) => ({ week, range: shortRange(b.min, b.max) }))
       .sort((a, b) => b.week - a.week);
-  }, [shiftRows]);
+  }, [shiftRows, season]);
 
   // Just the week numbers, for the default-selection effect and compare guard.
   const weekNumbers = useMemo(
     () => weekOptions.map((w) => w.week),
     [weekOptions]
   );
+
+  // When the season changes, reset the week to that season's most recent week
+  // (a week number from another season would otherwise be stale/empty).
+  useEffect(() => {
+    if (weekNumbers.length > 0) setWeek(weekNumbers[0]);
+    else setWeek(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [season]);
 
   // Default the week selector to the most recent week once data loads.
   useEffect(() => {
@@ -550,9 +576,9 @@ export default function BoardReportPage() {
           setLoading(false);
           return;
         }
-        current = buildWeekReport(shiftRows, gameRows, week);
+        current = buildWeekReport(shiftRows, gameRows, week, season);
         if (compare && week - 1 >= 0 && weekNumbers.includes(week - 1)) {
-          previous = buildWeekReport(shiftRows, gameRows, week - 1);
+          previous = buildWeekReport(shiftRows, gameRows, week - 1, season);
           prevLbl = `Week ${week - 1}`;
         }
       } else {
@@ -585,6 +611,7 @@ export default function BoardReportPage() {
     dataReady,
     mode,
     month,
+    season,
     week,
     weekNumbers,
     customFrom,
@@ -661,6 +688,25 @@ export default function BoardReportPage() {
                   {months.map((m) => (
                     <option key={m.key} value={m.key}>
                       {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {mode === "week" && seasonOptions.length > 0 && (
+              <div className="min-w-[140px]">
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-400">
+                  Season
+                </label>
+                <select
+                  value={season ?? ""}
+                  onChange={(e) => setSeason(Number(e.target.value))}
+                  className={selectClass}
+                >
+                  {seasonOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s} season
                     </option>
                   ))}
                 </select>

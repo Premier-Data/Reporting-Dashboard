@@ -169,19 +169,28 @@ export function buildBoardReport(
 
 /**
  * Build the board report for a single data WEEK (the Wed→Tue week number
- * carried on deputy_shifts.week / TT_Games.Week). Both tables use the same
- * numbering, so we filter by the number directly. The period is exactly one
- * week for the PHL fixed cost. from/to are derived from the actual min/max
+ * carried on deputy_shifts.week / TT_Games.Week). Week numbers RESTART each
+ * season, so a week must be qualified by its season — otherwise the two
+ * "week 1"s (one per season) merge. When `season` is given, only rows of that
+ * season are counted; omit it to keep the legacy number-only behaviour. The
+ * period is one week for the PHL fixed cost; from/to are the actual min/max
  * shift dates in that week (for display only).
  */
 export function buildWeekReport(
   shiftRows: ShiftRow[],
   gameRows: GameRow[],
-  weekNum: number
+  weekNum: number,
+  season?: number | null
 ): BoardReport {
   const w = String(weekNum);
-  const shifts = shiftRows.filter((r) => String(r.week) === w);
-  const games = gameRows.filter((r) => String(r.Week) === w);
+  const matchesSeason = (rowSeason: unknown): boolean =>
+    season == null || Number(rowSeason) === season;
+  const shifts = shiftRows.filter(
+    (r) => String(r.week) === w && matchesSeason(r.season)
+  );
+  const games = gameRows.filter(
+    (r) => String(r.Week) === w && matchesSeason(r.season)
+  );
   // Derive a display from/to from the shift dates present (fallback to games).
   const dates = [
     ...shifts.map((r) => isoDate(r.shift_date)),
