@@ -159,6 +159,43 @@ function seasonFromSheetName(name) {
 
 const TT_SEASON = seasonFromSheetName(TT_SHEET_NAME);
 
+// The Deputy sheet is a single rolling sheet (all shifts), so its season CANNOT
+// come from a sheet name — it is derived per row from the shift date.
+//
+// BOUNDARY RULE (must match lib/analytics/season.ts exactly): Week 1 is the
+// Wed→Tue week that CONTAINS 1 October, and the season begins at the start of
+// that week. So the season rolls on the WEDNESDAY ON-OR-BEFORE 1 October. For
+// 2026 that is Wed 30 Sep 2026 (1 Oct 2026 is a Thursday), so 30 Sep 2026 is
+// the first day of the 2027 season — matching Week 1 in the sheet. A date
+// on/after its calendar year's roll belongs to the NEXT year's season. Returns
+// null for an unparseable date (rather than guessing).
+//
+// WHY a season column matters here: deputy_shifts.week restarts each season, so
+// there are two "week 1" rows (one per season) with different dates. Grouping
+// by week number alone would merge them; qualifying by (season, week) keeps
+// each season's weeks distinct.
+const SEASON_WEEK_START_DOW = 3; // Wednesday (0=Sun..6=Sat)
+
+// The Wed on-or-before 1 Oct of `calendarYear` — first day of season (year+1).
+function seasonRollDate(calendarYear) {
+  const oct1 = new Date(Date.UTC(calendarYear, 9, 1, 0, 0, 0));
+  const back = (oct1.getUTCDay() - SEASON_WEEK_START_DOW + 7) % 7;
+  return new Date(oct1.getTime() - back * 24 * 60 * 60 * 1000);
+}
+
+function deputySeasonFromDate(isoDate) {
+  if (!isoDate) return null;
+  const d = new Date(`${String(isoDate).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const y = d.getUTCFullYear();
+  return d >= seasonRollDate(y) ? y + 1 : y;
+}
+
+// The Deputy sheet is a single rolling sheet (Option A). Exact name, overridable
+// via env only if it's ever renamed. Season is NOT taken from this name — it's
+// derived per row from the shift date (see deputySeasonFromDate).
+const DEPUTY_SHEET_NAME = process.env.DEPUTY_SHEET_NAME || "DeputyRawData";
+
 // ----------------------
 // AUTH (GRAPH)
 // ----------------------
@@ -207,11 +244,14 @@ async function getExcelBuffer() {
 // ----------------------
 function parseDeputyData(buffer) {
   const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheet = getSheet(workbook, ["DeputyRawData"]);
+  // Exact match so a season sheet like "2027_DeputyRawData" can never be picked
+  // in place of the rolling "DeputyRawData" (it contains the same substring).
+  const sheet = getSheetExact(workbook, DEPUTY_SHEET_NAME);
+  console.log(`📄 Deputy sheet: "${DEPUTY_SHEET_NAME}"`);
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
-  console.log("TT Header:", rows[0]);
-  console.log("First TT Row:", rows[1]);
+  console.log("Deputy Header:", rows[0]);
+  console.log("First Deputy Row:", rows[1]);
   console.log("Raw rows:", rows.length);
 
   let skipped = 0;
@@ -235,31 +275,38 @@ function parseDeputyData(buffer) {
   console.log("Skipped rows:", skipped);
   console.log("Rows after filter:", filtered.length);
 
-  return filtered.map(r => ({
-    shift_key: `${r[0]}_${r[2]}_${r[3]}_${r[4]}`,
+  return filtered.map(r => {
+    const shift_date = excelDateToJS(r[2]);
+    return {
+      shift_key: `${r[0]}_${r[2]}_${r[3]}_${r[4]}`,
 
-    employee_name: r[0],
-    level: String(r[1] || ""),
+      employee_name: r[0],
+      level: String(r[1] || ""),
 
-    shift_date: excelDateToJS(r[2]),
-    start_time: excelTimeToString(r[3]),
-    end_time: excelTimeToString(r[4]),
-    meal_break: excelTimeToString(r[5]),
+      shift_date,
+      start_time: excelTimeToString(r[3]),
+      end_time: excelTimeToString(r[4]),
+      meal_break: excelTimeToString(r[5]),
 
-    total_hours: Number(r[6]) || 0,
-    total_cost: Number(r[7]) || 0,
+      total_hours: Number(r[6]) || 0,
+      total_cost: Number(r[7]) || 0,
 
-    employee_comment: r[8] || null,
-    hourly_rate: Number(r[9]) || 0,
+      employee_comment: r[8] || null,
+      hourly_rate: Number(r[9]) || 0,
 
-    area_name: String(r[10] || "").trim(),
+      area_name: String(r[10] || "").trim(),
 
-    comment: r[11] || null,
-    day_name: r[12] || null,
-    month_name: r[13] || null,
-    week: r[14] == null || r[14] === "" ? 0 : Number(r[14]),
-    source_file: "DeputyRawData",
-  }));
+      comment: r[11] || null,
+      day_name: r[12] || null,
+      month_name: r[13] || null,
+      week: r[14] == null || r[14] === "" ? 0 : Number(r[14]),
+      // Season derived from the shift date (Oct→Sep window), NOT the sheet.
+      // Qualifies the restarting week number so the two "week 1"s (one per
+      // season) don't collide in week-based reports.
+      season: deputySeasonFromDate(shift_date),
+      source_file: "DeputyRawData",
+    };
+  });
 }
 
 // ----------------------

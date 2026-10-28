@@ -13,8 +13,6 @@ import {
   Line,
 } from "recharts";
 
-const BASE_WEEK_START = new Date("2026-03-18");
-
 // -------------------------
 // THEME
 // -------------------------
@@ -49,27 +47,12 @@ const formatMoney = (v: any) =>
 // -------------------------
 // WEEK HELPERS
 // -------------------------
-function getWeekIndex(date: Date) {
-  const diff = date.getTime() - BASE_WEEK_START.getTime();
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  return Math.floor(days / 7);
-}
-
-function getWeekLabel(weekIndex: number) {
-  const start = new Date(BASE_WEEK_START);
-  start.setDate(start.getDate() + weekIndex * 7);
-
-  const end = new Date(start);
-  end.setDate(end.getDate() + 6);
-
-  const fmt = (d: Date) =>
-    d.toLocaleDateString("en-AU", {
-      day: "2-digit",
-      month: "short",
-    });
-
-  return `W${weekIndex} (${fmt(start)}–${fmt(end)})`;
-}
+// Use the AUTHORITATIVE week + season columns from the data (set by the sync),
+// NOT a synthetic "weeks since a base date" count. The old approach counted
+// weeks from a hardcoded 18 Mar 2026, which is why 30 Sep showed as W28 instead
+// of the sheet's W1. Weeks restart each season, so (season, week) is the key.
+const dmy = (d: Date) =>
+  d.toLocaleDateString("en-AU", { day: "2-digit", month: "short" });
 
 function getMonthLabel(date: Date) {
   return date.toLocaleDateString("en-AU", {
@@ -149,31 +132,47 @@ export default function CostByAreaByWeek({
 
   const { chartData, areas } = useMemo(() => {
     const groupedMap: Record<string, any> = {};
+    // Per week-label ordering + date range, keyed by label.
+    const weekMeta: Record<string, { season: number; week: number; min: string; max: string }> = {};
 
     data.forEach((row) => {
-      const date = row.shift_date
-        ? new Date(row.shift_date)
-        : null;
-
-      if (!date) return;
+      const iso = row.shift_date ? String(row.shift_date).slice(0, 10) : null;
+      const date = iso ? new Date(`${iso}T00:00:00`) : null;
+      if (!date || Number.isNaN(date.getTime())) return;
 
       const area = row.area_name || "Unknown";
 
-      const label =
-        view === "week"
-          ? getWeekLabel(getWeekIndex(date))
-          : getMonthLabel(date);
+      let label: string;
+      if (view === "week") {
+        // Authoritative week + season from the row (set by the sync).
+        const season = Number(row.season);
+        const week = Number(row.week);
+        const hasSeason = Number.isFinite(season);
+        const wk = Number.isFinite(week) ? week : 0;
+        // Label carries the season so the two "Week 1"s (one per season) never
+        // merge, e.g. "2027 W1".
+        label = hasSeason ? `${season} W${wk}` : `W${wk}`;
 
-      const key = `${label}_${area}`;
-
-      if (!groupedMap[key]) {
-        groupedMap[key] = {
-          label,
-          area,
-          cost: 0,
-        };
+        const m = weekMeta[label];
+        if (!m) {
+          weekMeta[label] = {
+            season: hasSeason ? season : 0,
+            week: wk,
+            min: iso!,
+            max: iso!,
+          };
+        } else {
+          if (iso! < m.min) m.min = iso!;
+          if (iso! > m.max) m.max = iso!;
+        }
+      } else {
+        label = getMonthLabel(date);
       }
 
+      const key = `${label}_${area}`;
+      if (!groupedMap[key]) {
+        groupedMap[key] = { label, area, cost: 0 };
+      }
       groupedMap[key].cost += Number(row.total_cost) || 0;
     });
 
@@ -181,19 +180,14 @@ export default function CostByAreaByWeek({
 
 const labels =
   view === "week"
-    ? Array.from(
-        new Set(
-          grouped
-            .map((g: any) => ({
-              label: g.label,
-              week: Number(
-                g.label.match(/^W(-?\d+)/)?.[1] ?? 0
-              ),
-            }))
-            .sort((a, b) => a.week - b.week)
-            .map((x) => x.label)
-        )
-      )
+    ? Array.from(new Set(grouped.map((g: any) => g.label)))
+        // Sort by season, then by week number — never by a synthetic index.
+        .sort((a, b) => {
+          const ma = weekMeta[a];
+          const mb = weekMeta[b];
+          if (ma.season !== mb.season) return ma.season - mb.season;
+          return ma.week - mb.week;
+        })
     : Array.from(
         new Set(grouped.map((g: any) => g.label))
       ).sort(
@@ -207,8 +201,20 @@ const areas = Array.from(
 ).sort();
 
     const chartData = labels.map((label) => {
+      // For week view, append the week's real date range (from the data) to the
+      // axis label, e.g. "2027 W1 (30 Sep–06 Oct)".
+      let period = label;
+      if (view === "week") {
+        const m = weekMeta[label];
+        if (m) {
+          period = `${label} (${dmy(new Date(`${m.min}T00:00:00`))}–${dmy(
+            new Date(`${m.max}T00:00:00`)
+          )})`;
+        }
+      }
+
       const row: any = {
-        period: label,
+        period,
       };
 
       let total = 0;
