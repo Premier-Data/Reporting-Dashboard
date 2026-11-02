@@ -140,14 +140,15 @@ export default function MasterEditModal({
   const label = "mb-1 block text-xs font-medium text-slate-500";
 
   return (
+    // NON-BLOCKING editor: a docked panel, NOT a full-screen modal. It has NO
+    // backdrop and NO full-screen click-catcher, so the video-review timeline
+    // behind it (z-50) stays fully visible, interactive, AND keeps highlighting
+    // the active stat as the video plays. Close via the X / Cancel buttons.
+    // z-[70] keeps the panel above the video-review overlay.
     <div
-      className="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto bg-slate-900/70 p-4 backdrop-blur-sm"
-      onClick={onClose}
+      className="fixed right-4 top-20 z-[70] max-h-[calc(100vh-6rem)] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl ring-1 ring-black/5"
+      onClick={(e) => e.stopPropagation()}
     >
-      <div
-        className="my-10 w-full max-w-md rounded-2xl bg-white shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="flex items-center justify-between border-b border-slate-200 p-4">
           <h3 className="text-sm font-semibold text-slate-800">
             {isNew ? "Add master instance" : "Edit master instance"}
@@ -302,7 +303,6 @@ export default function MasterEditModal({
             </button>
           </div>
         </div>
-      </div>
     </div>
   );
 }

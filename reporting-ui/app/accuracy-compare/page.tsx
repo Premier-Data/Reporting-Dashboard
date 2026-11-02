@@ -1272,12 +1272,15 @@ function AccuracyCompareInner() {
   const [reviewIndex, setReviewIndex] = useState(0);
 
   // Auto-skip: when on, playback jumps to the next instance as soon as the
-  // current instance's XML end time is reached (skipping the gaps).
-  const [autoSkip, setAutoSkip] = useState(true);
+  // current instance's XML end time is reached (skipping the gaps). OFF by
+  // default — it's only auto-enabled when a SPECIFIC stat is chosen in the
+  // stat dropdown (see the effect on videoStatFilter below), since skipping
+  // only makes sense when reviewing one stat's clips.
+  const [autoSkip, setAutoSkip] = useState(false);
   // Refs so the video's timeupdate handler reads fresh values without
   // re-binding or capturing stale closures.
   const reviewIndexRef = useRef(0);
-  const autoSkipRef = useRef(true);
+  const autoSkipRef = useRef(false);
   // Start-sorted seek list (NOT display order) that the auto-skip handler
   // walks, so it never seeks backward. Mirrors the `seekClips` memo below.
   const reviewClipsRef = useRef<SeekClip[]>([]);
@@ -2034,6 +2037,13 @@ function AccuracyCompareInner() {
   // filters. Keep the original comparison rows so missed and extra entries
   // remain available in the review.
   const [videoStatFilter, setVideoStatFilter] = useState<string | "all">("all");
+
+  // Auto-skip follows the stat selection: ON when a specific stat is chosen
+  // (reviewing one stat's clips, so skipping the gaps helps), OFF for "all"
+  // stats. The user can still toggle it manually afterwards.
+  useEffect(() => {
+    setAutoSkip(videoStatFilter !== "all");
+  }, [videoStatFilter]);
   // Reset the clip index when the review scope changes.
   useEffect(() => {
     setReviewIndex(0);
