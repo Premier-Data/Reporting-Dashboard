@@ -191,6 +191,20 @@ function deputySeasonFromDate(isoDate) {
   return d >= seasonRollDate(y) ? y + 1 : y;
 }
 
+// The week number WITHIN the season for a date, using the same Wed→Tue weeks
+// as the rest of reporting. Week 1 is the week containing 1 Oct (starts on the
+// Wed on-or-before 1 Oct = the season roll date). Used for sheets that carry a
+// Date but NO Week column (SoccerData). Returns null for an unparseable date.
+function seasonWeekFromDate(isoDate) {
+  if (!isoDate) return null;
+  const d = new Date(`${String(isoDate).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return null;
+  const season = deputySeasonFromDate(isoDate); // label (e.g. 2027)
+  const start = seasonRollDate(season - 1); // first day of that season
+  const diffDays = Math.floor((d.getTime() - start.getTime()) / 86400000);
+  return Math.floor(diffDays / 7) + 1; // week 1 = first 7-day block
+}
+
 // The Deputy sheet is a single rolling sheet (Option A). Exact name, overridable
 // via env only if it's ever renamed. Season is NOT taken from this name — it's
 // derived per row from the shift date (see deputySeasonFromDate).
@@ -433,6 +447,174 @@ function parseTTData(buffer) {
 }
 
 // ----------------------
+// PARSE SOCCER (SoccerData sheet)
+// ----------------------
+// Columns: Date | Competition | Round | Home Team | Away Team | Home Allocated |
+//          Away Allocated | VideoURL | Location
+// No Week column, so season + week are DERIVED from the date (same Wed→Tue
+// weeks as the rest of reporting).
+// ----------------------
+// PARSE COMPLETION TIMES (Completion Times sheet)
+// ----------------------
+// Maps "Fixture Complete Time" onto soccer games. Columns (0-based):
+//   2 = Fixture Date, 4 = Competition, 5 = Round, 6 = Home, 7 = Away,
+//   18 = Fixture Complete Time (Excel datetime serial).
+// Competition names differ between sheets (SoccerData appends year suffixes),
+// so the join is Date+Home+Away, falling back to Home+Away (teams normalised,
+// FC/SC stripped). Verified match rate ~77%; unmatched games get no completion
+// date and are excluded from "completed each week" on the page.
+function normTeam(v) {
+  return String(v ?? "")
+    .toLowerCase()
+    .replace(/\b(fc|sc|afc)\b/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function parseCompletionTimes(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const found = workbook.SheetNames.find(
+    n => n.trim().toLowerCase() === "completion times"
+  );
+  if (!found) {
+    console.log("⚠️ 'Completion Times' sheet not found — soccer completion dates skipped.");
+    return { byDateHomeAway: new Map(), byHomeAway: new Map() };
+  }
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[found], { header: 1 });
+
+  const byDateHomeAway = new Map(); // "iso|home|away" -> completed_date (iso)
+  const byHomeAway = new Map();     // "home|away" -> completed_date (iso) [first seen]
+  let withTime = 0;
+  for (const r of rows.slice(1)) {
+    if (!r || r.length === 0) continue;
+    const completeSerial = r[18];
+    if (completeSerial == null || completeSerial === "") continue; // no completion time → skip
+    const completed = excelDateToJS(completeSerial);
+    if (!completed) continue;
+    withTime++;
+    const h = normTeam(r[6]);
+    const a = normTeam(r[7]);
+    const d = excelDateToJS(r[2]);
+    if (d) byDateHomeAway.set(`${d}|${h}|${a}`, completed);
+    const hk = `${h}|${a}`;
+    if (!byHomeAway.has(hk)) byHomeAway.set(hk, completed);
+  }
+  console.log(`📄 Completion Times: ${rows.length - 1} rows, ${withTime} with a Fixture Complete Time`);
+  return { byDateHomeAway, byHomeAway };
+}
+
+// Resolve a soccer game's completion date from the lookup maps (Date+Home+Away
+// first, then Home+Away). Returns null when there's no match.
+function completionDateFor(completion, date, home, away) {
+  const h = normTeam(home);
+  const a = normTeam(away);
+  const exact = completion.byDateHomeAway.get(`${date}|${h}|${a}`);
+  if (exact) return exact;
+  return completion.byHomeAway.get(`${h}|${a}`) ?? null;
+}
+
+function parseSoccerData(buffer, completion) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheet = getSheetExact(workbook, "SoccerData");
+  console.log(`📄 Soccer sheet: "SoccerData"`);
+
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+  console.log("Soccer Header:", rows[0]);
+
+  const clean = v => {
+    if (v == null) return null;
+    const s = String(v).replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, " ").trim();
+    return s === "" ? null : s;
+  };
+  const cleanUrl = v => {
+    const s = clean(v);
+    return s == null ? null : s.replace(/ /g, "%20");
+  };
+
+  let skipped = 0;
+  let matched = 0;
+  const parsed = rows
+    .slice(1)
+    .filter(r => r && r.length)
+    .map(r => {
+      const date = excelDateToJS(r[0]);
+      const home_team = clean(r[3]);
+      const away_team = clean(r[4]);
+      // Completion date (when the fixture was actually finished), from the
+      // Completion Times sheet. Null when unmatched → excluded from the
+      // "completed each week" view. season/week are DERIVED from this date,
+      // since "games completed each week" is bucketed by completion, not
+      // fixture date.
+      const completed_date = completion
+        ? completionDateFor(completion, date, home_team, away_team)
+        : null;
+      if (completed_date) matched++;
+      return {
+        game_key: `${date}_${home_team}_${away_team}`,
+        Date: date,
+        Competition: clean(r[1]),
+        Round: r[2] == null || r[2] === "" ? null : String(r[2]),
+        home_team,
+        away_team,
+        home_allocated: clean(r[5]),
+        away_allocated: clean(r[6]),
+        videoURL: cleanUrl(r[7]),
+        Location: clean(r[8]),
+        // Fixture-date season/week (kept for reference / fallback views).
+        season: deputySeasonFromDate(date),
+        week: seasonWeekFromDate(date),
+        // Completion date + its season/week (null when no completion time).
+        completed_date,
+        completed_season: completed_date ? deputySeasonFromDate(completed_date) : null,
+        completed_week: completed_date ? seasonWeekFromDate(completed_date) : null,
+      };
+    })
+    .filter(row => {
+      if (!row.Date || !row.home_team || !row.away_team) {
+        skipped++;
+        return false;
+      }
+      return true;
+    });
+
+  console.log("Skipped malformed Soccer rows:", skipped);
+  console.log(`Soccer games with a completion date: ${matched} / ${parsed.length}`);
+  console.log("First Parsed Soccer Row:", parsed[0]);
+  return parsed;
+}
+
+// ----------------------
+// PARSE VN TEAM (VNTeam sheet)
+// ----------------------
+// Columns: Name | <weekly wage>.  Header's 2nd cell is the total weekly pool
+// (e.g. 4412); each row is one member's fixed WEEKLY wage (e.g. 490.22).
+function parseVNTeam(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheet = getSheetExact(workbook, "VNTeam");
+  console.log(`📄 VN Team sheet: "VNTeam"`);
+
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+  const clean = v => {
+    if (v == null) return null;
+    const s = String(v).replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, " ").trim();
+    return s === "" ? null : s;
+  };
+
+  const parsed = rows
+    .slice(1)
+    .filter(r => r && r[0] != null && String(r[0]).trim() !== "")
+    .map(r => ({
+      name: clean(r[0]),
+      weekly_wage: Number(r[1]) || 0,
+    }))
+    .filter(r => r.name);
+
+  console.log("VN Team members:", parsed.length);
+  console.log("First VN member:", parsed[0]);
+  return parsed;
+}
+
+// ----------------------
 // DEDUPE
 // ----------------------
 function dedupe(records, key) {
@@ -512,6 +694,76 @@ async function uploadTT(records) {
 }
 
 // ----------------------
+// UPLOAD SOCCER
+// ----------------------
+async function uploadSoccer(records) {
+  let uploaded = 0;
+  for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+    const chunk = records.slice(i, i + CHUNK_SIZE);
+    console.log(`Uploading Soccer chunk ${i / CHUNK_SIZE + 1}:`, chunk.length, "rows");
+    const { error } = await supabase
+      .from("soccer_games")
+      .upsert(chunk, { onConflict: "game_key" });
+    if (error) throw new Error(JSON.stringify(error));
+    uploaded += chunk.length;
+  }
+  console.log("Soccer rows uploaded:", uploaded);
+
+  // ── Orphan purge ──
+  // The sheet is the source of truth. Upsert alone never removes rows that
+  // were edited/deleted in the sheet, leaving stale "orphans" that inflate the
+  // DB total (and could show in weekly views). Delete any soccer_games whose
+  // game_key is NOT in the current sync set. Guarded: never purge when the
+  // parse produced zero rows (that would wipe the table on a transient read
+  // failure).
+  if (records.length > 0) {
+    const keep = new Set(records.map((r) => r.game_key));
+    let existing = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("soccer_games")
+        .select("game_key")
+        .range(from, from + 999);
+      if (error) throw new Error(JSON.stringify(error));
+      if (!data || data.length === 0) break;
+      existing.push(...data.map((d) => d.game_key));
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    const orphans = existing.filter((k) => !keep.has(k));
+    if (orphans.length > 0) {
+      for (let i = 0; i < orphans.length; i += CHUNK_SIZE) {
+        const chunk = orphans.slice(i, i + CHUNK_SIZE);
+        const { error } = await supabase
+          .from("soccer_games")
+          .delete()
+          .in("game_key", chunk);
+        if (error) throw new Error(JSON.stringify(error));
+      }
+      console.log(`Soccer orphans purged: ${orphans.length}`);
+    } else {
+      console.log("Soccer orphans purged: 0");
+    }
+  }
+
+  return uploaded;
+}
+
+// ----------------------
+// UPLOAD VN TEAM
+// ----------------------
+async function uploadVNTeam(records) {
+  if (records.length === 0) return 0;
+  const { error } = await supabase
+    .from("vn_team")
+    .upsert(records, { onConflict: "name" });
+  if (error) throw new Error(JSON.stringify(error));
+  console.log("VN Team rows uploaded:", records.length);
+  return records.length;
+}
+
+// ----------------------
 // MAIN SYNC
 // ----------------------
 async function sync() {
@@ -539,10 +791,23 @@ async function sync() {
     console.log("TT ROWS:", tt.length);
 
     // ----------------------
+    // SOCCER + VN TEAM
+    // ----------------------
+    const completion = parseCompletionTimes(buffer);
+    let soccer = parseSoccerData(buffer, completion);
+    soccer = dedupe(soccer, "game_key");
+    console.log("SOCCER ROWS:", soccer.length);
+
+    const vnTeam = parseVNTeam(buffer);
+    console.log("VN TEAM ROWS:", vnTeam.length);
+
+    // ----------------------
     // UPLOAD
     // ----------------------
     const deputyUploaded = await uploadToSupabase(deputy);
     const ttUploaded = await uploadTT(tt);
+    const soccerUploaded = await uploadSoccer(soccer);
+    const vnUploaded = await uploadVNTeam(vnTeam);
 
     // Guard against a silent no-op sync. If we parsed rows but wrote
     // none, that is a failure even though no error was thrown.
@@ -558,10 +823,16 @@ async function sync() {
       );
     }
 
-    await logSuccess(deputyUploaded + ttUploaded);
+    if (soccer.length > 0 && soccerUploaded === 0) {
+      throw new Error(
+        `Parsed ${soccer.length} Soccer rows but uploaded 0 — aborting as failure.`
+      );
+    }
+
+    await logSuccess(deputyUploaded + ttUploaded + soccerUploaded + vnUploaded);
 
     console.log(
-      `🎉 Sync complete! Deputy: ${deputyUploaded}, TT: ${ttUploaded}`
+      `🎉 Sync complete! Deputy: ${deputyUploaded}, TT: ${ttUploaded}, Soccer: ${soccerUploaded}, VN: ${vnUploaded}`
     );
   } catch (err) {
     console.error("💥 Sync failed:", err);

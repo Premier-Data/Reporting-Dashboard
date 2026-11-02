@@ -162,6 +162,11 @@ const sections = [
       icon: Users,
     },
     {
+      title: "Soccer Profiles",
+      href: "/soccer-profile",
+      icon: Users,
+    },
+    {
       title: "Affiliated Teams",
       href: "/affiliated-teams",
       icon: Shield,
@@ -175,6 +180,11 @@ const sections = [
       {
         title: "Reporting",
         href: "/reporting",
+        icon: BarChart3,
+      },
+      {
+        title: "VN / Soccer",
+        href: "/vn-soccer",
         icon: BarChart3,
       },
       {

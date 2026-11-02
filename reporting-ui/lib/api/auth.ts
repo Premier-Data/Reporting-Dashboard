@@ -86,6 +86,13 @@ export const PAGES: PageDef[] = [
 // to denied for existing roles).
 const PAGE_KEY_ALIASES: Record<string, string> = {
     "/push-log": "live-scores",
+    // VN / Soccer is a reporting view (soccer completions + VN team cost per
+    // game), so it inherits the "reporting" permission rather than defining a
+    // new key that would default to denied for existing roles.
+    "/vn-soccer": "reporting",
+    // Soccer analyst profiles mirror the AFL profiles and inherit the same
+    // "analyst-profile" permission.
+    "/soccer-profile": "analyst-profile",
     // Player profiles are opened by clicking a player in the Live Scores team
     // lists, so they're a sub-view of Live Scores and inherit its permission
     // (rather than mapping to no key -> denied -> redirect to the dashboard).
