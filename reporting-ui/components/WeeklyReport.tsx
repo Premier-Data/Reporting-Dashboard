@@ -332,6 +332,12 @@ export default function WeeklyReport({
     // not a coding-games team so it's excluded. Blended = (AUS pure coding +
     // PHL cost) / (AUS + PHL games).
     const phlLabels = osLabels.filter((l) => l.toLowerCase().startsWith("philippines"));
+    // Vietnam OS cost per column, used in the Soccer per-game figures.
+    const vnLabels = osLabels.filter((l) => l.toLowerCase().startsWith("vietnam"));
+    const vnCost: Record<string, number> = {};
+    for (const key of ["total", ...weeks] as (string | number)[]) {
+      vnCost[key] = vnLabels.reduce((s, l) => s + (cost[l][key] ?? 0), 0);
+    }
     const phlCostPerGame: Record<string, number> = {};
     for (const key of ["total", ...weeks] as (string | number)[]) {
       const pc = phlLabels.reduce((s, l) => s + (cost[l][key] ?? 0), 0);
@@ -361,22 +367,36 @@ export default function WeeklyReport({
       totalBlendedCostPerGame[key] = g + pg > 0 ? (ausCost + pc) / (g + pg) : 0;
     }
 
-    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame };
+    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost };
   }, [deputyData, ttData, soccerGames, osTeam, season, view]);
 
-  const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame } = report;
+  const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost } = report;
   const cols: (string | number)[] = ["total", ...weeks];
 
   const cellCls = "border-b border-slate-100 px-3 py-1.5 text-right tabular-nums whitespace-nowrap";
   // First column (area/row labels) is sticky-left so it stays visible when
   // scrolling the week columns horizontally. Needs an opaque bg to cover cells
   // sliding under it.
-  const labelCls = "sticky left-0 z-10 border-b border-slate-100 bg-white px-3 py-1.5 text-left whitespace-nowrap";
-  const totalCol = "bg-slate-50 font-semibold";
+  // Label column has a fixed 320px width so the Total column can stick right
+  // beside it (left-[320px]) and both stay put while scrolling across weeks.
+  const labelCls = "sticky left-0 z-10 w-[320px] min-w-[320px] max-w-[320px] border-b border-slate-100 bg-white px-3 py-1.5 text-left whitespace-nowrap";
+  const totalCol = "sticky left-[320px] z-10 bg-slate-50 font-semibold border-r border-slate-200";
 
   // Games source per group (Aussie Rules ← TT, Soccer ← soccer_games, Other none).
   const gamesFor = (g: Group): Record<string, number> | null =>
     g === "aussie" ? aflGames : g === "soccer" ? socGames : null;
+
+  // Soccer per-game figures: total Soccer group cost (Operations, Training,
+  // QA/ Accuracy) and hours divided by Soccer games, kept apart from Aussie Rules.
+  const socAvgTime: Record<string, number> = {};
+  const socCostPerGame: Record<string, number> = {};
+  for (const col of cols) {
+    const g = socGames[col] ?? 0;
+    socAvgTime[col] = g > 0 ? (subHrs.soccer[col] ?? 0) / g : 0;
+    // Soccer cost per game = Vietnam OS cost only (no 15% uplift), divided by
+    // soccer games.
+    socCostPerGame[col] = g > 0 ? (vnCost[col] ?? 0) / g : 0;
+  }
 
   return (
     <div style={{ marginTop: 20 }}>
@@ -433,7 +453,7 @@ export default function WeeklyReport({
                   return (
                     <th
                       key="total"
-                      className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 px-3 py-2 text-right"
+                      className="sticky left-[320px] top-0 z-30 border-b border-r border-slate-200 bg-slate-50 px-3 py-2 text-right"
                     >
                       <div className="font-bold text-slate-800">Total</div>
                     </th>
@@ -504,9 +524,9 @@ export default function WeeklyReport({
 
             {/* GRAND TOTALS — first cell sticky-left with matching dark bg. */}
             <tr className="bg-slate-800 text-white">
-              <td className="sticky left-0 z-10 bg-slate-800 px-3 py-2 text-left font-bold">Grand Total Costs</td>
+              <td className="sticky left-0 z-10 w-[320px] min-w-[320px] max-w-[320px] bg-slate-800 px-3 py-2 text-left font-bold">Grand Total Costs</td>
               {cols.map((col) => (
-                <td key={String(col)} className={`${cellCls} ${col === "total" ? "bg-slate-900" : ""}`}>
+                <td key={String(col)} className={`${cellCls} ${col === "total" ? "sticky left-[320px] z-10 bg-slate-900" : ""}`}>
                   {money(grandCost[col] ?? 0)}
                 </td>
               ))}
@@ -514,7 +534,7 @@ export default function WeeklyReport({
             <tr className="bg-slate-700 text-white">
               <td className="sticky left-0 z-10 bg-slate-700 px-3 py-2 text-left font-bold">Grand Total Hours</td>
               {cols.map((col) => (
-                <td key={String(col)} className={`${cellCls} ${col === "total" ? "bg-slate-800" : ""}`}>
+                <td key={String(col)} className={`${cellCls} ${col === "total" ? "sticky left-[320px] z-10 bg-slate-800" : ""}`}>
                   {hours(grandHrs[col] ?? 0)}
                 </td>
               ))}
@@ -528,8 +548,9 @@ export default function WeeklyReport({
               </td>
               <td colSpan={cols.length} className="bg-sky-600" />
             </tr>
-            {[
-              { label: "Games", data: aflGames, fmt: (v: number) => String(v), bold: true },
+            {([
+              { label: "Aussie Rules", section: true },
+              { label: "Aussie Rules Games", data: aflGames, fmt: (v: number) => String(v), bold: true },
               { label: "AUS Games", data: ausGames, fmt: (v: number) => String(v) },
               { label: "PHL Games", data: phlGames, fmt: (v: number) => String(v) },
               { label: "Pure avg coding time (hrs/game)", data: pureAvgTime, fmt: (v: number) => (v ? v.toFixed(2) : "–") },
@@ -537,19 +558,39 @@ export default function WeeklyReport({
               { label: "PHL cost per game", data: phlCostPerGame, fmt: (v: number) => money(v), hl: true },
               { label: "Total AUS Coding cost per game (incl. 15%)", data: totalCodingCostPerGame, fmt: (v: number) => money(v), hl: true },
               { label: "Total blended cost per game (AUS + PHL games)", data: totalBlendedCostPerGame, fmt: (v: number) => money(v), hl: true },
-            ].map((row) => (
-              <tr
-                key={row.label}
-                className={`border-b border-slate-100 hover:bg-slate-50 ${row.bold ? "font-semibold" : ""} ${row.hl ? "bg-yellow-100 font-semibold" : ""}`}
-              >
-                <td className={`${labelCls} ${row.hl ? "!bg-yellow-100" : ""}`}>{row.label}</td>
-                {cols.map((col) => (
-                  <td key={String(col)} className={`${cellCls} ${col === "total" ? totalCol : ""}`}>
-                    {row.fmt(row.data[col] ?? 0)}
+              { label: "Soccer", section: true },
+              { label: "Soccer Games", data: socGames, fmt: (v: number) => String(v), bold: true },
+              { label: "Soccer avg time (hrs/game)", data: socAvgTime, fmt: (v: number) => (v ? v.toFixed(2) : "–") },
+              { label: "Soccer cost per game (VN)", data: socCostPerGame, fmt: (v: number) => money(v), hl: true },
+            ] as {
+              label: string;
+              section?: boolean;
+              data?: Record<string, number>;
+              fmt?: (v: number) => string;
+              bold?: boolean;
+              hl?: boolean;
+            }[]).map((row) =>
+              row.section ? (
+                <tr key={row.label} className="bg-sky-50">
+                  <td className="sticky left-0 z-10 bg-sky-50 px-3 py-1 text-left text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                    {row.label}
                   </td>
-                ))}
-              </tr>
-            ))}
+                  <td colSpan={cols.length} className="bg-sky-50" />
+                </tr>
+              ) : (
+                <tr
+                  key={row.label}
+                  className={`border-b border-slate-100 hover:bg-slate-50 ${row.bold ? "font-semibold" : ""} ${row.hl ? "bg-yellow-100 font-semibold" : ""}`}
+                >
+                  <td className={`${labelCls} ${row.hl ? "!bg-yellow-100" : ""}`}>{row.label}</td>
+                  {cols.map((col) => (
+                    <td key={String(col)} className={`${cellCls} ${col === "total" ? totalCol : ""}`}>
+                      {row.fmt!(row.data![col] ?? 0)}
+                    </td>
+                  ))}
+                </tr>
+              )
+            )}
           </tbody>
         </table>
       </div>

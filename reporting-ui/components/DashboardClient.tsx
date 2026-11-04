@@ -25,6 +25,10 @@ const CostByAreaByWeek = dynamic(() => import("./CostByAreaByWeek"), {
   ssr: false,
   loading: chartLoading,
 });
+const SoccerGames = dynamic(() => import("./SoccerGames"), {
+  ssr: false,
+  loading: chartLoading,
+});
 const TTGames = dynamic(() => import("./TTGames"), {
   ssr: false,
   loading: chartLoading,
@@ -116,6 +120,7 @@ export default function DashboardClient({
   // so they're scoped by the season's Oct→Sep date window instead.
   const seasonInfo = useMemo(() => seasonsFromTT(ttData ?? []), [ttData]);
   const [season, setSeason] = useState<string>("all");
+  const [ttSport, setTtSport] = useState<"aussie" | "soccer">("aussie");
 
   // Default to the most recent season once data loads (keeps "all" only if no
   // season data exists). Runs when the available seasons change.
@@ -534,7 +539,26 @@ export default function DashboardClient({
           {/* TT GAMES */}
           <TabsContent value="tt">
             <div style={{ marginTop: 20 }}>
-              <TTGames data={filteredTT} />
+              {/* Sport sub-tabs: Soccer is tracked separately from Aussie Rules. */}
+              <div className="mb-3 inline-flex rounded-lg border border-slate-300 bg-white p-1">
+                {(["aussie", "soccer"] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setTtSport(s)}
+                    className={`rounded-md px-4 py-1.5 text-sm font-semibold ${
+                      ttSport === s ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    {s === "aussie" ? "Aussie Rules" : "Soccer"}
+                  </button>
+                ))}
+              </div>
+              {ttSport === "aussie" ? (
+                <TTGames data={filteredTT} />
+              ) : (
+                <SoccerGames ttData={ttData ?? []} season={season} />
+              )}
             </div>
           </TabsContent>
 
