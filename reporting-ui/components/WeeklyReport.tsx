@@ -21,12 +21,14 @@ import { supabase } from "@/lib/supabase";
 
 type Row = Record<string, unknown>;
 
+// Whole dollars, rounded UP to the nearest dollar.
 const money = (v: number) =>
   v === 0
     ? "–"
-    : `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    : `$${Math.ceil(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+// Whole hours (rounded to nearest).
 const hours = (v: number) =>
-  v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  Math.round(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const num = (v: unknown): number => {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -111,6 +113,7 @@ export default function WeeklyReport({
     ? 2027
     : seasonInfo.years[0] ?? new Date().getFullYear();
   const [season, setSeason] = useState<number>(defaultSeason);
+  const [view, setView] = useState<"week" | "month">("week");
 
   const report = useMemo(() => {
     const shifts = deputyData.filter((r) => num(r.season) === season);
@@ -121,9 +124,19 @@ export default function WeeklyReport({
     // covers (min/max of the real shift + game dates). Week anchoring differs
     // per season (2026 weeks start in late March; 2027 weeks start late Sep), so
     // the column dates are taken straight from the data, NOT a season formula.
-    const weekSet = new Set<number>();
-    const weekDates: Record<number, { min: string; max: string }> = {};
-    const noteDate = (w: number, iso: unknown) => {
+    // View: "week" columns are week numbers; "month" columns are "YYYY-MM"
+    // keys taken from each record's real date. `keyOf` maps a record to its
+    // column key (null = unusable).
+    const monthly = view === "month";
+    const keyOf = (w: number | null, iso: unknown): string | number | null => {
+      if (!monthly) return w;
+      const s = String(iso ?? "").slice(0, 7);
+      return /^\d{4}-\d{2}$/.test(s) ? s : null;
+    };
+    const weekSet = new Set<string | number>();
+    const weekNumSet = new Set<number>(); // always real week numbers (for OS cost)
+    const weekDates: Record<string, { min: string; max: string }> = {};
+    const noteDate = (w: string | number, iso: unknown) => {
       const s = String(iso ?? "").slice(0, 10);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return;
       const d = weekDates[w];
@@ -133,8 +146,27 @@ export default function WeeklyReport({
         if (s > d.max) d.max = s;
       }
     };
-    for (const r of shifts) { const w = weekOf(r.week); if (w != null) { weekSet.add(w); noteDate(w, r.shift_date); } }
-    for (const r of afl) { const w = weekOf(r.Week ?? r.week); if (w != null) { weekSet.add(w); noteDate(w, r.Date); } }
+    // Week-1 start date (independent of the view) — anchors soccer week bucketing
+    // and the monthly split of weekly OS costs.
+    let wk1Min: string | null = null;
+    const noteWk1 = (w: number | null, iso: unknown) => {
+      const s = String(iso ?? "").slice(0, 10);
+      if (w === 1 && /^\d{4}-\d{2}-\d{2}$/.test(s) && (wk1Min == null || s < wk1Min)) wk1Min = s;
+    };
+    for (const r of shifts) {
+      const w = weekOf(r.week);
+      noteWk1(w, r.shift_date);
+      if (w != null) weekNumSet.add(w);
+      const k = keyOf(w, r.shift_date);
+      if (k != null) { weekSet.add(k); noteDate(k, r.shift_date); }
+    }
+    for (const r of afl) {
+      const w = weekOf(r.Week ?? r.week);
+      noteWk1(w, r.Date);
+      if (w != null) weekNumSet.add(w);
+      const k = keyOf(w, r.Date);
+      if (k != null) { weekSet.add(k); noteDate(k, r.Date); }
+    }
 
     // Soccer's stored week uses the October season formula, which doesn't match
     // this season's sheet-defined weeks (2026 weeks start late March). So bucket
@@ -142,7 +174,7 @@ export default function WeeklyReport({
     // data: Week 1 starts on the Wednesday on-or-before the earliest Week 1
     // date; anything earlier is Week 0 (pre-season). Falls back to the stored
     // week only if the season has no Week 1 data to anchor on.
-    const wk1 = weekDates[1];
+    const wk1 = wk1Min ? { min: wk1Min as string } : null;
     let anchorMs: number | null = null;
     if (wk1) {
       const d = new Date(`${wk1.min}T00:00:00Z`);
@@ -157,8 +189,15 @@ export default function WeeklyReport({
       }
       return weekOf(r.week);
     };
-    for (const r of soc) { const w = socWeek(r); if (w != null) { weekSet.add(w); noteDate(w, r.Date); } }
-    const weeks = [...weekSet].sort((a, b) => a - b);
+    for (const r of soc) {
+      const w = socWeek(r);
+      if (w != null) weekNumSet.add(w);
+      const k = keyOf(w, r.Date);
+      if (k != null) { weekSet.add(k); noteDate(k, r.Date); }
+    }
+    const weeks = [...weekSet].sort((a, b) =>
+      monthly ? String(a).localeCompare(String(b)) : Number(a) - Number(b)
+    );
 
     // Areas by group.
     const areasByGroup: Record<Group, string[]> = { aussie: [], soccer: [], os: [], other: [] };
@@ -181,7 +220,7 @@ export default function WeeklyReport({
     for (const r of shifts) {
       const a = String(r.area_name ?? "").trim();
       if (!a) continue;
-      const w = weekOf(r.week);
+      const w = keyOf(weekOf(r.week), r.shift_date);
       if (w == null) continue;
       const c = num(r.total_cost);
       const h = num(r.total_hours);
@@ -218,18 +257,28 @@ export default function WeeklyReport({
     for (const r of osTeam) {
       const label = osLabel(r);
       const weekly = num(r.weekly_cost);
-      for (const w of weeks) {
+      for (const w of weekNumSet) {
         if (!osActive(r, w)) continue;
-        cost[label][w] = (cost[label][w] ?? 0) + weekly;
         cost[label].total += weekly;
+        if (!monthly) {
+          cost[label][w] = (cost[label][w] ?? 0) + weekly;
+        } else if (anchorMs != null) {
+          // Monthly view: spread the week's cost evenly over its 7 days and
+          // credit each day to the month it falls in (totals still reconcile).
+          const startMs = anchorMs + (w === 0 ? -7 : w - 1) * 7 * 86400000;
+          for (let d = 0; d < 7; d++) {
+            const mk = new Date(startMs + d * 86400000).toISOString().slice(0, 7);
+            cost[label][mk] = (cost[label][mk] ?? 0) + weekly / 7;
+          }
+        }
       }
     }
 
     // Games per week per sport.
     const aflGames: Record<string, number> = { total: afl.length };
     const socGames: Record<string, number> = { total: soc.length };
-    for (const r of afl) { const w = weekOf(r.Week ?? r.week); if (w != null) aflGames[w] = (aflGames[w] ?? 0) + 1; }
-    for (const r of soc) { const w = socWeek(r); if (w != null) socGames[w] = (socGames[w] ?? 0) + 1; }
+    for (const r of afl) { const w = keyOf(weekOf(r.Week ?? r.week), r.Date); if (w != null) aflGames[w] = (aflGames[w] ?? 0) + 1; }
+    for (const r of soc) { const w = keyOf(socWeek(r), r.Date); if (w != null) socGames[w] = (socGames[w] ?? 0) + 1; }
 
     // Group subtotals (cost + hours) per week + total.
     const subCost: Record<Group, Record<string, number>> = { aussie: {}, soccer: {}, os: {}, other: {} };
@@ -256,7 +305,7 @@ export default function WeeklyReport({
     const ausGames: Record<string, number> = { total: 0 };
     const phlGames: Record<string, number> = { total: 0 };
     for (const r of afl) {
-      const w = weekOf(r.Week ?? r.week);
+      const w = keyOf(weekOf(r.Week ?? r.week), r.Date);
       const loc = String(r.Location ?? "").trim().toUpperCase();
       const bucket = loc === "AUS" ? ausGames : loc === "PHL" ? phlGames : null;
       if (!bucket) continue;
@@ -265,7 +314,8 @@ export default function WeeklyReport({
     }
     const pureAreas = [...seen].filter((a) => {
       const k = a.toLowerCase();
-      return k === "home analyst" || k === "office analyst";
+      // Area names look like "Aussie Rules - Home Analyst" (soccer excluded).
+      return k === "aussie rules - home analyst" || k === "aussie rules - office analyst";
     });
     const pureCost: Record<string, number> = {};
     const pureHrs: Record<string, number> = {};
@@ -278,11 +328,43 @@ export default function WeeklyReport({
       pureAvgTime[key] = g > 0 ? pureHrs[key] / g : 0;
       pureCostPerGame[key] = g > 0 ? pureCost[key] / g : 0;
     }
+    // PHL coding cost = the Philippines OS rows (team + bank fee). Vietnam is
+    // not a coding-games team so it's excluded. Blended = (AUS pure coding +
+    // PHL cost) / (AUS + PHL games).
+    const phlLabels = osLabels.filter((l) => l.toLowerCase().startsWith("philippines"));
+    const phlCostPerGame: Record<string, number> = {};
+    for (const key of ["total", ...weeks] as (string | number)[]) {
+      const pc = phlLabels.reduce((s, l) => s + (cost[l][key] ?? 0), 0);
+      const pg = phlGames[key] ?? 0;
+      phlCostPerGame[key] = pg > 0 ? pc / pg : 0;
+    }
+    // Total coding cost per game = Home + Office Analyst, Live Games,
+    // Operations Coordinator, QA/ Accuracy and Supervising (Aussie Rules),
+    // divided by AUS games.
+    const totalCodingSuffixes = ["home analyst", "office analyst", "live games", "operations coordinator", "qa/ accuracy", "supervising"];
+    const totalCodingAreas = [...seen].filter((a) => {
+      const k = a.toLowerCase();
+      return k.startsWith("aussie rules") && totalCodingSuffixes.some((s) => k.endsWith(s));
+    });
+    const totalCodingCostPerGame: Record<string, number> = {};
+    const totalBlendedCostPerGame: Record<string, number> = {};
+    for (const key of ["total", ...weeks] as (string | number)[]) {
+      const c = totalCodingAreas.reduce((s, a) => s + (cost[a][key] ?? 0), 0);
+      const g = ausGames[key] ?? 0;
+      // +15% to account for entitlements (AUS staff only).
+      const ausCost = c * 1.15;
+      totalCodingCostPerGame[key] = g > 0 ? ausCost / g : 0;
+      // Blended = (AUS coding cost incl. 15% + PHL cost incl. bank fee) /
+      // (AUS + PHL games).
+      const pc = phlLabels.reduce((s, l) => s + (cost[l][key] ?? 0), 0);
+      const pg = phlGames[key] ?? 0;
+      totalBlendedCostPerGame[key] = g + pg > 0 ? (ausCost + pc) / (g + pg) : 0;
+    }
 
-    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame };
-  }, [deputyData, ttData, soccerGames, osTeam, season]);
+    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame };
+  }, [deputyData, ttData, soccerGames, osTeam, season, view]);
 
-  const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame } = report;
+  const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame } = report;
   const cols: (string | number)[] = ["total", ...weeks];
 
   const cellCls = "border-b border-slate-100 px-3 py-1.5 text-right tabular-nums whitespace-nowrap";
@@ -306,6 +388,18 @@ export default function WeeklyReport({
             separate from Aussie Rules.
           </p>
         </div>
+        <div className="flex items-center gap-3">
+        <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+          View
+          <select
+            value={view}
+            onChange={(e) => setView(e.target.value as "week" | "month")}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500"
+          >
+            <option value="week">Weekly</option>
+            <option value="month">Monthly</option>
+          </select>
+        </label>
         {seasonInfo.years.length > 0 && (
           <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
             Season
@@ -322,6 +416,7 @@ export default function WeeklyReport({
             </select>
           </label>
         )}
+        </div>
       </div>
 
       {/* Scroll BOTH ways inside a capped-height box so the header row and the
@@ -347,6 +442,22 @@ export default function WeeklyReport({
                 // Column dates come from the ACTUAL data for that week (min =
                 // start, max = end), so each season's own week anchoring shows
                 // correctly.
+                if (view === "month") {
+                  const [yy, mm] = String(col).split("-");
+                  const label = new Date(Date.UTC(Number(yy), Number(mm) - 1, 1)).toLocaleDateString("en-AU", {
+                    month: "short",
+                    year: "numeric",
+                    timeZone: "UTC",
+                  });
+                  return (
+                    <th
+                      key={String(col)}
+                      className="sticky top-0 z-20 border-b border-slate-200 bg-white px-3 py-2 text-right"
+                    >
+                      <div className="font-semibold text-slate-700">{label}</div>
+                    </th>
+                  );
+                }
                 const wd = weekDates[Number(col)];
                 const start = wd ? new Date(`${wd.min}T00:00:00Z`) : null;
                 const end = wd ? new Date(`${wd.max}T00:00:00Z`) : null;
@@ -422,8 +533,10 @@ export default function WeeklyReport({
               { label: "AUS Games", data: ausGames, fmt: (v: number) => String(v) },
               { label: "PHL Games", data: phlGames, fmt: (v: number) => String(v) },
               { label: "Pure avg coding time (hrs/game)", data: pureAvgTime, fmt: (v: number) => (v ? v.toFixed(2) : "–") },
-              { label: "Pure coding cost per game", data: pureCostPerGame, fmt: (v: number) => money(v), hl: true },
-              { label: "Total x15%", data: pureCostPerGame, fmt: (v: number) => money(v * 1.15), mult: true },
+              { label: "AUS pure coding cost per game", data: pureCostPerGame, fmt: (v: number) => money(v), hl: true },
+              { label: "PHL cost per game", data: phlCostPerGame, fmt: (v: number) => money(v), hl: true },
+              { label: "Total AUS Coding cost per game (incl. 15%)", data: totalCodingCostPerGame, fmt: (v: number) => money(v), hl: true },
+              { label: "Total blended cost per game (AUS + PHL games)", data: totalBlendedCostPerGame, fmt: (v: number) => money(v), hl: true },
             ].map((row) => (
               <tr
                 key={row.label}
@@ -474,9 +587,9 @@ function GroupSection({
   totalCol: string;
 }) {
   const money = (v: number) =>
-    v === 0 ? "–" : `$${v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    v === 0 ? "–" : `$${Math.ceil(v).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
   const hoursFmt = (v: number) =>
-    v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    Math.round(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   return (
     <>
