@@ -71,7 +71,12 @@ function excelTimeToString(value) {
   if (!value) return null;
 
   const num = Number(value);
-  if (isNaN(num)) return value;
+  // Non-numeric text: keep it only if it's a real time string ("9:30" or
+  // "09:30:00"); anything else (e.g. a stray "End" header) can't be a time, and
+  // sending it to a Postgres `time` column would reject the whole batch.
+  if (isNaN(num)) {
+    return /^\d{1,2}:\d{2}(:\d{2})?$/.test(String(value).trim()) ? String(value).trim() : null;
+  }
 
   const totalSeconds = Math.round(num * 86400);
   const h = Math.floor(totalSeconds / 3600);
@@ -244,6 +249,13 @@ async function getExcelBuffer() {
 
   const downloadUrl = meta.data["@microsoft.graph.downloadUrl"];
 
+  // The sync reads the SharePoint copy, which can lag a few seconds-minutes
+  // behind edits made in Excel. Print when it was last saved so a "my change
+  // isn't showing" case is obvious (compare against when you made the edit).
+  console.log(
+    `🕒 SharePoint copy last saved: ${meta.data.lastModifiedDateTime} ` +
+      `(now: ${new Date().toISOString()})`
+  );
   console.log("📥 Downloading Excel file...");
 
   const file = await axios.get(downloadUrl, {
@@ -256,12 +268,13 @@ async function getExcelBuffer() {
 // ----------------------
 // PARSE DEPUTY
 // ----------------------
-function parseDeputyData(buffer) {
+function parseDeputyData(buffer, sheetName, season) {
   const workbook = XLSX.read(buffer, { type: "buffer" });
-  // Exact match so a season sheet like "2027_DeputyRawData" can never be picked
-  // in place of the rolling "DeputyRawData" (it contains the same substring).
-  const sheet = getSheetExact(workbook, DEPUTY_SHEET_NAME);
-  console.log(`📄 Deputy sheet: "${DEPUTY_SHEET_NAME}"`);
+  // Exact match on the given season's sheet (e.g. "DeputyRawData" for 2026,
+  // "2027_DeputyRawData" for 2027). Season comes from the SHEET (the arg), not
+  // the date — each season lives in its own sheet.
+  const sheet = getSheetExact(workbook, sheetName);
+  console.log(`📄 Deputy sheet: "${sheetName}" (season ${season})`);
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
   console.log("Deputy Header:", rows[0]);
@@ -276,6 +289,22 @@ function parseDeputyData(buffer) {
 
       console.log(
         "Skipped row",
+        i + 2,
+        JSON.stringify(r)
+      );
+
+      return false;
+    }
+
+    // Skip rows with no valid shift date. This catches a stray header row
+    // pasted mid-sheet (e.g. "Employee Name","Date","Start","End"…), whose
+    // text cells ("End") would otherwise reach Postgres and fail the whole
+    // sync with "invalid input syntax for type time".
+    if (!excelDateToJS(r[2])) {
+      skipped++;
+
+      console.log(
+        `⚠️ Skipped non-data row (no valid date) in "${sheetName}" sheet row`,
         i + 2,
         JSON.stringify(r)
       );
@@ -314,11 +343,11 @@ function parseDeputyData(buffer) {
       day_name: r[12] || null,
       month_name: r[13] || null,
       week: r[14] == null || r[14] === "" ? 0 : Number(r[14]),
-      // Season derived from the shift date (Oct→Sep window), NOT the sheet.
-      // Qualifies the restarting week number so the two "week 1"s (one per
-      // season) don't collide in week-based reports.
-      season: deputySeasonFromDate(shift_date),
-      source_file: "DeputyRawData",
+      // Season comes from the SHEET this row was read from (2026 =
+      // DeputyRawData, 2027 = 2027_DeputyRawData), qualifying the restarting
+      // week number so the two "week 1"s don't collide.
+      season,
+      source_file: sheetName,
     };
   });
 }
@@ -326,25 +355,15 @@ function parseDeputyData(buffer) {
 // ----------------------
 // PARSE TT
 // ----------------------
-function parseTTData(buffer) {
+function parseTTData(buffer, sheetName, season) {
 
   const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheet = getSheetExact(workbook, TT_SHEET_NAME);
-  console.log(`📄 TT sheet: "${TT_SHEET_NAME}" (season ${TT_SEASON})`);
+  const sheet = getSheetExact(workbook, sheetName);
+  console.log(`📄 TT sheet: "${sheetName}" (season ${season})`);
 
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
 
   console.log("TT Header:", rows[0]);
-  console.dir(rows[1], { depth: null });
-  console.log("Row length:", rows[1].length);
-
-  rows[0].forEach((header, index) => {
-    console.log(index, "=", header);
-  });
-
-  rows[1].forEach((value, index) => {
-    console.log(index, "=", value);
-  });
   console.log("Raw videoURL value:", rows[1][13]);
 
   let skippedTT = 0;
@@ -415,10 +434,9 @@ function parseTTData(buffer) {
 
         videoURL: cleanUrl(r[12]),
 
-        // Season (year) this row belongs to, derived from the source sheet
-        // name (TT_SHEET_NAME). Lets the UI filter/report by season without
-        // separate per-year tables.
-        season: TT_SEASON,
+        // Season for this row — the sheet it was read from (2026 = TTRawData,
+        // 2027 = 2027_TTRawData).
+        season,
 
       };
     })
@@ -615,6 +633,105 @@ function parseVNTeam(buffer) {
 }
 
 // ----------------------
+// PARSE OS TEAM ("OS Team" sheet)
+// ----------------------
+// Offshore team costs. The sheet holds two stacked blocks (Philippines, then
+// Vietnam), each with its own repeated header row:
+//   Employee Name | Monthly Cost (AUD) | Weekly Cost (AUD) | Location
+// Philippines also has a "Bank Fee" row (monthly, no location) under its
+// Gross Total. "Gross Total" / "Total Monthly" rows are ignored — totals are
+// computed in the report.
+//
+// START RULES: a location's cost only counts from a given season + week
+// onward (everything earlier is zero). Edit here to change when a team starts.
+//   Philippines → from Week 2 of the 2026 season
+//   Vietnam     → from Week 17 of the 2026 season
+// A location not listed here has no start limit (counts in every week).
+const OS_START = {
+  Philippines: { season: 2026, week: 2 },
+  Vietnam: { season: 2026, week: 17 },
+};
+
+function parseOSTeam(buffer) {
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const found = workbook.SheetNames.find(
+    n => n.trim().toLowerCase().replace(/\s+/g, "") === "osteam"
+  );
+  if (!found) {
+    console.log("⚠️ 'OS Team' sheet not found — OS team costs skipped.");
+    return [];
+  }
+  console.log(`📄 OS Team sheet: "${found}"`);
+
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[found], { header: 1 });
+  const clean = v => {
+    if (v == null) return null;
+    const s = String(v).replace(/[\u200B-\u200D\uFEFF]/g, "").replace(/\s+/g, " ").trim();
+    return s === "" ? null : s;
+  };
+
+  const out = [];
+  let currentLocation = null;
+
+  for (const r of rows) {
+    if (!r) continue;
+    const name = clean(r[0]);
+    if (!name) continue;
+    if (/^employee name$/i.test(name)) continue; // repeated header row
+
+    const monthly = r[1] == null ? NaN : Number(r[1]);
+    const location = clean(r[3]);
+
+    if (location) {
+      // Member row.
+      if (!Number.isFinite(monthly)) continue;
+      currentLocation = location;
+      const weeklyCell = r[2] == null ? NaN : Number(r[2]);
+      out.push({
+        name,
+        location,
+        kind: "member",
+        monthly_cost: monthly,
+        // Prefer the sheet's own weekly figure; otherwise monthly × 12 / 52
+        // (the conversion the sheet itself uses).
+        weekly_cost: Number.isFinite(weeklyCell) ? weeklyCell : (monthly * 12) / 52,
+      });
+    } else if (/^bank fee$/i.test(name) && currentLocation && Number.isFinite(monthly)) {
+      // Fee row sits inside the block it belongs to (no Location cell).
+      out.push({
+        name: "Bank Fee",
+        location: currentLocation,
+        kind: "fee",
+        monthly_cost: monthly,
+        weekly_cost: (monthly * 12) / 52,
+      });
+    }
+    // Anything else (Gross Total, Total Monthly, …) is ignored.
+  }
+
+  // Attach the start season/week for each location.
+  const rowsOut = out.map(r => {
+    const start = OS_START[r.location];
+    return {
+      ...r,
+      start_season: start ? start.season : null,
+      start_week: start ? start.week : null,
+    };
+  });
+
+  const byLoc = {};
+  for (const r of rowsOut) {
+    byLoc[r.location] = byLoc[r.location] || { n: 0, weekly: 0 };
+    byLoc[r.location].n += 1;
+    byLoc[r.location].weekly += r.weekly_cost;
+  }
+  for (const [loc, v] of Object.entries(byLoc)) {
+    console.log(`OS Team ${loc}: ${v.n} rows, weekly cost ${v.weekly.toFixed(2)}`);
+  }
+  return rowsOut;
+}
+
+// ----------------------
 // DEDUPE
 // ----------------------
 function dedupe(records, key) {
@@ -660,6 +777,43 @@ async function uploadToSupabase(records) {
   }
 
   console.log("Deputy rows uploaded:", uploaded);
+
+  // ── Orphan purge ──
+  // The sheets are the source of truth. Upsert never removes rows that were
+  // edited/deleted in a sheet (e.g. a stale shift with a different
+  // start/end time, or a null-season leftover from an old sync), so delete any
+  // deputy_shifts whose shift_key is NOT in the current combined sync set.
+  // Guarded: never purge when the parse produced zero rows.
+  if (records.length > 0) {
+    const keep = new Set(records.map((r) => r.shift_key));
+    let existing = [];
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("deputy_shifts")
+        .select("shift_key")
+        .range(from, from + 999);
+      if (error) throw new Error(JSON.stringify(error));
+      if (!data || data.length === 0) break;
+      existing.push(...data.map((d) => d.shift_key));
+      if (data.length < 1000) break;
+      from += 1000;
+    }
+    const orphans = existing.filter((k) => !keep.has(k));
+    if (orphans.length > 0) {
+      for (let i = 0; i < orphans.length; i += CHUNK_SIZE) {
+        const chunk = orphans.slice(i, i + CHUNK_SIZE);
+        const { error } = await supabase
+          .from("deputy_shifts")
+          .delete()
+          .in("shift_key", chunk);
+        if (error) throw new Error(JSON.stringify(error));
+      }
+      console.log(`Deputy orphans purged: ${orphans.length}`);
+    } else {
+      console.log("Deputy orphans purged: 0");
+    }
+  }
 
   return uploaded;
 }
@@ -751,6 +905,41 @@ async function uploadSoccer(records) {
 }
 
 // ----------------------
+// UPLOAD OS TEAM
+// ----------------------
+// Small table, keyed (name, location). Upsert, then purge rows no longer in the
+// sheet. Guarded: never purge when the parse produced nothing.
+async function uploadOSTeam(records) {
+  if (records.length === 0) return 0;
+
+  const { error } = await supabase
+    .from("os_team")
+    .upsert(records, { onConflict: "name,location" });
+  if (error) throw new Error(JSON.stringify(error));
+
+  const keep = new Set(records.map(r => `${r.name}|${r.location}`));
+  const { data: existing, error: readErr } = await supabase
+    .from("os_team")
+    .select("name,location");
+  if (readErr) throw new Error(JSON.stringify(readErr));
+
+  let purged = 0;
+  for (const row of existing ?? []) {
+    if (keep.has(`${row.name}|${row.location}`)) continue;
+    const { error: delErr } = await supabase
+      .from("os_team")
+      .delete()
+      .eq("name", row.name)
+      .eq("location", row.location);
+    if (delErr) throw new Error(JSON.stringify(delErr));
+    purged += 1;
+  }
+
+  console.log(`OS Team rows uploaded: ${records.length} (orphans purged: ${purged})`);
+  return records.length;
+}
+
+// ----------------------
 // UPLOAD VN TEAM
 // ----------------------
 async function uploadVNTeam(records) {
@@ -775,19 +964,41 @@ async function sync() {
     const buffer = await getExcelBuffer();
 
     // ----------------------
-    // DEPUTY
+    // SEASON → SHEET PAIRS
     // ----------------------
-    let deputy = parseDeputyData(buffer);
-    deputy = dedupe(deputy, "shift_key");
+    // Each season has its OWN Deputy + TT sheets. Season is stamped from the
+    // sheet (not the date). To add a new season, append a pair here.
+    const SEASON_SHEETS = [
+      { season: 2026, deputy: "DeputyRawData", tt: "TTRawData" },
+      { season: 2027, deputy: "2027_DeputyRawData", tt: "2027_TTRawData" },
+    ];
 
+    // ----------------------
+    // DEPUTY (all seasons)
+    // ----------------------
+    let deputy = [];
+    for (const { season, deputy: sheet } of SEASON_SHEETS) {
+      try {
+        deputy = deputy.concat(parseDeputyData(buffer, sheet, season));
+      } catch (e) {
+        console.log(`⚠️ Deputy sheet "${sheet}" skipped: ${e.message}`);
+      }
+    }
+    deputy = dedupe(deputy, "shift_key");
     console.log("DEPUTY ROWS:", deputy.length);
 
     // ----------------------
-    // TT (FIXED)
+    // TT (all seasons)
     // ----------------------
-    let tt = parseTTData(buffer);
+    let tt = [];
+    for (const { season, tt: sheet } of SEASON_SHEETS) {
+      try {
+        tt = tt.concat(parseTTData(buffer, sheet, season));
+      } catch (e) {
+        console.log(`⚠️ TT sheet "${sheet}" skipped: ${e.message}`);
+      }
+    }
     tt = dedupe(tt, "game_key");
-
     console.log("TT ROWS:", tt.length);
 
     // ----------------------
@@ -797,6 +1008,9 @@ async function sync() {
     let soccer = parseSoccerData(buffer, completion);
     soccer = dedupe(soccer, "game_key");
     console.log("SOCCER ROWS:", soccer.length);
+
+    const osTeam = parseOSTeam(buffer);
+    console.log("OS TEAM ROWS:", osTeam.length);
 
     const vnTeam = parseVNTeam(buffer);
     console.log("VN TEAM ROWS:", vnTeam.length);
@@ -808,6 +1022,19 @@ async function sync() {
     const ttUploaded = await uploadTT(tt);
     const soccerUploaded = await uploadSoccer(soccer);
     const vnUploaded = await uploadVNTeam(vnTeam);
+
+    // OS team is a newer, optional table. If it hasn't been created yet, warn
+    // clearly instead of failing the whole sync (Deputy/TT/Soccer above have
+    // already uploaded fine).
+    let osUploaded = 0;
+    try {
+      osUploaded = await uploadOSTeam(osTeam);
+    } catch (e) {
+      console.log(
+        `⚠️ OS Team upload skipped: ${e.message}\n` +
+          "   (Has the os_team table been created? See migrations/create_os_team.sql)"
+      );
+    }
 
     // Guard against a silent no-op sync. If we parsed rows but wrote
     // none, that is a failure even though no error was thrown.
@@ -832,7 +1059,7 @@ async function sync() {
     await logSuccess(deputyUploaded + ttUploaded + soccerUploaded + vnUploaded);
 
     console.log(
-      `🎉 Sync complete! Deputy: ${deputyUploaded}, TT: ${ttUploaded}, Soccer: ${soccerUploaded}, VN: ${vnUploaded}`
+      `🎉 Sync complete! Deputy: ${deputyUploaded}, TT: ${ttUploaded}, Soccer: ${soccerUploaded}, VN: ${vnUploaded}, OS: ${osUploaded}`
     );
   } catch (err) {
     console.error("💥 Sync failed:", err);

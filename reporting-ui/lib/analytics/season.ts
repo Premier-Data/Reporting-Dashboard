@@ -60,6 +60,18 @@ export function dateInSeason(date: Date, season: number): boolean {
 }
 
 /**
+ * Start (inclusive, a Wednesday) and end (inclusive, the following Tuesday) of
+ * a given WEEK number within a season. Week 1 starts on the season roll date
+ * (the Wed on-or-before 1 Oct); each subsequent week is +7 days. Used by the
+ * weekly report to label columns "Wed 30-Sep → Tue 06-Oct".
+ */
+export function seasonWeekRange(season: number, week: number): { start: Date; end: Date } {
+  const start = new Date(seasonStart(season).getTime() + (week - 1) * 7 * 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
+  return { start, end };
+}
+
+/**
  * The distinct seasons present in a set of TT_Games rows (reading the explicit
  * `season` column), newest first. Rows with no season are reported via
  * `hasUnknown` so the UI can offer an "unknown" bucket rather than hiding them.

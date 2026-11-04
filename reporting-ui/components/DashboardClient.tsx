@@ -37,6 +37,10 @@ const CloudflareCosts = dynamic(() => import("./CloudflareCosts"), {
   ssr: false,
   loading: chartLoading,
 });
+const WeeklyReport = dynamic(() => import("./WeeklyReport"), {
+  ssr: false,
+  loading: chartLoading,
+});
 const AveHoursPerGame = dynamic(() => import("./AveHoursPerGame"), {
   ssr: false,
   loading: chartLoading,
@@ -462,6 +466,7 @@ export default function DashboardClient({
         <Tabs defaultValue="overview">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="weekly">Weekly Report</TabsTrigger>
             <TabsTrigger value="aws">AWS</TabsTrigger>
             <TabsTrigger value="cloudflare">Cloudflare</TabsTrigger>
             <TabsTrigger value="tt">TT Games</TabsTrigger>
@@ -502,6 +507,14 @@ export default function DashboardClient({
             <div style={{ marginTop: 20 }}>
               <CostByAreaByWeek data={filtered} />
             </div>
+          </TabsContent>
+
+          {/* WEEKLY REPORT — per-week cost/hours matrix by area + games.
+              Uses the full (unfiltered) datasets; it has its own season
+              selector and filters internally, independent of the header
+              season/week toggle. */}
+          <TabsContent value="weekly">
+            <WeeklyReport deputyData={deputyData} ttData={ttData} />
           </TabsContent>
 
           {/* AWS COSTS */}
