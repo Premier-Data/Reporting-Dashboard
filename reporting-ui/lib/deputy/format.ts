@@ -47,63 +47,78 @@ export function formatRate(
   return formatAud(estimatedHourlyRate(cost, totalTime));
 }
 
-// ── Per-area summary ─────────────────────────────────────────────────────────
+// ── Grouped summaries (by area, by employee) ─────────────────────────────────
 
-/** Minimal shape needed to summarise a timesheet row by area. */
-export interface AreaSummaryInput {
+/** Minimal shape needed to summarise a timesheet row. */
+export interface SummaryInput {
   operational_unit_name: string | null;
+  employee_name: string | null;
   total_time: number | null;
   cost: number | null;
 }
 
-/** One area's aggregated totals. */
-export interface AreaSummaryRow {
-  area: string;
+/** One group's aggregated totals (`label` is the area or employee name). */
+export interface SummaryRow {
+  label: string;
   hours: number;
   cost: number;
   shifts: number;
 }
 
-/** The full summary: per-area rows (sorted by cost desc) plus a grand total. */
-export interface AreaSummary {
-  rows: AreaSummaryRow[];
+/** The full summary: per-group rows (sorted by cost desc) plus a grand total. */
+export interface Summary {
+  rows: SummaryRow[];
   total: { hours: number; cost: number; shifts: number };
 }
 
 const UNKNOWN_AREA = "(unknown area)";
+const UNKNOWN_EMPLOYEE = "(unknown employee)";
 
 /**
- * Group timesheet rows by area, summing hours (total_time) and cost. Null
+ * Group rows by a chosen key, summing hours (total_time) and cost. Null
  * hours/cost count as 0 toward the sums (a row with no cost still counts as a
- * shift). Rows with no area name are bucketed under "(unknown area)". Per-area
+ * shift). Blank/missing group labels fall back to `fallbackLabel`. Per-group
  * rows are sorted by cost descending; the grand total aggregates every row.
  */
-export function summariseByArea(rows: AreaSummaryInput[]): AreaSummary {
-  const byArea = new Map<string, AreaSummaryRow>();
+function summariseBy(
+  rows: SummaryInput[],
+  pick: (r: SummaryInput) => string | null,
+  fallbackLabel: string
+): Summary {
+  const byKey = new Map<string, SummaryRow>();
   let totalHours = 0;
   let totalCost = 0;
 
   for (const r of rows) {
-    const area = r.operational_unit_name?.trim() || UNKNOWN_AREA;
+    const label = pick(r)?.trim() || fallbackLabel;
     const hours = Number.isFinite(r.total_time as number)
       ? (r.total_time as number)
       : 0;
     const cost = Number.isFinite(r.cost as number) ? (r.cost as number) : 0;
 
-    const entry =
-      byArea.get(area) ?? { area, hours: 0, cost: 0, shifts: 0 };
+    const entry = byKey.get(label) ?? { label, hours: 0, cost: 0, shifts: 0 };
     entry.hours += hours;
     entry.cost += cost;
     entry.shifts += 1;
-    byArea.set(area, entry);
+    byKey.set(label, entry);
 
     totalHours += hours;
     totalCost += cost;
   }
 
-  const summaryRows = [...byArea.values()].sort((a, b) => b.cost - a.cost);
+  const summaryRows = [...byKey.values()].sort((a, b) => b.cost - a.cost);
   return {
     rows: summaryRows,
     total: { hours: totalHours, cost: totalCost, shifts: rows.length },
   };
+}
+
+/** Summary grouped by operational unit (area). */
+export function summariseByArea(rows: SummaryInput[]): Summary {
+  return summariseBy(rows, (r) => r.operational_unit_name, UNKNOWN_AREA);
+}
+
+/** Summary grouped by employee. */
+export function summariseByEmployee(rows: SummaryInput[]): Summary {
+  return summariseBy(rows, (r) => r.employee_name, UNKNOWN_EMPLOYEE);
 }

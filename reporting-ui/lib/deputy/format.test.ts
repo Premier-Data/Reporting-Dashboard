@@ -5,7 +5,20 @@ import {
   estimatedHourlyRate,
   formatRate,
   summariseByArea,
+  summariseByEmployee,
+  type SummaryInput,
 } from "./format";
+
+// Build a timesheet-summary input row; only the fields under test need setting.
+function row(p: Partial<SummaryInput>): SummaryInput {
+  return {
+    operational_unit_name: null,
+    employee_name: null,
+    total_time: null,
+    cost: null,
+    ...p,
+  };
+}
 
 // ── formatAud ────────────────────────────────────────────────────────────────
 describe("formatAud", () => {
@@ -90,12 +103,12 @@ describe("formatRate", () => {
 describe("summariseByArea", () => {
   it("groups by area and sums hours + cost", () => {
     const { rows, total } = summariseByArea([
-      { operational_unit_name: "Soccer - Operations", total_time: 6, cost: 150 },
-      { operational_unit_name: "Soccer - Operations", total_time: 7, cost: 175 },
-      { operational_unit_name: "Data/ AI", total_time: 7.5, cost: 176 },
+      row({ operational_unit_name: "Soccer - Operations", total_time: 6, cost: 150 }),
+      row({ operational_unit_name: "Soccer - Operations", total_time: 7, cost: 175 }),
+      row({ operational_unit_name: "Data/ AI", total_time: 7.5, cost: 176 }),
     ]);
-    const soccer = rows.find((r) => r.area === "Soccer - Operations");
-    const data = rows.find((r) => r.area === "Data/ AI");
+    const soccer = rows.find((r) => r.label === "Soccer - Operations");
+    const data = rows.find((r) => r.label === "Data/ AI");
     expect(soccer).toMatchObject({ hours: 13, cost: 325, shifts: 2 });
     expect(data).toMatchObject({ hours: 7.5, cost: 176, shifts: 1 });
     expect(total).toEqual({ hours: 20.5, cost: 501, shifts: 3 });
@@ -103,29 +116,29 @@ describe("summariseByArea", () => {
 
   it("sorts per-area rows by cost descending", () => {
     const { rows } = summariseByArea([
-      { operational_unit_name: "Low", total_time: 1, cost: 10 },
-      { operational_unit_name: "High", total_time: 1, cost: 999 },
-      { operational_unit_name: "Mid", total_time: 1, cost: 100 },
+      row({ operational_unit_name: "Low", total_time: 1, cost: 10 }),
+      row({ operational_unit_name: "High", total_time: 1, cost: 999 }),
+      row({ operational_unit_name: "Mid", total_time: 1, cost: 100 }),
     ]);
-    expect(rows.map((r) => r.area)).toEqual(["High", "Mid", "Low"]);
+    expect(rows.map((r) => r.label)).toEqual(["High", "Mid", "Low"]);
   });
 
   it("treats null hours/cost as 0 but still counts the shift", () => {
     const { rows, total } = summariseByArea([
-      { operational_unit_name: "X", total_time: null, cost: null },
-      { operational_unit_name: "X", total_time: 5, cost: 100 },
+      row({ operational_unit_name: "X", total_time: null, cost: null }),
+      row({ operational_unit_name: "X", total_time: 5, cost: 100 }),
     ]);
-    expect(rows[0]).toMatchObject({ area: "X", hours: 5, cost: 100, shifts: 2 });
+    expect(rows[0]).toMatchObject({ label: "X", hours: 5, cost: 100, shifts: 2 });
     expect(total).toEqual({ hours: 5, cost: 100, shifts: 2 });
   });
 
   it("buckets missing/blank area names under '(unknown area)'", () => {
     const { rows } = summariseByArea([
-      { operational_unit_name: null, total_time: 2, cost: 20 },
-      { operational_unit_name: "   ", total_time: 3, cost: 30 },
+      row({ operational_unit_name: null, total_time: 2, cost: 20 }),
+      row({ operational_unit_name: "   ", total_time: 3, cost: 30 }),
     ]);
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ area: "(unknown area)", hours: 5, cost: 50, shifts: 2 });
+    expect(rows[0]).toMatchObject({ label: "(unknown area)", hours: 5, cost: 50, shifts: 2 });
   });
 
   it("returns empty rows and zeroed totals for no input", () => {
@@ -133,5 +146,37 @@ describe("summariseByArea", () => {
       rows: [],
       total: { hours: 0, cost: 0, shifts: 0 },
     });
+  });
+});
+
+// ── summariseByEmployee ──────────────────────────────────────────────────────
+describe("summariseByEmployee", () => {
+  it("groups by employee and sums hours + cost", () => {
+    const { rows, total } = summariseByEmployee([
+      row({ employee_name: "Dan Jov", total_time: 6, cost: 150 }),
+      row({ employee_name: "Dan Jov", total_time: 7, cost: 175 }),
+      row({ employee_name: "Krystal", total_time: 7.5, cost: 176 }),
+    ]);
+    const dan = rows.find((r) => r.label === "Dan Jov");
+    const krystal = rows.find((r) => r.label === "Krystal");
+    expect(dan).toMatchObject({ hours: 13, cost: 325, shifts: 2 });
+    expect(krystal).toMatchObject({ hours: 7.5, cost: 176, shifts: 1 });
+    expect(total).toEqual({ hours: 20.5, cost: 501, shifts: 3 });
+  });
+
+  it("buckets missing employee names under '(unknown employee)'", () => {
+    const { rows } = summariseByEmployee([
+      row({ employee_name: null, total_time: 2, cost: 20 }),
+    ]);
+    expect(rows[0]).toMatchObject({ label: "(unknown employee)", hours: 2, cost: 20, shifts: 1 });
+  });
+
+  it("groups by employee independently of area", () => {
+    const { rows } = summariseByEmployee([
+      row({ employee_name: "Dan Jov", operational_unit_name: "Soccer", total_time: 5, cost: 100 }),
+      row({ employee_name: "Dan Jov", operational_unit_name: "Data/ AI", total_time: 5, cost: 120 }),
+    ]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ label: "Dan Jov", hours: 10, cost: 220, shifts: 2 });
   });
 });

@@ -16,6 +16,8 @@ import {
   formatRate,
   estimatedHourlyRate,
   summariseByArea,
+  summariseByEmployee,
+  type Summary,
 } from "@/lib/deputy/format";
 
 type Tab = "rosters" | "timesheets";
@@ -94,6 +96,94 @@ function formatTime(value: string | null): string {
   return Number.isNaN(d.getTime())
     ? "-"
     : d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+}
+
+// A grouped-totals summary card (area or employee): shifts, total hours, total
+// pay per group plus a grand-total footer. Reflects whatever rows are passed
+// in, so it tracks the page's date/search filters.
+function SummaryCard({
+  title,
+  groupLabel,
+  summary,
+}: {
+  title: string;
+  groupLabel: string;
+  summary: Summary;
+}) {
+  return (
+    <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
+      <div className="border-b border-slate-200 px-4 py-3">
+        <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
+        <p className="mt-0.5 text-xs text-slate-500">
+          Total hours and pay for the selected dates.
+        </p>
+      </div>
+      <div className="max-h-[40vh] overflow-auto">
+        <table className="w-full border-collapse text-left text-sm">
+          <thead className="sticky top-0 z-10 bg-slate-800 text-white">
+            <tr>
+              <th className="whitespace-nowrap px-3 py-3">{groupLabel}</th>
+              <th className="whitespace-nowrap px-3 py-3 text-right">Shifts</th>
+              <th className="whitespace-nowrap px-3 py-3 text-right">
+                Total hours
+              </th>
+              <th className="whitespace-nowrap px-3 py-3 text-right">
+                Total pay
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {summary.rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={4}
+                  className="px-3 py-6 text-center text-slate-400"
+                >
+                  No approved timesheets for the selected dates.
+                </td>
+              </tr>
+            ) : (
+              summary.rows.map((s) => (
+                <tr
+                  key={s.label}
+                  className="border-b border-slate-100 transition hover:bg-slate-50"
+                >
+                  <td className="px-3 py-2.5 font-medium text-slate-900">
+                    {s.label}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">
+                    {s.shifts}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">
+                    {formatHours2(s.hours)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums">
+                    {formatAud(s.cost)}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+          {summary.rows.length > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold text-slate-900">
+                <td className="px-3 py-2.5">Total</td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {summary.total.shifts}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {formatHours2(summary.total.hours)}
+                </td>
+                <td className="px-3 py-2.5 text-right tabular-nums">
+                  {formatAud(summary.total.cost)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </div>
+    </div>
+  );
 }
 
 
@@ -238,10 +328,15 @@ export default function DeputyApiPage() {
     });
   }, [timesheets, search, dateFrom, dateTo, sortField, sortDirection]);
 
-  // Per-area summary (total hours + total cost) over the currently-visible
-  // timesheets, so it tracks the selected date range and the search box.
-  const timesheetSummary = useMemo(
+  // Per-area and per-employee summaries (total hours + total cost) over the
+  // currently-visible timesheets, so they track the selected date range and
+  // the search box.
+  const areaSummary = useMemo(
     () => summariseByArea(visibleTimesheets),
+    [visibleTimesheets]
+  );
+  const employeeSummary = useMemo(
+    () => summariseByEmployee(visibleTimesheets),
     [visibleTimesheets]
   );
 
@@ -466,83 +561,19 @@ export default function DeputyApiPage() {
           </div>
         )}
 
-        {/* TIMESHEETS: PER-AREA SUMMARY (reflects the selected date range + search) */}
+        {/* TIMESHEETS: SUMMARIES (reflect the selected date range + search) */}
         {!loading && !error && tab === "timesheets" && (
-          <div className="mb-4 overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
-            <div className="border-b border-slate-200 px-4 py-3">
-              <h2 className="text-sm font-semibold text-slate-800">
-                Summary by area
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Total hours and pay for the selected dates.
-              </p>
-            </div>
-            <div className="max-h-[40vh] overflow-auto">
-              <table className="w-full border-collapse text-left text-sm">
-                <thead className="sticky top-0 z-10 bg-slate-800 text-white">
-                  <tr>
-                    <th className="whitespace-nowrap px-3 py-3">Area</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">
-                      Shifts
-                    </th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">
-                      Total hours
-                    </th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">
-                      Total pay
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {timesheetSummary.rows.length === 0 ? (
-                    <tr>
-                      <td
-                        colSpan={4}
-                        className="px-3 py-6 text-center text-slate-400"
-                      >
-                        No approved timesheets for the selected dates.
-                      </td>
-                    </tr>
-                  ) : (
-                    timesheetSummary.rows.map((s) => (
-                      <tr
-                        key={s.area}
-                        className="border-b border-slate-100 transition hover:bg-slate-50"
-                      >
-                        <td className="px-3 py-2.5 font-medium text-slate-900">
-                          {s.area}
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          {s.shifts}
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          {formatHours2(s.hours)}
-                        </td>
-                        <td className="px-3 py-2.5 text-right tabular-nums">
-                          {formatAud(s.cost)}
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-                {timesheetSummary.rows.length > 0 && (
-                  <tfoot>
-                    <tr className="border-t-2 border-slate-300 bg-slate-50 font-semibold text-slate-900">
-                      <td className="px-3 py-2.5">Total</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {timesheetSummary.total.shifts}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {formatHours2(timesheetSummary.total.hours)}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {formatAud(timesheetSummary.total.cost)}
-                      </td>
-                    </tr>
-                  </tfoot>
-                )}
-              </table>
-            </div>
+          <div className="mb-4 grid grid-cols-1 gap-4 lg:grid-cols-2">
+            <SummaryCard
+              title="Summary by area"
+              groupLabel="Area"
+              summary={areaSummary}
+            />
+            <SummaryCard
+              title="Summary by employee"
+              groupLabel="Employee"
+              summary={employeeSummary}
+            />
           </div>
         )}
 
