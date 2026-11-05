@@ -6,7 +6,11 @@ import { BarChart3, RefreshCw, Search, X } from "lucide-react";
 import { THEME } from "@/lib/theme";
 import { getDeputyTimesheets, type DeputyTimesheetRow } from "@/lib/api/deputy";
 import { formatAud, formatHours2 } from "@/lib/deputy/format";
-import { currentWeekWedToTue } from "@/lib/deputy/dates";
+import {
+  currentWeekWedToTue,
+  recentWeekPresets,
+  recentMonthPresets,
+} from "@/lib/deputy/dates";
 import {
   WEEKDAY_ORDER,
   buildEmployeeInsights,
@@ -81,6 +85,21 @@ export default function DeputyInsightsPage() {
   // Default sort: employee name ascending.
   const [sortField, setSortField] = useState<SortField>("name");
   const [sortDirection, setSortDirection] = useState<SortDir>("asc");
+
+  // Quick-pick presets (computed once): last 26 Wed→Tue weeks and 12 months,
+  // newest first. Selecting one sets the From/To range; manual edits flip the
+  // dropdowns back to "Custom" (because the range no longer matches a preset).
+  const [weekPresets] = useState(() => recentWeekPresets(26));
+  const [monthPresets] = useState(() => recentMonthPresets(12));
+  const selectedWeek =
+    weekPresets.find((p) => p.from === dateFrom && p.to === dateTo)?.value ?? "";
+  const selectedMonth =
+    monthPresets.find((p) => p.from === dateFrom && p.to === dateTo)?.value ?? "";
+
+  function applyPreset(from: string, to: string) {
+    setDateFrom(from);
+    setDateTo(to);
+  }
 
   async function load() {
     setLoading(true);
@@ -183,8 +202,56 @@ export default function DeputyInsightsPage() {
           </button>
         </div>
 
-        {/* FILTER BAR — date range + free-text employee search */}
+        {/* FILTER BAR — quick month/week pickers + date range + search */}
         <div className="mb-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label
+              htmlFor="insights-month"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              Month
+            </label>
+            <select
+              id="insights-month"
+              value={selectedMonth}
+              onChange={(e) => {
+                const p = monthPresets.find((m) => m.value === e.target.value);
+                if (p) applyPreset(p.from, p.to);
+              }}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            >
+              <option value="">Custom…</option>
+              {monthPresets.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              htmlFor="insights-week"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              Week
+            </label>
+            <select
+              id="insights-week"
+              value={selectedWeek}
+              onChange={(e) => {
+                const p = weekPresets.find((w) => w.value === e.target.value);
+                if (p) applyPreset(p.from, p.to);
+              }}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            >
+              <option value="">Custom…</option>
+              {weekPresets.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label
               htmlFor="insights-date-from"
