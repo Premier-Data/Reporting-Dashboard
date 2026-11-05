@@ -29,19 +29,22 @@ export interface UnitLookup {
 }
 
 /**
- * Resolve an employee's human name: display_name, then "first last", then the
- * raw deputy id as a last resort. Never returns an empty string when any of
- * those are present; falls back to null only when nothing at all is known.
+ * Resolve an employee's human name: the actual/legal "first last" name, then
+ * display_name (Deputy's preferred/display name) as a fallback, then the raw
+ * deputy id as a last resort. We prefer the legal name over the preferred name
+ * (e.g. "Daniel Jovanoski" rather than "Dan Jov"). Never returns an empty
+ * string when any of those are present; falls back to null only when nothing
+ * at all is known.
  */
 export function resolveEmployeeName(
   emp: EmployeeLookup | null | undefined,
   fallbackId: string | null | undefined
 ): string | null {
-  const display = (emp?.display_name ?? "").trim();
-  if (display) return display;
-
   const full = `${emp?.first_name ?? ""} ${emp?.last_name ?? ""}`.trim();
   if (full) return full;
+
+  const display = (emp?.display_name ?? "").trim();
+  if (display) return display;
 
   const id = (fallbackId ?? "").trim();
   return id || null;

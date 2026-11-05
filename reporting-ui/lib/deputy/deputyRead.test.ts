@@ -8,20 +8,24 @@ import {
 } from "../../supabase/functions/deputy-read/shape";
 
 // ── Employee name resolution ─────────────────────────────────────────────────
-describe("resolveEmployeeName (display_name → first last → raw id)", () => {
-  it("prefers display_name when present", () => {
+describe("resolveEmployeeName (actual 'first last' → display_name → raw id)", () => {
+  it("prefers the actual 'first last' name over the preferred display_name", () => {
+    // e.g. Deputy display_name "Dan Jov" but legal name Daniel Jovanoski.
     expect(
       resolveEmployeeName(
-        { display_name: "Jane Doe", first_name: "Jane", last_name: "Doe" },
-        "100"
+        { display_name: "Dan Jov", first_name: "Daniel", last_name: "Jovanoski" },
+        "12"
       )
-    ).toBe("Jane Doe");
+    ).toBe("Daniel Jovanoski");
   });
 
-  it("falls back to 'first last' when display_name is blank", () => {
+  it("falls back to display_name when first/last are blank", () => {
     expect(
-      resolveEmployeeName({ display_name: "  ", first_name: "Jane", last_name: "Doe" }, "100")
-    ).toBe("Jane Doe");
+      resolveEmployeeName(
+        { display_name: "Dan Jov", first_name: "  ", last_name: "" },
+        "12"
+      )
+    ).toBe("Dan Jov");
   });
 
   it("falls back to the raw id when no name fields are set", () => {
