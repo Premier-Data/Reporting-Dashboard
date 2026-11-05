@@ -1,7 +1,8 @@
 -- Premier Data × Deputy integration
 -- Migration: 002_deputy_cron.sql
--- Schedules a nightly Timesheet sync so approved shifts are pulled into the
--- `deputy` schema at the end of each day (22:30 Australia/Sydney).
+-- Schedules a nightly Timesheet + Roster sync so approved shifts and the
+-- rostered schedule are pulled into the `deputy` schema at the end of each day
+-- (22:30 Australia/Sydney).
 --
 -- Apply through the Supabase SQL Editor as a project administrator.
 --
@@ -13,9 +14,10 @@
 --   Australia/Sydney wall-clock time is 22:30. Because the gate is evaluated in
 --   the 'Australia/Sydney' zone, it tracks AEST/AEDT automatically — no
 --   hardcoded UTC offset that would drift an hour across daylight saving.
--- - Window: a trailing 3 days of Sydney local dates (today and the two prior),
---   so shifts approved a day or two late are still captured. Upserts are
---   idempotent on deputy_id, so re-pulling the same days never duplicates.
+-- - Window: a trailing 14 days of Sydney local dates (today and the 13 prior),
+--   so shifts approved up to ~2 weeks late are still captured (Deputy approvals
+--   lag well past a few days). Upserts are idempotent on deputy_id, so
+--   re-pulling the same days never duplicates.
 -- - The x-sync-secret and the function URL are read from Supabase Vault, never
 --   stored in this file or in git.
 --
@@ -77,9 +79,13 @@ begin
     return null;
   end if;
 
-  -- Trailing 3-day window in Sydney local dates (today + 2 prior days).
+  -- Trailing 14-day window in Sydney local dates (today + 13 prior days).
+  -- Wider than one day because Deputy approvals lag — a shift worked today may
+  -- not be approved for several days, and a 14-day trailing re-pull recaptures
+  -- those late approvals (upserts on deputy_id, so re-syncing the same days is
+  -- idempotent and never duplicates).
   v_end   := (v_local)::date;
-  v_start := v_end - 2;
+  v_start := v_end - 13;
 
   -- Pull the secrets from Vault.
   select decrypted_secret into v_url
@@ -91,8 +97,12 @@ begin
     raise exception 'deputy cron: missing Vault secret (deputy_sync_url / deputy_sync_secret)';
   end if;
 
+  -- Sync both Timesheet (approved hours/pay) and Roster (planned shifts) so
+  -- the Deputy API page's Rostered Schedule tab stays current too, not just
+  -- Approved Timesheets. The Edge Function orders reference resources first,
+  -- so passing both here is safe.
   v_body := jsonb_build_object(
-    'resources', jsonb_build_array('Timesheet'),
+    'resources', jsonb_build_array('Timesheet', 'Roster'),
     'mode', 'incremental',
     'startDate', to_char(v_start, 'YYYY-MM-DD'),
     'endDate',   to_char(v_end,   'YYYY-MM-DD'),
