@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { CalendarClock, RefreshCw, Search } from "lucide-react";
+import { CalendarClock, RefreshCw, Search, X } from "lucide-react";
 
 import { THEME } from "@/lib/theme";
 import {
@@ -105,17 +105,24 @@ function SummaryCard({
   title,
   groupLabel,
   summary,
+  onRowClick,
+  activeValue,
 }: {
   title: string;
   groupLabel: string;
   summary: Summary;
+  /** Called with the group label when a row is clicked (to filter shifts). */
+  onRowClick: (value: string) => void;
+  /** The currently-filtered label, highlighted in the list. */
+  activeValue: string | null;
 }) {
   return (
     <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
       <div className="border-b border-slate-200 px-4 py-3">
         <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
         <p className="mt-0.5 text-xs text-slate-500">
-          Total hours and pay for the selected dates.
+          Total hours and pay for the selected dates. Click a row to show its
+          shifts.
         </p>
       </div>
       <div className="max-h-[40vh] overflow-auto">
@@ -146,7 +153,13 @@ function SummaryCard({
               summary.rows.map((s) => (
                 <tr
                   key={s.label}
-                  className="border-b border-slate-100 transition hover:bg-slate-50"
+                  onClick={() => onRowClick(s.label)}
+                  title={`Show shifts for ${s.label}`}
+                  className={`cursor-pointer border-b border-slate-100 transition ${
+                    activeValue === s.label
+                      ? "bg-sky-50"
+                      : "hover:bg-slate-50"
+                  }`}
                 >
                   <td className="px-3 py-2.5 font-medium text-slate-900">
                     {s.label}
@@ -195,6 +208,11 @@ export default function DeputyApiPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("rosters");
   const [search, setSearch] = useState("");
+  // Exact-match filter set by clicking a summary row (area or employee). Null
+  // when inactive. Independent of the free-text `search` box.
+  const [rowFilter, setRowFilter] = useState<
+    { kind: "area" | "employee"; value: string } | null
+  >(null);
   // Default the date filter to the current week (Wednesday -> Tuesday).
   const [{ from: defaultFrom, to: defaultTo }] = useState(() =>
     currentWeekWedToTue()
@@ -294,6 +312,14 @@ export default function DeputyApiPage() {
       const date = t.timesheet_date ?? "";
       if (dateFrom && (!date || date < dateFrom)) return false;
       if (dateTo && (!date || date > dateTo)) return false;
+      // Exact row-click filter (area or employee) from a summary table.
+      if (rowFilter) {
+        const field =
+          rowFilter.kind === "area"
+            ? t.operational_unit_name ?? ""
+            : t.employee_name ?? "";
+        if (field !== rowFilter.value) return false;
+      }
       if (!q) return true;
       return `${t.employee_name ?? ""} ${t.operational_unit_name ?? ""} ${date}`
         .toLowerCase()
@@ -326,7 +352,7 @@ export default function DeputyApiPage() {
       if (ka > kb) return 1 * dir;
       return 0;
     });
-  }, [timesheets, search, dateFrom, dateTo, sortField, sortDirection]);
+  }, [timesheets, search, rowFilter, dateFrom, dateTo, sortField, sortDirection]);
 
   // Per-area and per-employee summaries (total hours + total cost) over the
   // currently-visible timesheets, so they track the selected date range and
@@ -429,28 +455,55 @@ export default function DeputyApiPage() {
             />
           </div>
 
-          <div className="ml-auto min-w-[220px]">
+          <div className="ml-auto min-w-[300px] flex-1 lg:max-w-md">
             <label
               htmlFor="deputy-search"
-              className="mb-1 block text-xs font-medium text-slate-400"
+              className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-300"
             >
               Search
             </label>
             <div className="relative">
               <Search
-                size={15}
-                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+                size={18}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sky-400"
               />
               <input
                 id="deputy-search"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Employee, area or date…"
-                className="w-full rounded-lg border border-slate-700 bg-[#0f1b2d] py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 outline-none focus:border-sky-500"
+                placeholder="Search employee, area or date…"
+                className="w-full rounded-lg border-2 border-slate-600 bg-[#0f1b2d] py-2.5 pl-10 pr-9 text-sm text-slate-100 placeholder:text-slate-400 shadow-sm outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30"
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => setSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-1 text-slate-400 hover:bg-slate-700 hover:text-slate-200"
+                >
+                  <X size={15} />
+                </button>
+              )}
             </div>
           </div>
         </div>
+
+        {/* ACTIVE ROW-CLICK FILTER CHIP */}
+        {rowFilter && !loading && !error && tab === "timesheets" && (
+          <div className="mb-3 flex items-center gap-2">
+            <span className="text-xs font-medium text-slate-400">
+              Filtered to {rowFilter.kind === "area" ? "area" : "employee"}:
+            </span>
+            <button
+              type="button"
+              onClick={() => setRowFilter(null)}
+              className="inline-flex items-center gap-1.5 rounded-full bg-sky-600 px-3 py-1 text-xs font-semibold text-white transition hover:bg-sky-500"
+            >
+              {rowFilter.value}
+              <X size={13} />
+            </button>
+          </div>
+        )}
 
         {/* LOADING */}
         {loading && (
@@ -568,11 +621,29 @@ export default function DeputyApiPage() {
               title="Summary by area"
               groupLabel="Area"
               summary={areaSummary}
+              activeValue={rowFilter?.kind === "area" ? rowFilter.value : null}
+              onRowClick={(value) =>
+                setRowFilter((cur) =>
+                  cur?.kind === "area" && cur.value === value
+                    ? null
+                    : { kind: "area", value }
+                )
+              }
             />
             <SummaryCard
               title="Summary by employee"
               groupLabel="Employee"
               summary={employeeSummary}
+              activeValue={
+                rowFilter?.kind === "employee" ? rowFilter.value : null
+              }
+              onRowClick={(value) =>
+                setRowFilter((cur) =>
+                  cur?.kind === "employee" && cur.value === value
+                    ? null
+                    : { kind: "employee", value }
+                )
+              }
             />
           </div>
         )}
