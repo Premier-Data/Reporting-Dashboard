@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   Monitor,
   CalendarDays,
+  CalendarClock,
   Sparkles,
   Users,
   Shield,
@@ -119,6 +120,11 @@ const sections = [
       title: "Fixtures",
       href: "/fixtures",
       icon: CalendarDays,
+    },
+    {
+      title: "Deputy API",
+      href: "/deputy-api",
+      icon: CalendarClock,
     },
     {
       title: "Comp Fixtures",

@@ -1,0 +1,549 @@
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import { CalendarClock, RefreshCw, Search } from "lucide-react";
+
+import { THEME } from "@/lib/theme";
+import {
+  getDeputyRosters,
+  getDeputyTimesheets,
+  type DeputyRosterRow,
+  type DeputyTimesheetRow,
+} from "@/lib/api/deputy";
+import {
+  formatAud,
+  formatHours2,
+  formatRate,
+  estimatedHourlyRate,
+} from "@/lib/deputy/format";
+
+type Tab = "rosters" | "timesheets";
+type SortDir = "asc" | "desc";
+
+// A yes/no pill matching the dark-page badge styling used elsewhere.
+function Badge({ value }: { value: boolean | null }) {
+  if (value === true) {
+    return (
+      <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700">
+        Yes
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+      No
+    </span>
+  );
+}
+
+// Date value is an ISO "yyyy-mm-dd" (date column) — render as a local date.
+function formatDate(value: string | null): string {
+  if (!value) return "-";
+  const d = new Date(`${value}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString("en-AU");
+}
+
+// start_at / end_at are full ISO timestamptz — show just the time of day.
+function formatTime(value: string | null): string {
+  if (!value) return "-";
+  const d = new Date(value);
+  return Number.isNaN(d.getTime())
+    ? "-"
+    : d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatNumber(value: number | null): string {
+  return value == null ? "-" : String(value);
+}
+
+export default function DeputyApiPage() {
+  const [rosters, setRosters] = useState<DeputyRosterRow[]>([]);
+  const [timesheets, setTimesheets] = useState<DeputyTimesheetRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("rosters");
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [sortField, setSortField] = useState("date");
+  const [sortDirection, setSortDirection] = useState<SortDir>("desc");
+
+  async function load() {
+    setLoading(true);
+    setError(null);
+    try {
+      const [rosterRows, timesheetRows] = await Promise.all([
+        getDeputyRosters(),
+        getDeputyTimesheets(),
+      ]);
+      setRosters(rosterRows);
+      setTimesheets(timesheetRows);
+    } catch (err) {
+      console.error("Failed loading Deputy data:", err);
+      setError(
+        err instanceof Error ? err.message : "Unable to load Deputy data."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    document.title = "Deputy API | Premier Data";
+    // Deferred so the effect body doesn't setState synchronously (load() flips
+    // loading/error state) — avoids a cascading render, matching the pattern
+    // used on the sibling comp-fixtures page.
+    queueMicrotask(() => load());
+  }, []);
+
+  function sortBy(field: string) {
+    if (sortField === field) {
+      setSortDirection((cur) => (cur === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  }
+
+  const sortArrow = (field: string) =>
+    sortField === field ? (sortDirection === "asc" ? " ↑" : " ↓") : "";
+
+  // Reset the sort to the date column when switching tabs so a column that
+  // only exists on one tab doesn't linger as the active sort on the other.
+  function switchTab(next: Tab) {
+    if (next === tab) return;
+    setTab(next);
+    setSortField("date");
+    setSortDirection("desc");
+  }
+
+  const visibleRosters = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const dir = sortDirection === "asc" ? 1 : -1;
+    const filtered = rosters.filter((r) => {
+      const date = r.roster_date ?? "";
+      if (dateFrom && (!date || date < dateFrom)) return false;
+      if (dateTo && (!date || date > dateTo)) return false;
+      if (!q) return true;
+      return `${r.employee_name ?? ""} ${r.operational_unit_name ?? ""} ${date}`
+        .toLowerCase()
+        .includes(q);
+    });
+    const keyOf = (r: DeputyRosterRow): string | number => {
+      switch (sortField) {
+        case "employee":
+          return (r.employee_name ?? "").toLowerCase();
+        case "unit":
+          return (r.operational_unit_name ?? "").toLowerCase();
+        case "total":
+          return r.total_time ?? -1;
+        case "date":
+        default:
+          return r.roster_date ?? "";
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      if (ka < kb) return -1 * dir;
+      if (ka > kb) return 1 * dir;
+      return 0;
+    });
+  }, [rosters, search, dateFrom, dateTo, sortField, sortDirection]);
+
+  const visibleTimesheets = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const dir = sortDirection === "asc" ? 1 : -1;
+    const filtered = timesheets.filter((t) => {
+      const date = t.timesheet_date ?? "";
+      if (dateFrom && (!date || date < dateFrom)) return false;
+      if (dateTo && (!date || date > dateTo)) return false;
+      if (!q) return true;
+      return `${t.employee_name ?? ""} ${t.operational_unit_name ?? ""} ${date}`
+        .toLowerCase()
+        .includes(q);
+    });
+    const keyOf = (t: DeputyTimesheetRow): string | number => {
+      switch (sortField) {
+        case "employee":
+          return (t.employee_name ?? "").toLowerCase();
+        case "unit":
+          return (t.operational_unit_name ?? "").toLowerCase();
+        case "total":
+          return t.total_time ?? -1;
+        case "cost":
+          return t.cost ?? Number.NEGATIVE_INFINITY;
+        case "onCost":
+          return t.on_cost ?? Number.NEGATIVE_INFINITY;
+        case "rate":
+          return (
+            estimatedHourlyRate(t.cost, t.total_time) ??
+            Number.NEGATIVE_INFINITY
+          );
+        case "date":
+        default:
+          return t.timesheet_date ?? "";
+      }
+    };
+    return [...filtered].sort((a, b) => {
+      const ka = keyOf(a);
+      const kb = keyOf(b);
+      if (ka < kb) return -1 * dir;
+      if (ka > kb) return 1 * dir;
+      return 0;
+    });
+  }, [timesheets, search, dateFrom, dateTo, sortField, sortDirection]);
+
+  const tabButton = (value: Tab, label: string, count: number) => {
+    const active = tab === value;
+    return (
+      <button
+        onClick={() => switchTab(value)}
+        className={`rounded-lg px-4 py-2 text-sm font-semibold transition ${
+          active
+            ? "text-white"
+            : "border border-slate-700 bg-[#0f1b2d] text-slate-300 hover:bg-slate-800"
+        }`}
+        style={active ? { background: THEME.accent } : undefined}
+      >
+        {label}
+        <span className="ml-2 text-xs opacity-80">{count}</span>
+      </button>
+    );
+  };
+
+  return (
+    <div
+      className="min-h-screen p-6 text-slate-200"
+      style={{ background: THEME.bg }}
+    >
+      <div className="w-full">
+        {/* HEADER */}
+        <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="flex items-center gap-2 text-2xl font-bold text-white">
+              <CalendarClock size={22} className="text-sky-400" />
+              Deputy API
+            </h1>
+            <p className="mt-1 max-w-2xl text-sm text-slate-400">
+              Rostered schedule and approved timesheets synced from Deputy.
+              Approved timesheets are those marked time-approved and not
+              discarded.
+            </p>
+          </div>
+          <button
+            onClick={load}
+            disabled={loading}
+            title="Reload from Deputy"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+            Reload
+          </button>
+        </div>
+
+        {/* TABS */}
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          {tabButton("rosters", "Rostered Schedule", rosters.length)}
+          {tabButton("timesheets", "Approved Timesheets", timesheets.length)}
+        </div>
+
+        {/* FILTER BAR — date range + free-text search */}
+        <div className="mb-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label
+              htmlFor="deputy-date-from"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              From
+            </label>
+            <input
+              id="deputy-date-from"
+              type="date"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="deputy-date-to"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              To
+            </label>
+            <input
+              id="deputy-date-to"
+              type="date"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            />
+          </div>
+
+          <div className="ml-auto min-w-[220px]">
+            <label
+              htmlFor="deputy-search"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              Search
+            </label>
+            <div className="relative">
+              <Search
+                size={15}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500"
+              />
+              <input
+                id="deputy-search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Employee, area or date…"
+                className="w-full rounded-lg border border-slate-700 bg-[#0f1b2d] py-2 pl-9 pr-3 text-sm text-slate-200 placeholder:text-slate-500 outline-none focus:border-sky-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* LOADING */}
+        {loading && (
+          <div className="mb-6 flex items-center gap-2 rounded-2xl border border-slate-700 bg-[#0f1b2d] p-5 text-sm text-slate-400">
+            <RefreshCw size={14} className="animate-spin" />
+            Loading Deputy data…
+          </div>
+        )}
+
+        {/* ERROR */}
+        {error && !loading && (
+          <div className="mb-6 rounded-2xl border border-amber-700/50 bg-amber-950/40 p-5 text-sm text-amber-200">
+            <p className="font-semibold">Couldn&apos;t load Deputy data</p>
+            <p className="mt-1 text-amber-300/80">{error}</p>
+            <button
+              onClick={load}
+              className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-sky-500"
+            >
+              <RefreshCw size={14} />
+              Retry
+            </button>
+          </div>
+        )}
+
+        {/* ROSTERS TABLE */}
+        {!loading && !error && tab === "rosters" && (
+          <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-800 text-white">
+                  <tr>
+                    <th
+                      onClick={() => sortBy("employee")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Employee{sortArrow("employee")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("unit")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Area{sortArrow("unit")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("date")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Date{sortArrow("date")}
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-3">Start</th>
+                    <th className="whitespace-nowrap px-3 py-3">End</th>
+                    <th
+                      onClick={() => sortBy("total")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
+                    >
+                      Total (h){sortArrow("total")}
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-3">Published</th>
+                    <th className="whitespace-nowrap px-3 py-3">Open shift</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleRosters.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={8}
+                        className="px-3 py-10 text-center text-slate-400"
+                      >
+                        No rostered shifts.
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleRosters.map((r) => (
+                      <tr
+                        key={r.deputy_id}
+                        className="border-b border-slate-100 transition hover:bg-slate-50"
+                      >
+                        <td className="px-3 py-3 font-medium text-slate-900">
+                          {r.employee_name ?? "-"}
+                        </td>
+                        <td className="px-3 py-3">
+                          {r.operational_unit_name ?? "-"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3">
+                          {formatDate(r.roster_date)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-600">
+                          {formatTime(r.start_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-600">
+                          {formatTime(r.end_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatHours2(r.total_time)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={r.published} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={r.open_shift} />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* TIMESHEETS TABLE */}
+        {!loading && !error && tab === "timesheets" && (
+          <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-800 text-white">
+                  <tr>
+                    <th
+                      onClick={() => sortBy("employee")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Employee{sortArrow("employee")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("unit")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Area{sortArrow("unit")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("date")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 hover:bg-slate-700"
+                    >
+                      Date{sortArrow("date")}
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-3">Start</th>
+                    <th className="whitespace-nowrap px-3 py-3">End</th>
+                    <th className="whitespace-nowrap px-3 py-3 text-right">
+                      Meal break (min)
+                    </th>
+                    <th
+                      onClick={() => sortBy("total")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
+                    >
+                      Total (h){sortArrow("total")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("cost")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
+                    >
+                      Total Pay{sortArrow("cost")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("onCost")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
+                    >
+                      On-cost{sortArrow("onCost")}
+                    </th>
+                    <th
+                      onClick={() => sortBy("rate")}
+                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
+                    >
+                      Est. rate /h{sortArrow("rate")}
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-3">Time approved</th>
+                    <th className="whitespace-nowrap px-3 py-3">
+                      Pay rule approved
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-3">Disputed</th>
+                    <th className="whitespace-nowrap px-3 py-3">Leave</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleTimesheets.length === 0 ? (
+                    <tr>
+                      <td
+                        colSpan={14}
+                        className="px-3 py-10 text-center text-slate-400"
+                      >
+                        No approved timesheets.
+                      </td>
+                    </tr>
+                  ) : (
+                    visibleTimesheets.map((t) => (
+                      <tr
+                        key={t.deputy_id}
+                        className="border-b border-slate-100 transition hover:bg-slate-50"
+                      >
+                        <td className="px-3 py-3 font-medium text-slate-900">
+                          {t.employee_name ?? "-"}
+                        </td>
+                        <td className="px-3 py-3">
+                          {t.operational_unit_name ?? "-"}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3">
+                          {formatDate(t.timesheet_date)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-600">
+                          {formatTime(t.start_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-slate-600">
+                          {formatTime(t.end_at)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatNumber(t.mealbreak_minutes)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatHours2(t.total_time)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatAud(t.cost)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatAud(t.on_cost)}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
+                          {formatRate(t.cost, t.total_time)}
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={t.time_approved} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={t.pay_rule_approved} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={t.disputed} />
+                        </td>
+                        <td className="px-3 py-3">
+                          <Badge value={t.is_leave} />
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

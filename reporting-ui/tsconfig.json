@@ -34,5 +34,9 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "supabase/functions/deputy-sync/index.ts"]
+  "exclude": [
+    "node_modules",
+    "supabase/functions/deputy-sync/index.ts",
+    "supabase/functions/deputy-read/index.ts"
+  ]
 }
