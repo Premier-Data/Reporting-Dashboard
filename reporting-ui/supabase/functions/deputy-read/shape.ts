@@ -131,3 +131,55 @@ export function distinctIds<T extends Json>(rows: T[], key: string): string[] {
   }
   return Array.from(set);
 }
+
+/**
+ * Throttle decision for the on-demand sync. Returns true when a sync should
+ * run: no/unparseable last run, or the last run is at least `throttleSeconds`
+ * old. A started_at in the future within the window (clock skew) counts as
+ * recent (false); one further in the future than the window is treated as
+ * bogus (true) so a corrupt row cannot block syncing forever.
+ */
+export function shouldSync(
+  lastRunStartedAtIso: string | null,
+  nowMs: number,
+  throttleSeconds: number
+): boolean {
+  if (!lastRunStartedAtIso) return true;
+  const started = Date.parse(lastRunStartedAtIso);
+  if (Number.isNaN(started)) return true;
+  const windowMs = throttleSeconds * 1000;
+  const ageMs = nowMs - started;
+  if (ageMs < 0) return -ageMs > windowMs;
+  return ageMs >= windowMs;
+}
+
+/**
+ * Trailing sync window in Australia/Sydney local dates (DST-correct via Intl).
+ * endDate is "today" in Sydney; startDate is trailingDays-1 days earlier
+ * (default 14 days inclusive => 13 day difference). Calendar arithmetic uses
+ * a UTC carrier so no time-zone conversion can shift the result.
+ */
+export function sydneySyncWindow(
+  nowMs: number,
+  trailingDays = 14
+): { startDate: string; endDate: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Australia/Sydney",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(nowMs));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+  const y = get("year");
+  const m = get("month");
+  const d = get("day");
+  const days = Math.max(1, Math.floor(trailingDays));
+  const fmt = (dt: Date) =>
+    `${String(dt.getUTCFullYear()).padStart(4, "0")}-${String(
+      dt.getUTCMonth() + 1
+    ).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+  return {
+    startDate: fmt(new Date(Date.UTC(y, m - 1, d - (days - 1)))),
+    endDate: fmt(new Date(Date.UTC(y, m - 1, d))),
+  };
+}

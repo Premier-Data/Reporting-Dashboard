@@ -220,13 +220,14 @@ export default function DeputyApiPage() {
   const [sortField, setSortField] = useState("date");
   const [sortDirection, setSortDirection] = useState<SortDir>("desc");
 
-  async function load() {
+  async function fetchAll(sync: boolean) {
     setLoading(true);
     setError(null);
     try {
       const [rosterRows, timesheetRows] = await Promise.all([
         getDeputyRosters(),
-        getDeputyTimesheets(),
+        // Only this request asks the server to sync, so a reload syncs once.
+        getDeputyTimesheets({ sync }),
       ]);
       setRosters(rosterRows);
       setTimesheets(timesheetRows);
@@ -239,6 +240,10 @@ export default function DeputyApiPage() {
       setLoading(false);
     }
   }
+
+  // Parameterless wrappers: onClick passes a MouseEvent, so never pass fetchAll directly.
+  const load = () => fetchAll(false);
+  const reload = () => fetchAll(true);
 
   useEffect(() => {
     document.title = "Deputy API | Premier Data";
@@ -402,9 +407,9 @@ export default function DeputyApiPage() {
             </p>
           </div>
           <button
-            onClick={load}
+            onClick={reload}
             disabled={loading}
-            title="Reload from Deputy"
+            title="Sync latest from Deputy and reload"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />

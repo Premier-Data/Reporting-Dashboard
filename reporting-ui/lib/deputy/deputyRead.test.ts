@@ -6,6 +6,8 @@ import {
   attachNames,
   distinctIds,
   needsAnotherPage,
+  shouldSync,
+  sydneySyncWindow,
 } from "../../supabase/functions/deputy-read/shape";
 
 // ── Employee name resolution ─────────────────────────────────────────────────
@@ -147,5 +149,83 @@ describe("distinctIds", () => {
       "employee_deputy_id"
     );
     expect(ids.sort()).toEqual(["1", "2"]);
+  });
+});
+
+// ── On-demand sync helpers ───────────────────────────────────────────────────
+describe("shouldSync", () => {
+  const NOW = Date.parse("2026-06-10T00:00:00Z");
+  const ago = (s: number) => new Date(NOW - s * 1000).toISOString();
+
+  it("syncs when there is no previous run", () => {
+    expect(shouldSync(null, NOW, 60)).toBe(true);
+    expect(shouldSync("", NOW, 60)).toBe(true);
+  });
+  it("syncs when the timestamp is unparseable", () => {
+    expect(shouldSync("not-a-date", NOW, 60)).toBe(true);
+  });
+  it("skips when the last run is recent", () => {
+    expect(shouldSync(ago(10), NOW, 60)).toBe(false);
+    expect(shouldSync(ago(59), NOW, 60)).toBe(false);
+  });
+  it("syncs exactly at the boundary and beyond", () => {
+    expect(shouldSync(ago(60), NOW, 60)).toBe(true);
+    expect(shouldSync(ago(61), NOW, 60)).toBe(true);
+    expect(shouldSync(ago(86400), NOW, 60)).toBe(true);
+  });
+  it("treats slightly future-dated runs as recent (clock skew)", () => {
+    expect(shouldSync(ago(-30), NOW, 60)).toBe(false);
+  });
+  it("treats far-future-dated runs as bogus and syncs", () => {
+    expect(shouldSync(ago(-600), NOW, 60)).toBe(true);
+  });
+});
+
+describe("sydneySyncWindow", () => {
+  const span = (w: { startDate: string; endDate: string }) =>
+    (Date.parse(w.endDate) - Date.parse(w.startDate)) / 86400000;
+
+  it("uses the Sydney date, not the UTC date (AEDT)", () => {
+    const w = sydneySyncWindow(Date.parse("2026-11-04T20:00:00Z"));
+    expect(w).toEqual({ startDate: "2026-10-23", endDate: "2026-11-05" });
+    expect(span(w)).toBe(13);
+  });
+  it("control: 23:00 Sydney is still the same date", () => {
+    const w = sydneySyncWindow(Date.parse("2026-11-04T12:00:00Z"));
+    expect(w.endDate).toBe("2026-11-04");
+    expect(span(w)).toBe(13);
+  });
+  it("handles AEST winter offset", () => {
+    const w = sydneySyncWindow(Date.parse("2026-06-30T14:30:00Z"));
+    expect(w).toEqual({ startDate: "2026-06-18", endDate: "2026-07-01" });
+    expect(span(w)).toBe(13);
+    expect(sydneySyncWindow(Date.parse("2026-06-30T13:59:00Z")).endDate).toBe(
+      "2026-06-30"
+    );
+  });
+  it("handles DST start (2026-10-04 02:00 AEST -> 03:00 AEDT)", () => {
+    expect(sydneySyncWindow(Date.parse("2026-10-03T13:59:00Z")).endDate).toBe(
+      "2026-10-03"
+    );
+    expect(sydneySyncWindow(Date.parse("2026-10-03T15:59:00Z")).endDate).toBe(
+      "2026-10-04"
+    );
+    const w = sydneySyncWindow(Date.parse("2026-10-03T16:00:00Z"));
+    expect(w.endDate).toBe("2026-10-04");
+    expect(span(w)).toBe(13);
+  });
+  it("handles DST end (2027-04-04 03:00 AEDT -> 02:00 AEST)", () => {
+    const w = sydneySyncWindow(Date.parse("2027-04-03T15:30:00Z"));
+    expect(w.endDate).toBe("2027-04-04");
+    expect(span(w)).toBe(13);
+  });
+  it("rolls over month/year", () => {
+    const w = sydneySyncWindow(Date.parse("2026-01-05T00:00:00Z"));
+    expect(w.startDate).toBe("2025-12-23");
+    expect(span(w)).toBe(13);
+  });
+  it("trailingDays=1 gives a single day", () => {
+    const w = sydneySyncWindow(Date.parse("2026-01-05T00:00:00Z"), 1);
+    expect(w.startDate).toBe(w.endDate);
   });
 });

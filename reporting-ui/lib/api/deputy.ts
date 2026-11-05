@@ -16,8 +16,15 @@ const ANON = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 type Dataset = "rosters" | "timesheets";
 
-async function call<T>(dataset: Dataset): Promise<T[]> {
-  const res = await fetch(`${FN_BASE}?dataset=${dataset}`, {
+/** sync: ask deputy-read to pull the latest from Deputy first (server-side, throttled). */
+export type DeputyReadOptions = { sync?: boolean };
+
+async function call<T>(
+  dataset: Dataset,
+  opts?: DeputyReadOptions
+): Promise<T[]> {
+  const sync = opts?.sync ? "&sync=1" : "";
+  const res = await fetch(`${FN_BASE}?dataset=${dataset}${sync}`, {
     headers: { Authorization: `Bearer ${ANON}`, apikey: ANON },
     cache: "no-store",
   });
@@ -59,5 +66,7 @@ export interface DeputyTimesheetRow {
   is_leave: boolean | null;
 }
 
-export const getDeputyRosters = () => call<DeputyRosterRow>("rosters");
-export const getDeputyTimesheets = () => call<DeputyTimesheetRow>("timesheets");
+export const getDeputyRosters = (opts?: DeputyReadOptions) =>
+  call<DeputyRosterRow>("rosters", opts);
+export const getDeputyTimesheets = (opts?: DeputyReadOptions) =>
+  call<DeputyTimesheetRow>("timesheets", opts);

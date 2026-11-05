@@ -101,11 +101,11 @@ export default function DeputyInsightsPage() {
     setDateTo(to);
   }
 
-  async function load() {
+  async function fetchTimesheets(sync: boolean) {
     setLoading(true);
     setError(null);
     try {
-      const rows = await getDeputyTimesheets();
+      const rows = await getDeputyTimesheets({ sync });
       setTimesheets(rows);
     } catch (err) {
       console.error("Failed loading Deputy data:", err);
@@ -116,6 +116,10 @@ export default function DeputyInsightsPage() {
       setLoading(false);
     }
   }
+
+  // Parameterless wrappers: onClick passes a MouseEvent.
+  const load = () => fetchTimesheets(false);
+  const reload = () => fetchTimesheets(true);
 
   useEffect(() => {
     document.title = "Deputy Insights | Premier Data";
@@ -192,9 +196,9 @@ export default function DeputyInsightsPage() {
             </p>
           </div>
           <button
-            onClick={load}
+            onClick={reload}
             disabled={loading}
-            title="Reload from Deputy"
+            title="Sync latest from Deputy and reload"
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm font-semibold text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
           >
             <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
