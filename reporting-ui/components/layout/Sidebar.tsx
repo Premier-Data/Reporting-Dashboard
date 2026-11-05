@@ -122,11 +122,6 @@ const sections = [
       icon: CalendarDays,
     },
     {
-      title: "Deputy API",
-      href: "/deputy-api",
-      icon: CalendarClock,
-    },
-    {
       title: "Comp Fixtures",
       href: "/comp-fixtures",
       icon: CloudDownload,
@@ -187,6 +182,11 @@ const sections = [
         title: "Reporting",
         href: "/reporting",
         icon: BarChart3,
+      },
+      {
+        title: "Deputy API",
+        href: "/deputy-api",
+        icon: CalendarClock,
       },
       {
         title: "VN / Soccer",
