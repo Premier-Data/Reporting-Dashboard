@@ -104,6 +104,24 @@ export function attachNames<T extends Json>(
   });
 }
 
+/**
+ * Drives the deputy-read pagination loop. PostgREST clamps every response to
+ * its server-side `db-max-rows` (1000), so each dataset read pages through
+ * `.range(offset, offset + pageSize - 1)` and accumulates rows. This predicate
+ * decides whether to fetch another page: keep going only when the last page
+ * came back full (`lastPageCount === pageSize`, i.e. more rows likely remain)
+ * AND we are still under the safety ceiling (`accumulated < maxRows`). A short
+ * or empty last page, or hitting `maxRows`, stops the loop.
+ */
+export function needsAnotherPage(
+  lastPageCount: number,
+  pageSize: number,
+  accumulated: number,
+  maxRows: number
+): boolean {
+  return lastPageCount === pageSize && accumulated < maxRows;
+}
+
 /** Collect the distinct non-null values of a key across rows. */
 export function distinctIds<T extends Json>(rows: T[], key: string): string[] {
   const set = new Set<string>();

@@ -5,6 +5,7 @@ import {
   buildUnitMap,
   attachNames,
   distinctIds,
+  needsAnotherPage,
 } from "../../supabase/functions/deputy-read/shape";
 
 // ── Employee name resolution ─────────────────────────────────────────────────
@@ -105,6 +106,30 @@ describe("attachNames (resolves soft FKs, degrades to raw id)", () => {
     );
     expect(row.employee_name).toBeNull();
     expect(row.operational_unit_name).toBeNull();
+  });
+});
+
+// ── needsAnotherPage ─────────────────────────────────────────────────────────
+describe("needsAnotherPage (deputy-read pagination stop predicate)", () => {
+  it("returns true when the last page was full and under the ceiling", () => {
+    // First full page, more rows likely remain.
+    expect(needsAnotherPage(1000, 1000, 1000, 20000)).toBe(true);
+  });
+
+  it("returns true mid-loop when a full page keeps us under the ceiling", () => {
+    expect(needsAnotherPage(1000, 1000, 5000, 20000)).toBe(true);
+  });
+
+  it("returns false when the last page was short (fewer than pageSize)", () => {
+    expect(needsAnotherPage(342, 1000, 1342, 20000)).toBe(false);
+  });
+
+  it("returns false when the last page was empty", () => {
+    expect(needsAnotherPage(0, 1000, 1000, 20000)).toBe(false);
+  });
+
+  it("returns false when the ceiling is reached even on a full page", () => {
+    expect(needsAnotherPage(1000, 1000, 20000, 20000)).toBe(false);
   });
 });
 

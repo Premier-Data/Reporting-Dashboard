@@ -31,6 +31,7 @@ import {
   buildEmployeeMap,
   buildUnitMap,
   distinctIds,
+  needsAnotherPage,
   type EmployeeLookup,
   type Json,
   type UnitLookup,
@@ -38,6 +39,42 @@ import {
 
 // Server-side cap so a huge table can't be dumped in a single response.
 const MAX_ROWS = 20000;
+
+// PostgREST clamps every response to its server-side `db-max-rows` (1000),
+// overriding any larger `.limit(...)`. So each dataset read pages through
+// `.range(...)` in PAGE-sized chunks and accumulates until a short page or the
+// MAX_ROWS ceiling. PAGE matches the PostgREST cap so a full page is the signal
+// that more rows may remain.
+const PAGE = 1000;
+
+// Shape of a single PostgREST ranged response (data + error), narrowed to what
+// the pagination loop needs.
+type PageResult = { data: unknown; error: { message: string } | null };
+
+// Fetch ALL matching rows for a dataset by paging through `.range(from, to)`.
+// `buildQuery` reproduces the exact per-dataset query (schema/table/select/
+// filter/order) and applies `.range(from, to)` for the given page. On the first
+// page error we stop and surface the error so the caller can return
+// `query_failed`; otherwise we accumulate and consult `needsAnotherPage` to
+// decide whether to request the next page. The name joins are intentionally NOT
+// done here — the caller runs them once on the full accumulated set.
+async function fetchAllPages(
+  buildQuery: (from: number, to: number) => PromiseLike<PageResult>
+): Promise<{ rows: Json[]; error: { message: string } | null }> {
+  const rows: Json[] = [];
+  for (let offset = 0; ; offset += PAGE) {
+    const { data, error } = await buildQuery(offset, offset + PAGE - 1);
+    if (error) {
+      return { rows, error };
+    }
+    const page = (data ?? []) as Json[];
+    rows.push(...page);
+    if (!needsAnotherPage(page.length, PAGE, rows.length, MAX_ROWS)) {
+      break;
+    }
+  }
+  return { rows, error: null };
+}
 
 // Permissive CORS so the statically-exported site can call the function.
 const CORS: Record<string, string> = {
@@ -103,49 +140,53 @@ async function resolveNames(
 }
 
 async function readRosters(supabase: SupabaseClient): Promise<Response> {
-  const { data, error } = await supabase
-    .schema("deputy")
-    .from("rosters")
-    .select(
-      `deputy_id, roster_date, start_at, end_at, total_time,
+  const { rows: data, error } = await fetchAllPages((from, to) =>
+    supabase
+      .schema("deputy")
+      .from("rosters")
+      .select(
+        `deputy_id, roster_date, start_at, end_at, total_time,
        published, open_shift,
        employee_deputy_id, operational_unit_deputy_id`
-    )
-    .order("roster_date", { ascending: false })
-    .limit(MAX_ROWS);
+      )
+      .order("roster_date", { ascending: false })
+      .range(from, to)
+  );
 
   if (error) {
     console.error("deputy-read rosters query failed:", error.message);
     return json({ error: "query_failed" }, 500);
   }
 
-  const rows = await resolveNames(supabase, (data ?? []) as Json[]);
+  const rows = await resolveNames(supabase, data);
   return json({ rows }, 200);
 }
 
 async function readTimesheets(supabase: SupabaseClient): Promise<Response> {
-  const { data, error } = await supabase
-    .schema("deputy")
-    .from("timesheets")
-    .select(
-      `deputy_id, timesheet_date, start_at, end_at, total_time,
+  const { rows: data, error } = await fetchAllPages((from, to) =>
+    supabase
+      .schema("deputy")
+      .from("timesheets")
+      .select(
+        `deputy_id, timesheet_date, start_at, end_at, total_time,
        mealbreak_minutes, cost, on_cost,
        time_approved, pay_rule_approved, disputed, is_leave,
        employee_deputy_id, operational_unit_deputy_id`
-    )
-    // Approved + non-discarded. `.or` expresses coalesce(discarded,false)=false
-    // as "discarded IS NULL OR discarded = false".
-    .eq("time_approved", true)
-    .or("discarded.is.null,discarded.eq.false")
-    .order("timesheet_date", { ascending: false })
-    .limit(MAX_ROWS);
+      )
+      // Approved + non-discarded. `.or` expresses coalesce(discarded,false)=false
+      // as "discarded IS NULL OR discarded = false".
+      .eq("time_approved", true)
+      .or("discarded.is.null,discarded.eq.false")
+      .order("timesheet_date", { ascending: false })
+      .range(from, to)
+  );
 
   if (error) {
     console.error("deputy-read timesheets query failed:", error.message);
     return json({ error: "query_failed" }, 500);
   }
 
-  const rows = await resolveNames(supabase, (data ?? []) as Json[]);
+  const rows = await resolveNames(supabase, data);
   return json({ rows }, 200);
 }
 
