@@ -10,6 +10,7 @@ import {
   toNum,
   toDate,
   idToText,
+  sydneyDateFromEpochSeconds,
 } from "../../supabase/functions/deputy-sync/mappers";
 import {
   buildQuery,
@@ -84,6 +85,41 @@ describe("resource mappers", () => {
     expect(l.status).toBe("Approved");
     expect(l.date_start).toBe("2026-01-01");
     expect(l.days).toBe(2);
+  });
+});
+
+// ── Sydney-local shift date bucketing ────────────────────────────────────────
+describe("Sydney-local shift date bucketing", () => {
+  it("AEDT (+11): evening-UTC instant falls on the next Sydney day", () => {
+    // 1793570400 s = 2026-11-01T22:00:00Z = 2026-11-02 09:00 Sydney (AEDT +11)
+    expect(sydneyDateFromEpochSeconds(1793570400)).toBe("2026-11-02");
+    expect(sydneyDateFromEpochSeconds(1793570400)).not.toBe("2026-11-01"); // not the UTC date
+  });
+  it("AEST (+10, winter): same-day and day-crossing cases", () => {
+    // 1755561600 s = 2025-08-19T00:00:00Z = 2025-08-19 10:00 Sydney (AEST +10)
+    expect(sydneyDateFromEpochSeconds(1755561600)).toBe("2025-08-19");
+    // 1784152800 s = 2026-07-15T22:00:00Z = 2026-07-16 08:00 Sydney (AEST +10)
+    expect(sydneyDateFromEpochSeconds(1784152800)).toBe("2026-07-16");
+    expect(sydneyDateFromEpochSeconds(1784152800)).not.toBe("2026-07-15"); // crosses the day
+  });
+  it("null/invalid input -> null", () => {
+    expect(sydneyDateFromEpochSeconds(null)).toBeNull();
+    expect(sydneyDateFromEpochSeconds(undefined)).toBeNull();
+    expect(sydneyDateFromEpochSeconds("")).toBeNull();
+    expect(sydneyDateFromEpochSeconds(NaN)).toBeNull();
+    expect(sydneyDateFromEpochSeconds("abc")).toBeNull();
+    expect(sydneyDateFromEpochSeconds(Infinity)).toBeNull();
+  });
+  it("mapped row date equals the Sydney-local date of StartTime (StartTime wins over UTC Date)", () => {
+    const t = mapTimesheet({ Id: 2, StartTime: 1793570400, Date: "2026-11-01", Employee: 100 });
+    expect(t.timesheet_date).toBe("2026-11-02");
+    const r = mapRoster({ Id: 1, StartTime: 1793570400, Date: "2026-11-01", OperationalUnit: 3 });
+    expect(r.roster_date).toBe("2026-11-02");
+  });
+  it("falls back to the Date field when StartTime is absent", () => {
+    const t = mapTimesheet({ Id: 3, Date: "2026-11-01" });
+    expect(t.timesheet_date).toBe(toDate("2026-11-01"));
+    expect(t.timesheet_date).toBe("2026-11-01");
   });
 });
 

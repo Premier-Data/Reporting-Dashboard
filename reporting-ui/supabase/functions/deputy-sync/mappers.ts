@@ -66,6 +66,34 @@ export function toDate(v: unknown): string | null {
   return iso ? iso.slice(0, 10) : null;
 }
 
+// Formatter for the Australia/Sydney local calendar date. `en-CA` yields a
+// yyyy-mm-dd ordering, and the Australia/Sydney time zone handles both AEDT
+// (+11) and AEST (+10) automatically — never a hardcoded offset.
+const SYDNEY_DATE_FMT = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Australia/Sydney",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/**
+ * The Australia/Sydney local calendar date (yyyy-mm-dd) for a Deputy epoch
+ * given in SECONDS (e.g. a roster/timesheet StartTime), null-safe.
+ *
+ * Unlike `toIso`, this does NOT apply a seconds-vs-ms heuristic: the
+ * timesheet/roster StartTime contract is always epoch seconds. Evening-UTC
+ * instants fall on the NEXT Sydney day, so bucketing by the real local date
+ * (not the UTC date) is what keeps a shift on its true calendar day.
+ */
+export function sydneyDateFromEpochSeconds(v: unknown): string | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const d = new Date(n * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return SYDNEY_DATE_FMT.format(d);
+}
+
 // ── Resource mappers ─────────────────────────────────────────────────────────
 
 export function mapCompany(r: Json): Json {
@@ -118,7 +146,7 @@ export function mapEmployee(r: Json): Json {
 export function mapRoster(r: Json): Json {
   return {
     deputy_id: idToText(r.Id),
-    roster_date: toDate(r.Date),
+    roster_date: sydneyDateFromEpochSeconds(r.StartTime) ?? toDate(r.Date),
     employee_deputy_id: idToText(r.Employee),
     operational_unit_deputy_id: idToText(r.OperationalUnit),
     start_time_epoch: toEpoch(r.StartTime),
@@ -143,7 +171,7 @@ export function mapRoster(r: Json): Json {
 export function mapTimesheet(r: Json): Json {
   return {
     deputy_id: idToText(r.Id),
-    timesheet_date: toDate(r.Date),
+    timesheet_date: sydneyDateFromEpochSeconds(r.StartTime) ?? toDate(r.Date),
     employee_deputy_id: idToText(r.Employee),
     roster_deputy_id: idToText(r.Roster),
     operational_unit_deputy_id: idToText(r.OperationalUnit),
