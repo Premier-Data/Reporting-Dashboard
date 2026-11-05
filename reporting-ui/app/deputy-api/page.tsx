@@ -19,7 +19,11 @@ import {
   summariseByEmployee,
   type Summary,
 } from "@/lib/deputy/format";
-import { currentWeekWedToTue } from "@/lib/deputy/dates";
+import {
+  currentWeekWedToTue,
+  recentWeekPresets,
+  recentMonthPresets,
+} from "@/lib/deputy/dates";
 
 type Tab = "rosters" | "timesheets";
 type SortDir = "asc" | "desc";
@@ -198,6 +202,21 @@ export default function DeputyApiPage() {
   );
   const [dateFrom, setDateFrom] = useState(defaultFrom);
   const [dateTo, setDateTo] = useState(defaultTo);
+  // Quick-pick presets (computed once): last 26 Wed→Tue weeks and 12 months,
+  // newest first. Selecting one sets the From/To range; manual edits flip the
+  // dropdowns back to "Custom" (the range no longer matches a preset).
+  const [weekPresets] = useState(() => recentWeekPresets(26));
+  const [monthPresets] = useState(() => recentMonthPresets(12));
+  const selectedWeek =
+    weekPresets.find((p) => p.from === dateFrom && p.to === dateTo)?.value ?? "";
+  const selectedMonth =
+    monthPresets.find((p) => p.from === dateFrom && p.to === dateTo)?.value ?? "";
+
+  function applyPreset(from: string, to: string) {
+    setDateFrom(from);
+    setDateTo(to);
+  }
+
   const [sortField, setSortField] = useState("date");
   const [sortDirection, setSortDirection] = useState<SortDir>("desc");
 
@@ -399,8 +418,56 @@ export default function DeputyApiPage() {
           {tabButton("timesheets", "Approved Timesheets", timesheets.length)}
         </div>
 
-        {/* FILTER BAR — date range + free-text search */}
+        {/* FILTER BAR — quick month/week pickers + date range + search */}
         <div className="mb-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label
+              htmlFor="deputy-month"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              Month
+            </label>
+            <select
+              id="deputy-month"
+              value={selectedMonth}
+              onChange={(e) => {
+                const p = monthPresets.find((m) => m.value === e.target.value);
+                if (p) applyPreset(p.from, p.to);
+              }}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            >
+              <option value="">Custom…</option>
+              {monthPresets.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              htmlFor="deputy-week"
+              className="mb-1 block text-xs font-medium text-slate-400"
+            >
+              Week
+            </label>
+            <select
+              id="deputy-week"
+              value={selectedWeek}
+              onChange={(e) => {
+                const p = weekPresets.find((w) => w.value === e.target.value);
+                if (p) applyPreset(p.from, p.to);
+              }}
+              className="rounded-lg border border-slate-700 bg-[#0f1b2d] px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-500"
+            >
+              <option value="">Custom…</option>
+              {weekPresets.map((w) => (
+                <option key={w.value} value={w.value}>
+                  {w.label}
+                </option>
+              ))}
+            </select>
+          </div>
           <div>
             <label
               htmlFor="deputy-date-from"
