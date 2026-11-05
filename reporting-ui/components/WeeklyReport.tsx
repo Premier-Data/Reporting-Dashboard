@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { seasonsFromTT } from "@/lib/analytics/season";
 import { supabase } from "@/lib/supabase";
+import type { SummaryWeek } from "@/lib/exports/weeklySummaryExcel";
 
 type Row = Record<string, unknown>;
 
@@ -115,7 +116,9 @@ export default function WeeklyReport({
   const [season, setSeason] = useState<number>(defaultSeason);
   const [view, setView] = useState<"week" | "month">("week");
 
-  const report = useMemo(() => {
+  // Builds the whole report matrix. `monthly` picks month vs week columns; the
+  // Excel export always builds the weekly form regardless of the on-screen view.
+  const build = (monthly: boolean) => {
     const shifts = deputyData.filter((r) => num(r.season) === season);
     const afl = ttData.filter((r) => num(r.season) === season);
     const soc = soccerGames.filter((r) => num(r.season) === season);
@@ -127,7 +130,6 @@ export default function WeeklyReport({
     // View: "week" columns are week numbers; "month" columns are "YYYY-MM"
     // keys taken from each record's real date. `keyOf` maps a record to its
     // column key (null = unusable).
-    const monthly = view === "month";
     const keyOf = (w: number | null, iso: unknown): string | number | null => {
       if (!monthly) return w;
       const s = String(iso ?? "").slice(0, 7);
@@ -332,6 +334,27 @@ export default function WeeklyReport({
     // not a coding-games team so it's excluded. Blended = (AUS pure coding +
     // PHL cost) / (AUS + PHL games).
     const phlLabels = osLabels.filter((l) => l.toLowerCase().startsWith("philippines"));
+    const phlCost: Record<string, number> = {};
+    for (const key of ["total", ...weeks] as (string | number)[]) {
+      phlCost[key] = phlLabels.reduce((s, l) => s + (cost[l][key] ?? 0), 0);
+    }
+
+    // Game CREDIT by location (for the Excel summary). A game's Location may be
+    // mixed ("PHL/ AUS", "AUS/ VN"): credit is split evenly across the locations
+    // present, so a mixed game is 0.5 each.
+    const splitLoc = (v: unknown): string[] => {
+      const s = String(v ?? "").toUpperCase();
+      return ["AUS", "PHL", "VN"].filter((k) => s.includes(k));
+    };
+    const footyCred: Record<string, Record<string, number>> = { AUS: {}, PHL: {}, VN: {} };
+    const socCred: Record<string, Record<string, number>> = { AUS: {}, PHL: {}, VN: {} };
+    const addCred = (tgt: Record<string, Record<string, number>>, r: Row, key: string | number | null) => {
+      if (key == null) return;
+      const locs = splitLoc(r.Location);
+      for (const l of locs) tgt[l][key] = (tgt[l][key] ?? 0) + 1 / locs.length;
+    };
+    for (const r of afl) addCred(footyCred, r, keyOf(weekOf(r.Week ?? r.week), r.Date));
+    for (const r of soc) addCred(socCred, r, keyOf(socWeek(r), r.Date));
     // Vietnam OS cost per column, used in the Soccer per-game figures.
     const vnLabels = osLabels.filter((l) => l.toLowerCase().startsWith("vietnam"));
     const vnCost: Record<string, number> = {};
@@ -367,8 +390,49 @@ export default function WeeklyReport({
       totalBlendedCostPerGame[key] = g + pg > 0 ? (ausCost + pc) / (g + pg) : 0;
     }
 
-    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost };
-  }, [deputyData, ttData, soccerGames, osTeam, season, view]);
+    return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost, phlCost, footyCred, socCred, anchorMs };
+  };
+  /* eslint-disable react-hooks/exhaustive-deps */
+  const report = useMemo(() => build(view === "month"), [deputyData, ttData, soccerGames, osTeam, season, view]);
+  // Weekly form for the Excel export (reuses `report` when already weekly).
+  const altWeekly = useMemo(
+    () => (view === "week" ? null : build(false)),
+    [deputyData, ttData, soccerGames, osTeam, season, view]
+  );
+  /* eslint-enable react-hooks/exhaustive-deps */
+  const weeklyReport = view === "week" ? report : altWeekly!;
+
+  const exportWeeks = () => {
+    // Last 4 in-season weeks (Week 1+) that have data.
+    const w = weeklyReport;
+    const last = (w.weeks as number[]).filter((x) => x >= 1).slice(-4);
+    const DAY_MS = 86400000;
+    const weeksOut: SummaryWeek[] = last.map((wk) => {
+      const wd = w.weekDates[wk];
+      const startMs =
+        w.anchorMs != null
+          ? w.anchorMs + (wk - 1) * 7 * DAY_MS
+          : new Date(`${wd?.min}T00:00:00Z`).getTime();
+      return {
+        week: wk,
+        start: new Date(startMs),
+        end: new Date(startMs + 6 * DAY_MS),
+        footyGames: w.aflGames[wk] ?? 0,
+        soccerGames: w.socGames[wk] ?? 0,
+        footyAus: w.footyCred.AUS[wk] ?? 0,
+        footyPhl: w.footyCred.PHL[wk] ?? 0,
+        soccerAus: w.socCred.AUS[wk] ?? 0,
+        soccerPhl: w.socCred.PHL[wk] ?? 0,
+        soccerVn: w.socCred.VN[wk] ?? 0,
+        // AUS (Deputy) costs carry the 15% entitlements uplift; OS costs don't.
+        footyCost: (w.subCost.aussie[wk] ?? 0) * 1.15,
+        soccerCost: (w.subCost.soccer[wk] ?? 0) * 1.15,
+        phlCost: w.phlCost[wk] ?? 0,
+        vnCost: w.vnCost[wk] ?? 0,
+      };
+    });
+    void import("@/lib/exports/weeklySummaryExcel").then((m) => m.exportWeeklySummary(weeksOut, season));
+  };
 
   const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost } = report;
   const cols: (string | number)[] = ["total", ...weeks];
@@ -409,6 +473,13 @@ export default function WeeklyReport({
           </p>
         </div>
         <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={exportWeeks}
+          className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-emerald-700"
+        >
+          Export last 4 weeks (Excel)
+        </button>
         <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
           View
           <select
