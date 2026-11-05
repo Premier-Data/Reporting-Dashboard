@@ -58,6 +58,7 @@ export const PAGES: PageDef[] = [
     { key: "fixtures", label: "Fixtures", href: "/fixtures" },
     { key: "comp-fixtures", label: "Comp Fixtures", href: "/comp-fixtures" },
     { key: "deputy-api", label: "Deputy API", href: "/deputy-api" },
+    { key: "deputy-insights", label: "Deputy Insights", href: "/deputy-insights" },
     { key: "fixture-review", label: "Fixture Review", href: "/fixture-review" },
     { key: "competitions", label: "Competitions", href: "/competitions" },
     { key: "schedule", label: "Schedule", href: "/schedule" },

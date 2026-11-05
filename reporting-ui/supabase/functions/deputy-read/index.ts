@@ -37,7 +37,7 @@ import {
 } from "./shape.ts";
 
 // Server-side cap so a huge table can't be dumped in a single response.
-const MAX_ROWS = 5000;
+const MAX_ROWS = 20000;
 
 // Permissive CORS so the statically-exported site can call the function.
 const CORS: Record<string, string> = {

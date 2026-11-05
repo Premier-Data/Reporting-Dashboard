@@ -189,6 +189,11 @@ const sections = [
         icon: CalendarClock,
       },
       {
+        title: "Deputy Insights",
+        href: "/deputy-insights",
+        icon: BarChart3,
+      },
+      {
         title: "VN / Soccer",
         href: "/vn-soccer",
         icon: BarChart3,

@@ -19,6 +19,7 @@ import {
   summariseByEmployee,
   type Summary,
 } from "@/lib/deputy/format";
+import { currentWeekWedToTue } from "@/lib/deputy/dates";
 
 type Tab = "rosters" | "timesheets";
 type SortDir = "asc" | "desc";
@@ -65,28 +66,6 @@ function formatDate(value: string | null): string {
   const month = d.toLocaleDateString("en-AU", { month: "long" });
   const day = d.getDate();
   return `${weekday} ${day}${ordinal(day)} ${month} ${d.getFullYear()}`;
-}
-
-// Local "yyyy-mm-dd" for a Date (not toISOString, which is UTC and can shift
-// the day across the AU timezone boundary).
-function toLocalISODate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-// The current week, running Wednesday -> Tuesday, as { from, to } local ISO
-// dates. "Today" is included: if today is Wednesday the week starts today; if
-// today is Tuesday the week started the previous Wednesday.
-function currentWeekWedToTue(today = new Date()): { from: string; to: string } {
-  // JS getDay(): Sun=0 .. Sat=6; Wednesday=3. Days since the most recent Wed.
-  const since = (today.getDay() - 3 + 7) % 7;
-  const from = new Date(today);
-  from.setDate(today.getDate() - since);
-  const to = new Date(from);
-  to.setDate(from.getDate() + 6);
-  return { from: toLocalISODate(from), to: toLocalISODate(to) };
 }
 
 // start_at / end_at are full ISO timestamptz — show just the time of day.
