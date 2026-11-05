@@ -36,11 +36,54 @@ function Badge({ value }: { value: boolean | null }) {
   );
 }
 
-// Date value is an ISO "yyyy-mm-dd" (date column) — render as a local date.
+// Ordinal suffix for a day-of-month (1 -> "st", 2 -> "nd", 11 -> "th", ...).
+function ordinal(n: number): string {
+  const rem100 = n % 100;
+  if (rem100 >= 11 && rem100 <= 13) return "th";
+  switch (n % 10) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+// Date value is an ISO "yyyy-mm-dd" (date column) — render as e.g.
+// "Thu 5th November 2026".
 function formatDate(value: string | null): string {
   if (!value) return "-";
   const d = new Date(`${value}T00:00:00`);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString("en-AU");
+  if (Number.isNaN(d.getTime())) return value;
+  const weekday = d.toLocaleDateString("en-AU", { weekday: "short" });
+  const month = d.toLocaleDateString("en-AU", { month: "long" });
+  const day = d.getDate();
+  return `${weekday} ${day}${ordinal(day)} ${month} ${d.getFullYear()}`;
+}
+
+// Local "yyyy-mm-dd" for a Date (not toISOString, which is UTC and can shift
+// the day across the AU timezone boundary).
+function toLocalISODate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// The current week, running Wednesday -> Tuesday, as { from, to } local ISO
+// dates. "Today" is included: if today is Wednesday the week starts today; if
+// today is Tuesday the week started the previous Wednesday.
+function currentWeekWedToTue(today = new Date()): { from: string; to: string } {
+  // JS getDay(): Sun=0 .. Sat=6; Wednesday=3. Days since the most recent Wed.
+  const since = (today.getDay() - 3 + 7) % 7;
+  const from = new Date(today);
+  from.setDate(today.getDate() - since);
+  const to = new Date(from);
+  to.setDate(from.getDate() + 6);
+  return { from: toLocalISODate(from), to: toLocalISODate(to) };
 }
 
 // start_at / end_at are full ISO timestamptz — show just the time of day.
@@ -52,9 +95,7 @@ function formatTime(value: string | null): string {
     : d.toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" });
 }
 
-function formatNumber(value: number | null): string {
-  return value == null ? "-" : String(value);
-}
+
 
 export default function DeputyApiPage() {
   const [rosters, setRosters] = useState<DeputyRosterRow[]>([]);
@@ -63,8 +104,12 @@ export default function DeputyApiPage() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("rosters");
   const [search, setSearch] = useState("");
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  // Default the date filter to the current week (Wednesday -> Tuesday).
+  const [{ from: defaultFrom, to: defaultTo }] = useState(() =>
+    currentWeekWedToTue()
+  );
+  const [dateFrom, setDateFrom] = useState(defaultFrom);
+  const [dateTo, setDateTo] = useState(defaultTo);
   const [sortField, setSortField] = useState("date");
   const [sortDirection, setSortDirection] = useState<SortDir>("desc");
 
@@ -173,8 +218,6 @@ export default function DeputyApiPage() {
           return t.total_time ?? -1;
         case "cost":
           return t.cost ?? Number.NEGATIVE_INFINITY;
-        case "onCost":
-          return t.on_cost ?? Number.NEGATIVE_INFINITY;
         case "rate":
           return (
             estimatedHourlyRate(t.cost, t.total_time) ??
@@ -332,9 +375,9 @@ export default function DeputyApiPage() {
         {/* ROSTERS TABLE */}
         {!loading && !error && tab === "rosters" && (
           <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
-            <div className="overflow-x-auto">
+            <div className="max-h-[70vh] overflow-auto">
               <table className="w-full border-collapse text-left text-sm">
-                <thead className="bg-slate-800 text-white">
+                <thead className="sticky top-0 z-10 bg-slate-800 text-white">
                   <tr>
                     <th
                       onClick={() => sortBy("employee")}
@@ -418,9 +461,9 @@ export default function DeputyApiPage() {
         {/* TIMESHEETS TABLE */}
         {!loading && !error && tab === "timesheets" && (
           <div className="overflow-hidden rounded-xl bg-white text-slate-700 shadow-sm">
-            <div className="overflow-x-auto">
+            <div className="max-h-[70vh] overflow-auto">
               <table className="w-full border-collapse text-left text-sm">
-                <thead className="bg-slate-800 text-white">
+                <thead className="sticky top-0 z-10 bg-slate-800 text-white">
                   <tr>
                     <th
                       onClick={() => sortBy("employee")}
@@ -442,9 +485,6 @@ export default function DeputyApiPage() {
                     </th>
                     <th className="whitespace-nowrap px-3 py-3">Start</th>
                     <th className="whitespace-nowrap px-3 py-3">End</th>
-                    <th className="whitespace-nowrap px-3 py-3 text-right">
-                      Meal break (min)
-                    </th>
                     <th
                       onClick={() => sortBy("total")}
                       className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
@@ -458,30 +498,18 @@ export default function DeputyApiPage() {
                       Total Pay{sortArrow("cost")}
                     </th>
                     <th
-                      onClick={() => sortBy("onCost")}
-                      className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
-                    >
-                      On-cost{sortArrow("onCost")}
-                    </th>
-                    <th
                       onClick={() => sortBy("rate")}
                       className="cursor-pointer whitespace-nowrap px-3 py-3 text-right hover:bg-slate-700"
                     >
                       Est. rate /h{sortArrow("rate")}
                     </th>
-                    <th className="whitespace-nowrap px-3 py-3">Time approved</th>
-                    <th className="whitespace-nowrap px-3 py-3">
-                      Pay rule approved
-                    </th>
-                    <th className="whitespace-nowrap px-3 py-3">Disputed</th>
-                    <th className="whitespace-nowrap px-3 py-3">Leave</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleTimesheets.length === 0 ? (
                     <tr>
                       <td
-                        colSpan={14}
+                        colSpan={8}
                         className="px-3 py-10 text-center text-slate-400"
                       >
                         No approved timesheets.
@@ -509,31 +537,13 @@ export default function DeputyApiPage() {
                           {formatTime(t.end_at)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
-                          {formatNumber(t.mealbreak_minutes)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
                           {formatHours2(t.total_time)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
                           {formatAud(t.cost)}
                         </td>
                         <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
-                          {formatAud(t.on_cost)}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-3 text-right tabular-nums">
                           {formatRate(t.cost, t.total_time)}
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge value={t.time_approved} />
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge value={t.pay_rule_approved} />
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge value={t.disputed} />
-                        </td>
-                        <td className="px-3 py-3">
-                          <Badge value={t.is_leave} />
                         </td>
                       </tr>
                     ))
