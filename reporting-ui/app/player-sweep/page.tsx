@@ -32,6 +32,7 @@ import {
   sweepCompetitionBatch,
   getSweepLog,
   getSweepTeams,
+  isThrottleError,
   parseSeasonId,
   type SeasonGradesResponse,
   type SweepBatchResult,
@@ -71,7 +72,12 @@ type SweepProgress = {
   totalProcessed: number;
   totalSkipped: number;
   batches: number;
+  // True ONLY when the worker reported the sweep finished.
   done: boolean;
+  // Why the loop ended when it did not complete (null while running/complete).
+  stopReason: "stopped" | "throttled" | "error" | null;
+  // Cursor the sweep stopped at (0-based gradeIndex), shown as resume info.
+  resume: { gradeIndex: number; offset: number } | null;
 };
 
 const EMPTY_PROGRESS: SweepProgress = {
@@ -84,6 +90,8 @@ const EMPTY_PROGRESS: SweepProgress = {
   totalSkipped: 0,
   batches: 0,
   done: false,
+  stopReason: null,
+  resume: null,
 };
 
 export default function PlayerSweepPage() {
@@ -230,10 +238,14 @@ export default function PlayerSweepPage() {
     let batches = 0;
     let consecutiveErrors = 0;
     let throttleCount = 0;
+    // Why the loop ended; "complete" only when the worker said done.
+    let outcome: "complete" | "stopped" | "throttled" | "error" = "stopped";
 
     // Client-driven resumable loop: one slice per request, follow `next`.
     while (!cancelRef.current) {
-      let result: SweepBatchResult;
+      // null => the request failed with an HTTP throttle (403/429), handled
+      // below exactly like a worker-reported throttled slice.
+      let result: SweepBatchResult | null = null;
       try {
         result = await sweepCompetitionBatch({
           season: seasonId,
@@ -244,31 +256,58 @@ export default function PlayerSweepPage() {
         });
         consecutiveErrors = 0;
       } catch (e) {
-        consecutiveErrors += 1;
-        const msg =
-          e instanceof Error ? e.message : "A sweep batch failed.";
-        setSweepError(
-          `${msg} (grade ${cursor.gradeIndex + 1} of ${totalGrades}, offset ${cursor.offset})`
-        );
-        // Bail out on repeated/fatal errors rather than looping forever.
-        if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
-        // Otherwise skip past this (grade, offset): advance to the next grade
-        // at offset 0 where it's safe to continue; stop if that was the last.
-        const nextGrade = cursor.gradeIndex + 1;
-        if (nextGrade >= totalGrades) break;
-        cursor = { gradeIndex: nextGrade, offset: 0 };
-        continue;
+        if (!isThrottleError(e)) {
+          consecutiveErrors += 1;
+          const msg =
+            e instanceof Error ? e.message : "A sweep batch failed.";
+          setSweepError(
+            `${msg} (grade ${cursor.gradeIndex + 1} of ${totalGrades}, offset ${cursor.offset})`
+          );
+          // Bail out on repeated/fatal errors rather than looping forever.
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            outcome = "error";
+            break;
+          }
+          // Otherwise skip past this (grade, offset): advance to the next grade
+          // at offset 0 where it's safe to continue; stop if that was the last.
+          const nextGrade = cursor.gradeIndex + 1;
+          if (nextGrade >= totalGrades) {
+            outcome = "error";
+            break;
+          }
+          cursor = { gradeIndex: nextGrade, offset: 0 };
+          continue;
+        }
+        // HTTP 403/429 throttle: fall through to the throttle handling below
+        // (result stays null). Not a real error, so errors are not counted.
       }
 
-      // Transient throttle: the worker returned a resumable slice (403/429
-      // backoff upstream). Treat it as a pause-and-retry of the SAME cursor,
-      // NOT a failure — don't count it as processed and don't advance.
-      if (result.retryable || result.throttled) {
+      // Transient throttle: either the worker returned a resumable slice
+      // (403/429 backoff upstream) or the request itself was throttled. Treat
+      // it as a pause-and-retry of the SAME cursor, NOT a failure — don't
+      // count it as processed and don't advance.
+      if (result === null || result.retryable || result.throttled) {
+        // A throttle does not count toward MAX_CONSECUTIVE_ERRORS. If the
+        // worker made partial progress before being throttled (games done
+        // before the throttled one), bank those counts and resume at the
+        // cursor it returned, which is the throttled game itself.
+        if (
+          result &&
+          result.next &&
+          result.next.gradeIndex === cursor.gradeIndex &&
+          result.next.offset > cursor.offset
+        ) {
+          totalProcessed += result.processed;
+          totalSkipped += result.skipped;
+          cursor = result.next;
+          throttleCount = 0;
+        }
         throttleCount += 1;
         if (throttleCount >= MAX_CONSECUTIVE_THROTTLES) {
           setSweepError(
             `PlayHQ kept rate-limiting after ${MAX_CONSECUTIVE_THROTTLES} attempts — giving up (grade ${cursor.gradeIndex + 1} of ${totalGrades}, offset ${cursor.offset}). Try again later.`
           );
+          outcome = "throttled";
           break;
         }
         setSweepError(
@@ -297,6 +336,8 @@ export default function PlayerSweepPage() {
         totalSkipped,
         batches,
         done: false,
+        stopReason: null,
+        resume: null,
       });
 
       // Refresh the per-competition log after a successful (non-throttled)
@@ -304,17 +345,25 @@ export default function PlayerSweepPage() {
       await refreshSweepLog();
       await refreshExpandedTeams();
 
-      if (result.done || !result.next) break;
+      if (result.done || !result.next) {
+        outcome = "complete";
+        break;
+      }
       // Gentle inter-batch pacing to avoid tripping the upstream rate limiter.
       await sleep(result.retryAfterMs ?? 800);
       cursor = result.next;
     }
 
-    // Finalise: mark not-running; done=true only when we weren't cancelled.
+    // Finalise: mark not-running; done=true ONLY when the worker said done.
+    // Otherwise record why we stopped and the cursor to resume from. (A Stop
+    // that lands after the final batch still counts as complete.)
+    const complete = outcome === "complete";
     setProgress((prev) => ({
       ...prev,
       running: false,
-      done: !cancelRef.current,
+      done: complete,
+      stopReason: outcome === "complete" ? null : outcome,
+      resume: complete ? null : cursor,
     }));
 
     // One final refresh so the panel reflects the last batch(es).
@@ -500,7 +549,10 @@ export default function PlayerSweepPage() {
               </div>
             )}
 
-            {(running || progress.batches > 0 || progress.done) && (
+            {(running ||
+              progress.batches > 0 ||
+              progress.done ||
+              progress.resume) && (
               <div className="mt-4 rounded-xl border border-white/10 bg-white/[0.02] p-4">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-sm font-medium text-slate-200">
@@ -515,6 +567,14 @@ export default function PlayerSweepPage() {
                       </>
                     ) : progress.done ? (
                       <span className="text-emerald-300">Sweep complete</span>
+                    ) : progress.stopReason === "throttled" ? (
+                      <span className="text-amber-300">
+                        Sweep paused - rate limited, re-run to resume
+                      </span>
+                    ) : progress.stopReason === "error" ? (
+                      <span className="text-amber-300">
+                        Sweep stopped - error
+                      </span>
                     ) : (
                       <span className="text-amber-300">Sweep stopped</span>
                     )}
@@ -524,6 +584,14 @@ export default function PlayerSweepPage() {
                     {progress.batches === 1 ? "" : "es"}
                   </span>
                 </div>
+
+                {!running && progress.resume && (
+                  <div className="mb-3 text-xs text-slate-400">
+                    Stopped at grade {progress.resume.gradeIndex + 1} of{" "}
+                    {totalGrades}, offset {progress.resume.offset}. Re-running
+                    is safe (existing players are upserted).
+                  </div>
+                )}
 
                 {progress.gradeName && (
                   <div className="mb-3 text-sm text-slate-300">

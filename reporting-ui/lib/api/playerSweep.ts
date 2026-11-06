@@ -101,13 +101,45 @@ export function parseSeasonId(input: string): string {
 // same way lib/api/players.ts getPlayerCareer does.
 async function errorFrom(res: Response, label: string): Promise<Error> {
   let message = `${label} (HTTP ${res.status})`;
+  let code: string | undefined;
   try {
     const body = (await res.json()) as { error?: string };
-    if (body?.error) message = `${label} (${body.error})`;
+    if (body?.error) {
+      code = body.error;
+      message = `${label} (${body.error})`;
+    }
   } catch {
     /* non-JSON error body — keep the generic message */
   }
-  return new Error(message);
+  return new SweepRequestError(message, res.status, code);
+}
+
+/**
+ * Error from a failed worker request. Carries the HTTP status and the worker's
+ * `{ error }` code so callers can tell a PlayHQ throttle from a real failure.
+ */
+export class SweepRequestError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(message: string, status: number, code?: string) {
+    super(message);
+    this.name = "SweepRequestError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * True when a failed sweep request is PlayHQ throttling (worker error
+ * "forbidden" / "rate_limited" on HTTP 403 / 429) rather than a real error.
+ */
+export function isThrottleError(e: unknown): boolean {
+  if (!(e instanceof SweepRequestError)) return false;
+  return (
+    (e.status === 403 || e.status === 429) &&
+    (e.code === "forbidden" || e.code === "rate_limited")
+  );
 }
 
 /**
