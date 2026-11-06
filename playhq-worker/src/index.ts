@@ -2544,8 +2544,9 @@ async function runSweepBatch(
 }
 
 // Best-effort per-batch sweep log, keyed per-(season_id, grade_id). Recomputes
-// the distinct player_id count for THIS grade (filtered by both season_id and
-// grade_id) from playhq_player_appearances and upserts a single
+// the distinct player_id count for THIS grade by reading the Postgres view
+// playhq_sweep_grade_counts (never fetches raw appearance rows: PostgREST caps
+// responses at 1000 rows) and upserts a single
 // playhq_sweep_log row (on_conflict=season_id,grade_id). Env-guarded via
 // sbGet/sbUpsert (no-op when Supabase env is unset) and fully swallowed: never
 // throws into the sweep handler, never changes the response.
@@ -2559,13 +2560,12 @@ async function updateSweepLog(
   try {
     const rows = await sbGet(
       env,
-      `playhq_player_appearances?select=player_id&season_id=eq.${encodeURIComponent(
+      `playhq_sweep_grade_counts?select=player_count&season_id=eq.${encodeURIComponent(
         seasonId
-      )}&grade_id=eq.${encodeURIComponent(gradeId)}&limit=50000`
+      )}&grade_id=eq.${encodeURIComponent(gradeId)}`
     );
-    const count = new Set(
-      (rows as Array<{ player_id?: unknown }>).map((r) => String(r.player_id))
-    ).size;
+    const n = Number((rows[0] as { player_count?: unknown } | undefined)?.player_count ?? 0);
+    const count = Number.isFinite(n) ? n : 0;
     await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id,grade_id", [
       {
         season_id: seasonId,
@@ -3153,13 +3153,40 @@ export default {
 
     if (url.pathname === "/api/sweep-log") {
       try {
-        const rows = await sbGet(
-          env,
-          "playhq_sweep_log?select=season_id,grade_id,competition_name,organisation_name,grade_name,player_count,last_swept_at&order=competition_name.asc,grade_name.asc"
-        );
-        return json(rows, 200, { "Cache-Control": "public, max-age=15", ...cors });
+        // grades: per-grade log rows; seasons: competition-level distinct
+        // player totals computed in Postgres (not a sum of grades).
+        const [grades, seasons] = await Promise.all([
+          sbGet(
+            env,
+            "playhq_sweep_log?select=season_id,grade_id,competition_name,organisation_name,grade_name,player_count,last_swept_at&order=competition_name.asc,grade_name.asc"
+          ),
+          sbGet(env, "playhq_sweep_season_counts?select=season_id,player_count"),
+        ]);
+        return json({ grades, seasons }, 200, {
+          "Cache-Control": "public, max-age=15",
+          ...cors,
+        });
       } catch {
         return json({ error: "sweep_log_failed" }, 502, cors);
+      }
+    }
+
+    // Public read-only: players swept per team for one competition (season).
+    if (url.pathname === "/api/sweep-log/teams") {
+      const season = url.searchParams.get("season") ?? "";
+      if (!ID_RE.test(season)) {
+        return json({ error: "invalid_season" }, 400, cors);
+      }
+      try {
+        const rows = await sbGet(
+          env,
+          `playhq_sweep_team_counts?select=grade_id,grade_name,team_name,player_count&season_id=eq.${encodeURIComponent(
+            season
+          )}&order=grade_name.asc.nullslast,team_name.asc`
+        );
+        return json(rows, 200, { "Cache-Control": "public, max-age=10", ...cors });
+      } catch {
+        return json({ error: "sweep_log_teams_failed" }, 502, cors);
       }
     }
 
