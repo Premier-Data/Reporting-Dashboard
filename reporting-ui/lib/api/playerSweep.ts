@@ -176,24 +176,79 @@ export type SweepLogEntry = {
 };
 
 /**
- * Read the sweep log. Public, read-only, no token. Returns one entry per swept
- * (season, grade) ordered by the worker. Throws an Error carrying the worker's
- * { error } field on a non-ok response (mirrors getSeasonGrades).
+ * The sweep log: per-(season, grade) entries plus competition-level distinct
+ * player totals per season (computed in Postgres, NOT a sum of grade counts).
  */
-export async function getSweepLog(): Promise<SweepLogEntry[]> {
+export type SweepLog = {
+  entries: SweepLogEntry[];
+  seasonTotals: Record<string, number>;
+};
+
+/** Distinct players swept for one team (GET /api/sweep-log/teams). */
+export type TeamCount = {
+  gradeId: string | null;
+  gradeName: string | null;
+  teamName: string;
+  playerCount: number;
+};
+
+/**
+ * Read the sweep log. Public, read-only, no token. The worker returns
+ * `{ grades, seasons }`: grades are snake_case per-(season, grade) rows,
+ * seasons are the per-competition distinct player totals. Throws an Error
+ * carrying the worker's { error } field on a non-ok response.
+ */
+export async function getSweepLog(): Promise<SweepLog> {
   const res = await fetch(`${WORKER_BASE}/api/sweep-log`, {
     cache: "no-store",
   });
 
   if (!res.ok) throw await errorFrom(res, "Failed loading sweep log");
 
-  return ((await res.json()) as Array<Record<string, unknown>>).map((r) => ({
-    seasonId: String(r.season_id ?? ""),
-    gradeId: String(r.grade_id ?? ""),
-    competitionName: String(r.competition_name ?? ""),
-    organisationName: String(r.organisation_name ?? ""),
-    gradeName: String(r.grade_name ?? ""),
+  const body = (await res.json()) as {
+    grades?: Array<Record<string, unknown>>;
+    seasons?: Array<Record<string, unknown>>;
+  };
+  const grades = Array.isArray(body?.grades) ? body.grades : [];
+  const seasons = Array.isArray(body?.seasons) ? body.seasons : [];
+
+  const seasonTotals: Record<string, number> = {};
+  for (const s of seasons) {
+    seasonTotals[String(s.season_id ?? "")] = Number(s.player_count ?? 0);
+  }
+
+  return {
+    entries: grades.map((r) => ({
+      seasonId: String(r.season_id ?? ""),
+      gradeId: String(r.grade_id ?? ""),
+      competitionName: String(r.competition_name ?? ""),
+      organisationName: String(r.organisation_name ?? ""),
+      gradeName: String(r.grade_name ?? ""),
+      playerCount: Number(r.player_count ?? 0),
+      lastSweptAt: String(r.last_swept_at ?? ""),
+    })),
+    seasonTotals,
+  };
+}
+
+/**
+ * Teams (with distinct players swept per team) for one competition/season.
+ * Public, read-only, no token. Throws an Error carrying the worker's { error }
+ * field on a non-ok response.
+ */
+export async function getSweepTeams(seasonId: string): Promise<TeamCount[]> {
+  const res = await fetch(
+    `${WORKER_BASE}/api/sweep-log/teams?season=${encodeURIComponent(seasonId)}`,
+    { cache: "no-store" }
+  );
+
+  if (!res.ok) throw await errorFrom(res, "Failed loading teams");
+
+  const rows = (await res.json()) as Array<Record<string, unknown>>;
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    gradeId: r.grade_id ? String(r.grade_id) : null,
+    gradeName: r.grade_name ? String(r.grade_name) : null,
+    teamName: String(r.team_name ?? ""),
     playerCount: Number(r.player_count ?? 0),
-    lastSweptAt: String(r.last_swept_at ?? ""),
   }));
 }

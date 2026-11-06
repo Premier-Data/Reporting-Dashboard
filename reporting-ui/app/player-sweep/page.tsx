@@ -18,16 +18,25 @@
 // routes/handlers/actions and no generateStaticParams.
 
 import { useEffect, useRef, useState } from "react";
-import { Loader2, AlertTriangle, Search, Play, Square } from "lucide-react";
+import {
+  Loader2,
+  AlertTriangle,
+  Search,
+  Play,
+  Square,
+  ChevronRight,
+} from "lucide-react";
 
 import {
   getSeasonGrades,
   sweepCompetitionBatch,
   getSweepLog,
+  getSweepTeams,
   parseSeasonId,
   type SeasonGradesResponse,
   type SweepBatchResult,
   type SweepLogEntry,
+  type TeamCount,
 } from "@/lib/api/playerSweep";
 
 // Shared input style — matches admin-config's inputCls exactly.
@@ -93,14 +102,73 @@ export default function PlayerSweepPage() {
 
   // ── Swept-competitions log ───────────────────────────────────────────
   const [sweepLog, setSweepLog] = useState<SweepLogEntry[]>([]);
+  // Competition-level distinct player totals (from the Postgres season view).
+  const [seasonTotals, setSeasonTotals] = useState<Record<string, number>>({});
+  // Which competitions are expanded, and the lazily-loaded team lists per
+  // season. expandedRef mirrors `expanded` because the sweep loop is a
+  // long-lived closure that would otherwise read stale state.
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const expandedRef = useRef<Record<string, boolean>>({});
+  const [teamsBySeason, setTeamsBySeason] = useState<
+    Record<string, TeamsState>
+  >({});
+
   // Non-fatal refresh: if the worker read fails, keep the last-known panel.
   const refreshSweepLog = async () => {
     try {
-      setSweepLog(await getSweepLog());
+      const log = await getSweepLog();
+      setSweepLog(log.entries);
+      setSeasonTotals(log.seasonTotals);
     } catch {
       /* non-fatal: panel just won't refresh */
     }
   };
+
+  // Load a competition's teams. Silent refreshes (live updates during a sweep)
+  // keep the prior data on failure and never flash a loading state.
+  const loadTeams = async (seasonId: string, opts: { silent: boolean }) => {
+    if (!opts.silent) {
+      setTeamsBySeason((prev) => ({
+        ...prev,
+        [seasonId]: { status: "loading", teams: prev[seasonId]?.teams ?? [] },
+      }));
+    }
+    try {
+      const teams = await getSweepTeams(seasonId);
+      setTeamsBySeason((prev) => ({
+        ...prev,
+        [seasonId]: { status: "ready", teams },
+      }));
+    } catch (e) {
+      if (opts.silent) return;
+      setTeamsBySeason((prev) => ({
+        ...prev,
+        [seasonId]: {
+          status: "error",
+          teams: prev[seasonId]?.teams ?? [],
+          error: e instanceof Error ? e.message : "Failed loading teams.",
+        },
+      }));
+    }
+  };
+
+  // Refresh the teams of every currently expanded competition (cheap).
+  const refreshExpandedTeams = async () => {
+    const ids = Object.keys(expandedRef.current).filter(
+      (id) => expandedRef.current[id]
+    );
+    await Promise.all(ids.map((id) => loadTeams(id, { silent: true })));
+  };
+
+  function toggleCompetition(seasonId: string) {
+    const open = !expandedRef.current[seasonId];
+    expandedRef.current = { ...expandedRef.current, [seasonId]: open };
+    setExpanded(expandedRef.current);
+    const cached = teamsBySeason[seasonId];
+    if (open && (!cached || cached.status === "error")) {
+      void loadTeams(seasonId, { silent: false });
+    }
+  }
   // Load the log once on mount so the panel is populated before any sweep.
   useEffect(() => {
     void refreshSweepLog();
@@ -234,6 +302,7 @@ export default function PlayerSweepPage() {
       // Refresh the per-competition log after a successful (non-throttled)
       // batch so its counts climb live during the sweep.
       await refreshSweepLog();
+      await refreshExpandedTeams();
 
       if (result.done || !result.next) break;
       // Gentle inter-batch pacing to avoid tripping the upstream rate limiter.
@@ -250,19 +319,17 @@ export default function PlayerSweepPage() {
 
     // One final refresh so the panel reflects the last batch(es).
     await refreshSweepLog();
+    await refreshExpandedTeams();
   }
 
   const running = progress.running;
   const totalGrades = season?.grades.length ?? 0;
 
-  // Grand total = sum of ALL per-grade player counts across every entry.
-  const grandTotal = sweepLog.reduce((sum, entry) => sum + entry.playerCount, 0);
-
-  // Derive the grouped view IN RENDER (no new state): group sweep-log entries
-  // by competition keyed on seasonId; each group lists its grade rows sorted by
-  // gradeName asc, carries a per-competition subtotal, and a lastSweptAt that is
-  // the max of its grades'. Groups are sorted by most-recent lastSweptAt desc.
-  const sweptGroups = buildSweptGroups(sweepLog);
+  // Derive the competition list IN RENDER (no new state): one row per season,
+  // total from the Postgres season view (distinct players, not a grade sum).
+  const sweptGroups = buildSweptGroups(sweepLog, seasonTotals);
+  // Grand total = sum of the competition totals.
+  const grandTotal = sweptGroups.reduce((sum, g) => sum + g.total, 0);
 
   return (
     <div className="min-h-full bg-gradient-to-b from-[#0B1220] via-[#0d1526] to-[#0f172a] text-slate-100">
@@ -495,43 +562,75 @@ export default function PlayerSweepPage() {
             </div>
             <div className="mt-0.5 text-sm text-slate-200">
               Players swept across {sweptGroups.length} competition
-              {sweptGroups.length === 1 ? "" : "s"} / {sweepLog.length} grade
-              {sweepLog.length === 1 ? "" : "s"}
+              {sweptGroups.length === 1 ? "" : "s"}
             </div>
             <p className="mt-1 text-xs text-slate-500">
-              This sums per-GRADE distinct counts (player-grade memberships), not
-              a count of globally-distinct people — someone who plays in two
-              grades is counted in each.
+              Sum of each competition&apos;s distinct players. Someone who plays
+              in two competitions is counted once in each.
             </p>
 
-            <div className="mt-4 overflow-x-auto rounded-xl border border-white/10">
-              <table className="w-full min-w-[560px] text-sm">
-                <thead>
-                  <tr className="border-b border-white/10 bg-white/[0.03] text-left text-xs uppercase text-slate-400">
-                    <th className="px-3 py-2 font-semibold">Grade</th>
-                    <th className="px-3 py-2 text-right font-semibold">
-                      Players
-                    </th>
-                    <th className="px-3 py-2 font-semibold">Last swept</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sweptGroups.map((group) => (
-                    <GradeGroup key={group.seasonId} group={group} />
-                  ))}
-                  {sweptGroups.length === 0 && (
-                    <tr>
-                      <td
-                        colSpan={3}
-                        className="px-3 py-8 text-center text-slate-400"
+            {sweptGroups.length === 0 ? (
+              <div className="mt-4 rounded-xl border border-white/10 px-3 py-8 text-center text-sm text-slate-400">
+                No competitions swept yet.
+              </div>
+            ) : (
+              <ul className="mt-4 divide-y divide-white/5 overflow-hidden rounded-xl border border-white/10">
+                {sweptGroups.map((group) => {
+                  const isOpen = !!expanded[group.seasonId];
+                  return (
+                    <li key={group.seasonId}>
+                      <button
+                        type="button"
+                        onClick={() => toggleCompetition(group.seasonId)}
+                        aria-expanded={isOpen}
+                        aria-controls={`teams-${group.seasonId}`}
+                        className="flex w-full items-center gap-3 bg-white/[0.04] px-3 py-2 text-left transition hover:bg-white/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
                       >
-                        No competitions swept yet.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                        <ChevronRight
+                          size={16}
+                          aria-hidden="true"
+                          className={`shrink-0 text-slate-400 transition-transform ${
+                            isOpen ? "rotate-90" : ""
+                          }`}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate font-semibold text-slate-100">
+                            {group.label}
+                          </span>
+                          <span className="block text-xs text-slate-400">
+                            {group.gradeCount} grade
+                            {group.gradeCount === 1 ? "" : "s"} swept · last
+                            swept{" "}
+                            {group.lastSweptAt
+                              ? new Date(group.lastSweptAt).toLocaleString()
+                              : "—"}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-right font-semibold text-emerald-300">
+                          {group.total.toLocaleString()}
+                          <span className="ml-1 text-xs font-normal text-slate-400">
+                            players
+                          </span>
+                        </span>
+                      </button>
+                      {isOpen && (
+                        <div
+                          id={`teams-${group.seasonId}`}
+                          className="border-t border-white/5 px-3 py-2 pl-9"
+                        >
+                          <TeamsPanel
+                            state={teamsBySeason[group.seasonId]}
+                            onRetry={() =>
+                              void loadTeams(group.seasonId, { silent: false })
+                            }
+                          />
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         </section>
       </div>
@@ -539,20 +638,27 @@ export default function PlayerSweepPage() {
   );
 }
 
-// A competition group derived from the flat sweep log: all grade rows that
-// share a seasonId, with a per-competition subtotal and the most-recent
-// lastSweptAt across its grades.
+type TeamsState = {
+  status: "loading" | "ready" | "error";
+  teams: TeamCount[];
+  error?: string;
+};
+
+// A competition row derived from the flat sweep log: all grade rows sharing a
+// seasonId, with the season-view total and the most-recent lastSweptAt.
 type SweptGroup = {
   seasonId: string;
   label: string; // `competitionName · organisationName`
-  grades: SweepLogEntry[]; // sorted by gradeName asc
-  subtotal: number; // sum of this group's grade playerCounts
+  total: number; // distinct players in the competition (season view)
+  gradeCount: number;
   lastSweptAt: string; // max of its grades' lastSweptAt (ISO or "")
 };
 
-// Group a flat SweepLogEntry[] by competition (seasonId) for the grouped panel.
-// Pure/derived — called in render, keeps no state.
-function buildSweptGroups(entries: SweepLogEntry[]): SweptGroup[] {
+// Group a flat SweepLogEntry[] by competition (seasonId). Pure/derived.
+function buildSweptGroups(
+  entries: SweepLogEntry[],
+  seasonTotals: Record<string, number>
+): SweptGroup[] {
   const bySeason = new Map<string, SweptGroup>();
 
   for (const entry of entries) {
@@ -561,66 +667,112 @@ function buildSweptGroups(entries: SweepLogEntry[]): SweptGroup[] {
       group = {
         seasonId: entry.seasonId,
         label: `${entry.competitionName || "—"} · ${entry.organisationName || "—"}`,
-        grades: [],
-        subtotal: 0,
+        total: seasonTotals[entry.seasonId] ?? 0,
+        gradeCount: 0,
         lastSweptAt: "",
       };
       bySeason.set(entry.seasonId, group);
     }
-    group.grades.push(entry);
-    group.subtotal += entry.playerCount;
+    group.gradeCount += 1;
     if (entry.lastSweptAt > group.lastSweptAt) {
       group.lastSweptAt = entry.lastSweptAt;
     }
   }
 
-  const groups = Array.from(bySeason.values());
-  // Sort each group's grade rows by gradeName asc.
-  for (const group of groups) {
-    group.grades.sort((a, b) => a.gradeName.localeCompare(b.gradeName));
-  }
-  // Sort competition groups by most-recent lastSweptAt desc.
-  groups.sort((a, b) => b.lastSweptAt.localeCompare(a.lastSweptAt));
-  return groups;
-}
-
-// One competition block: a sub-header row (label + subtotal + last swept),
-// its grade rows underneath, each with its own player count and last-swept date.
-function GradeGroup({ group }: { group: SweptGroup }) {
-  return (
-    <>
-      <tr className="border-b border-white/10 bg-white/[0.04]">
-        <td className="px-3 py-2 font-semibold text-slate-100">
-          {group.label}
-        </td>
-        <td className="px-3 py-2 text-right font-semibold text-emerald-300">
-          {group.subtotal.toLocaleString()}
-        </td>
-        <td className="px-3 py-2 text-xs text-slate-400">
-          {group.lastSweptAt
-            ? new Date(group.lastSweptAt).toLocaleString()
-            : "—"}
-        </td>
-      </tr>
-      {group.grades.map((grade) => (
-        <tr key={grade.gradeId} className="border-b border-white/5">
-          <td className="px-3 py-2 pl-6 text-slate-300">
-            {grade.gradeName || "—"}
-          </td>
-          <td className="px-3 py-2 text-right text-slate-200">
-            {grade.playerCount.toLocaleString()}
-          </td>
-          <td className="px-3 py-2 text-slate-400">
-            {grade.lastSweptAt
-              ? new Date(grade.lastSweptAt).toLocaleString()
-              : "—"}
-          </td>
-        </tr>
-      ))}
-    </>
+  // Most recently swept first.
+  return Array.from(bySeason.values()).sort((a, b) =>
+    b.lastSweptAt.localeCompare(a.lastSweptAt)
   );
 }
 
+// Expanded area of a competition: loading / error (with retry) / teams grouped
+// under their grade heading, with players swept per team.
+function TeamsPanel({
+  state,
+  onRetry,
+}: {
+  state: TeamsState | undefined;
+  onRetry: () => void;
+}) {
+  if (!state || (state.status === "loading" && state.teams.length === 0)) {
+    return (
+      <div
+        role="status"
+        className="flex items-center gap-2 py-1 text-sm text-slate-400"
+      >
+        <Loader2 size={14} className="animate-spin" /> Loading teams…
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex flex-wrap items-center gap-2 py-1 text-sm text-amber-200">
+        <AlertTriangle size={14} className="shrink-0" />
+        <span>{state.error ?? "Failed loading teams."}</span>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500"
+        >
+          Retry
+        </button>
+      </div>
+    );
+  }
+  if (state.teams.length === 0) {
+    return <div className="py-1 text-sm text-slate-400">No team data yet.</div>;
+  }
+
+  const UNGRADED = "Ungraded";
+  const byGrade = new Map<string, TeamCount[]>();
+  for (const t of state.teams) {
+    const key = t.gradeName || UNGRADED;
+    const list = byGrade.get(key);
+    if (list) list.push(t);
+    else byGrade.set(key, [t]);
+  }
+  const grades = Array.from(byGrade.keys()).sort((a, b) => {
+    if (a === UNGRADED) return 1;
+    if (b === UNGRADED) return -1;
+    return a.localeCompare(b);
+  });
+
+  return (
+    <div className="space-y-3">
+      {grades.map((grade) => {
+        const teams = [...(byGrade.get(grade) ?? [])].sort((a, b) =>
+          a.teamName.localeCompare(b.teamName)
+        );
+        return (
+          <div key={grade}>
+            <div className="text-xs font-semibold uppercase tracking-wide text-sky-300">
+              {grade}
+              <span className="ml-1 font-normal normal-case text-slate-500">
+                · {teams.length} team{teams.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <ul className="mt-1">
+              {teams.map((t) => (
+                <li
+                  key={`${t.gradeId ?? ""}|${t.teamName}`}
+                  className="flex items-baseline justify-between gap-3 py-1 text-sm"
+                >
+                  <span className="min-w-0 truncate text-slate-300">
+                    {t.teamName || "—"}
+                  </span>
+                  <span className="shrink-0 text-emerald-300">
+                    {t.playerCount.toLocaleString()} player
+                    {t.playerCount === 1 ? "" : "s"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 // A single progress stat tile.
 function Stat({
   label,
