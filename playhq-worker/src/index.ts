@@ -971,6 +971,42 @@ async function fetchSeasonGrades(
   };
 }
 
+// Edge-cached season grades, shared by the preview route and the sweep handler.
+// Same cache key convention as the preview route. Only SUCCESSFUL lookups are
+// cached; errors (incl. throttles) propagate to the caller untouched. `hit`
+// tells the caller whether the Cache API served it.
+async function getSeasonGradesCached(
+  seasonId: string,
+  env: Env,
+  ctx: ExecutionContext,
+  tenant: string,
+  ttlSeconds: number
+): Promise<{ resolved: SeasonGrades; bodyText: string; hit: boolean }> {
+  const cache = caches.default;
+  const key = new Request(
+    `https://playhq-cache/competition-grades/${seasonId}/${tenant}`
+  );
+  const cached = await cache.match(key);
+  if (cached) {
+    const bodyText = await cached.text();
+    return { resolved: JSON.parse(bodyText) as SeasonGrades, bodyText, hit: true };
+  }
+  const resolved = await fetchSeasonGrades(seasonId, env);
+  const bodyText = JSON.stringify(resolved);
+  ctx.waitUntil(
+    cache.put(
+      key,
+      new Response(bodyText, {
+        headers: {
+          "Content-Type": "application/json",
+          "Cache-Control": `public, max-age=${ttlSeconds}`,
+        },
+      })
+    )
+  );
+  return { resolved, bodyText, hit: false };
+}
+
 // ── Competition sweep: Discovery-only grade games + per-game stats ───────────
 // The competition SWEEP path cannot use the REST API: Discovery only ever hands
 // out SHORT grade/game ids (8-hex), and REST /v1/grades/{id}/games +
@@ -2518,9 +2554,29 @@ async function runSweepBatch(
         await ingestPlayers(summary, env, seasonId, gradeShortId, gradeName);
         processed++;
       }
-    } catch {
-      // Per-game failure (forbidden/rate-limit/graphql/etc.) — count and
-      // continue, never abort the batch.
+    } catch (err) {
+      if (
+        err instanceof UpstreamError &&
+        (err.status === 403 || err.status === 429)
+      ) {
+        // Throttled (not a bad game): stop here and resume AT this game so it
+        // is retried and never lost or counted as skipped.
+        return {
+          grade: gradeShortId,
+          totalGames,
+          offset,
+          limit,
+          processed,
+          skipped,
+          nextOffset: offset + i,
+          done: false,
+          retryable: true,
+          throttled: true,
+          retryAfterMs: 5000,
+        };
+      }
+      // Per-game failure (graphql/etc.) — count and continue, never abort the
+      // batch.
       skipped++;
     }
     // Gentle pacing between games (skip after the last one).
@@ -2833,8 +2889,56 @@ export default {
           ? Math.min(12, Math.floor(limitRaw))
           : 10;
 
+      // Resolve the season's grade list through the edge cache (it is identical
+      // for every batch). A throttle here is resumable, not a hard error: hand
+      // back a 200 retryable result with the cursor unchanged.
+      let resolved: SeasonGrades;
       try {
-        const resolved = await fetchSeasonGrades(season, env);
+        resolved = (
+          await getSeasonGradesCached(
+            season,
+            env,
+            ctx,
+            env.PHQ_TENANT || "afl",
+            600
+          )
+        ).resolved;
+      } catch (err) {
+        if (
+          err instanceof UpstreamError &&
+          (err.status === 403 || err.status === 429)
+        ) {
+          return json(
+            {
+              season: { id: season, name: null },
+              competition: null,
+              organisation: null,
+              grades: [],
+              gradeIndex,
+              gradeId: null,
+              gradeName: null,
+              totalGames: 0,
+              offset,
+              limit,
+              processed: 0,
+              skipped: 0,
+              done: false,
+              next: { gradeIndex, offset },
+              retryable: true,
+              throttled: true,
+              retryAfterMs: 5000,
+            },
+            200,
+            cors
+          );
+        }
+        if (err instanceof UpstreamError) {
+          return json({ error: err.message }, err.status, cors);
+        }
+        return json({ error: "sweep_failed" }, 502, cors);
+      }
+
+      try {
         const grades = resolved.grades;
 
         // No grades at all — nothing to sweep.
@@ -2917,8 +3021,10 @@ export default {
         let done: boolean;
         let next: { gradeIndex: number; offset: number } | null;
         if (batch.throttled) {
+          // Resume at the throttled game (nextOffset) when the batch made
+          // partial progress; otherwise the SAME offset.
           done = false;
-          next = { gradeIndex, offset };
+          next = { gradeIndex, offset: batch.nextOffset ?? offset };
         } else if (batch.nextOffset != null) {
           done = false;
           next = { gradeIndex, offset: batch.nextOffset };
@@ -3103,35 +3209,25 @@ export default {
         return json({ error: "invalid_season_id" }, 400, cors);
       }
       const tenant = url.searchParams.get("tenant") || env.PHQ_TENANT || "afl";
-      const gradesKey = new Request(
-        `https://playhq-cache/competition-grades/${seasonId}/${tenant}`
-      );
-      const gradesHit = await cache.match(gradesKey);
-      if (gradesHit) {
-        return new Response(await gradesHit.text(), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json",
-            "X-Cache": "HIT",
-            ...cors,
-          },
-        });
-      }
       try {
-        const resolved = await fetchSeasonGrades(seasonId, env);
-        const bodyText = JSON.stringify(resolved);
         const gradesTtl = 120;
-        ctx.waitUntil(
-          cache.put(
-            gradesKey,
-            new Response(bodyText, {
-              headers: {
-                "Content-Type": "application/json",
-                "Cache-Control": `public, max-age=${gradesTtl}`,
-              },
-            })
-          )
+        const { bodyText, hit } = await getSeasonGradesCached(
+          seasonId,
+          env,
+          ctx,
+          tenant,
+          gradesTtl
         );
+        if (hit) {
+          return new Response(bodyText, {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "X-Cache": "HIT",
+              ...cors,
+            },
+          });
+        }
         return new Response(bodyText, {
           status: 200,
           headers: {
