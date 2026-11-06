@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthContext";
-import { pageKeyForPath } from "@/lib/api/auth";
+import { pageKeysForPath } from "@/lib/api/auth";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/Topbar";
 import ChatWidget from "@/components/chat/ChatWidget";
@@ -32,10 +32,12 @@ export default function AppShell({ children }: { children: ReactNode }) {
     }, [pathname]);
 
     const isPublic = PUBLIC_PATHS.includes(pathname);
-    const pageKey = pageKeyForPath(pathname);
-    // Root "/" mirrors the dashboard.
-    const effectiveKey = pathname === "/" ? "dashboard" : pageKey;
-    const allowed = isPublic || hasAccess(effectiveKey);
+    // Root "/" mirrors the dashboard. Some routes (Operations reporting) are
+    // open to any of several page keys.
+    const pageKeys =
+        pathname === "/" ? ["dashboard"] : pageKeysForPath(pathname);
+    const pageAllowed = pageKeys.some((k) => hasAccess(k));
+    const allowed = isPublic || pageAllowed;
     // Where an unauthorised (but logged-in) user should land.
     const fallback = firstAccessiblePath();
 
@@ -49,7 +51,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         }
 
         // Logged in and allowed here → nothing to do.
-        if (hasAccess(effectiveKey)) return;
+        if (pageAllowed) return;
 
         // No access to this page. Send to the first page they CAN access.
         // Only redirect if that's a different path, so we never loop when
@@ -57,7 +59,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
         if (fallback && fallback !== pathname) {
             router.replace(fallback);
         }
-    }, [ready, isPublic, user, effectiveKey, hasAccess, fallback, pathname, router]);
+    }, [ready, isPublic, user, pageAllowed, fallback, pathname, router]);
 
     // Public pages (login) render bare.
     if (isPublic) {

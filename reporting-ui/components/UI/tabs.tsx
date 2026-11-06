@@ -11,12 +11,22 @@ const TabsContext = React.createContext<TabsContextType | null>(null);
 
 export function Tabs({
   defaultValue,
+  value: controlledValue,
+  onValueChange,
   children,
 }: {
-  defaultValue: string;
+  defaultValue?: string;
+  /** Controlled mode (e.g. tab kept in the URL). Omit for uncontrolled. */
+  value?: string;
+  onValueChange?: (value: string) => void;
   children: React.ReactNode;
 }) {
-  const [value, setValue] = React.useState(defaultValue);
+  const [innerValue, setInnerValue] = React.useState(defaultValue ?? "");
+  const value = controlledValue ?? innerValue;
+  const setValue = (next: string) => {
+    if (controlledValue === undefined) setInnerValue(next);
+    onValueChange?.(next);
+  };
 
   return (
     <TabsContext.Provider value={{ value, setValue }}>

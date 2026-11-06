@@ -114,6 +114,25 @@ export function pageKeyForPath(pathname: string): string | null {
     return hit?.key ?? null;
 }
 
+// Routes reachable by ANY of several page keys. Operations reporting hosts the
+// Deputy API and Deputy Insights tabs, so the page opens for a role that has
+// either permission (each tab is then gated by its own key in the page). This
+// needs no new role_permissions key / SQL migration.
+const PAGE_KEYS_ANY_OF: Record<string, string[]> = {
+    "/operations-reporting": ["deputy-api", "deputy-insights"],
+};
+
+/**
+ * Page keys that grant access to a route; access is allowed if the role has
+ * ANY of them. Single-key routes return a one-element list; unknown routes [].
+ */
+export function pageKeysForPath(pathname: string): string[] {
+    const seg = "/" + (pathname.split("/").filter(Boolean)[0] ?? "");
+    if (PAGE_KEYS_ANY_OF[seg]) return PAGE_KEYS_ANY_OF[seg];
+    const key = pageKeyForPath(pathname);
+    return key ? [key] : [];
+}
+
 // ----------------------------------------------------------------------
 // Password hashing (Web Crypto). SHA-256(salt + password) -> hex.
 // ----------------------------------------------------------------------

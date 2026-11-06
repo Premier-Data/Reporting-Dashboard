@@ -39,7 +39,7 @@ import {
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@/components/auth/AuthContext";
-import { pageKeyForPath, ROLE_LABELS } from "@/lib/api/auth";
+import { pageKeysForPath, ROLE_LABELS } from "@/lib/api/auth";
 import {
   getUnreadCount,
   subscribeToAllMessages,
@@ -184,14 +184,9 @@ const sections = [
         icon: BarChart3,
       },
       {
-        title: "Deputy API",
-        href: "/deputy-api",
+        title: "Operations reporting",
+        href: "/operations-reporting",
         icon: CalendarClock,
-      },
-      {
-        title: "Deputy Insights",
-        href: "/deputy-insights",
-        icon: BarChart3,
       },
       {
         title: "VN / Soccer",
@@ -319,7 +314,7 @@ export default function Sidebar({
       items: section.items.filter((item) =>
         "external" in item && item.external
           ? !!user
-          : hasAccess(pageKeyForPath(item.href))
+          : pageKeysForPath(item.href).some((k) => hasAccess(k))
       ),
     }))
     .filter((section) => section.items.length > 0);
@@ -392,7 +387,12 @@ export default function Sidebar({
 
                 const Icon = item.icon;
                 const isExternal = "external" in item && item.external;
-                const active = !isExternal && pathname.startsWith(item.href);
+                // Exact or nested match only: a bare startsWith would light up
+                // "Live Board" (/operations) on /operations-reporting.
+                const active =
+                  !isExternal &&
+                  (pathname === item.href ||
+                    pathname.startsWith(item.href + "/"));
 
                 const baseClass = `
                   flex items-center gap-3 rounded-lg px-3 py-3 transition
