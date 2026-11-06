@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/UI/tabs";
 import { THEME } from "@/lib/theme";
 import DeputyApiView from "@/components/deputy/DeputyApiView";
 import DeputyInsightsView from "@/components/deputy/DeputyInsightsView";
+import GamesWeeklyView from "@/components/operations/GamesWeeklyView";
 
 // Tab values double as the ?tab= query value (and match the old routes:
 // /deputy-api -> ?tab=deputy-api). Each tab is gated by its own page key, so a
@@ -14,6 +15,8 @@ import DeputyInsightsView from "@/components/deputy/DeputyInsightsView";
 const TABS = [
   { value: "deputy-api", label: "Deputy API", pageKey: "deputy-api" },
   { value: "deputy-insights", label: "Deputy Insights", pageKey: "deputy-insights" },
+  // Games rides on the deputy-insights key (no separate permission).
+  { value: "games", label: "Games", pageKey: "deputy-insights" },
 ] as const;
 
 function OperationsReportingTabs() {
@@ -54,6 +57,9 @@ function OperationsReportingTabs() {
         </TabsContent>
         <TabsContent value="deputy-insights">
           <DeputyInsightsView />
+        </TabsContent>
+        <TabsContent value="games">
+          <GamesWeeklyView />
         </TabsContent>
       </Tabs>
     </div>
