@@ -15,17 +15,19 @@ import GamesWeeklyView from "@/components/operations/GamesWeeklyView";
 const TABS = [
   { value: "deputy-api", label: "Deputy API", pageKey: "deputy-api" },
   { value: "deputy-insights", label: "Deputy Insights", pageKey: "deputy-insights" },
-  // Games rides on the deputy-insights key (no separate permission).
-  { value: "games", label: "Games", pageKey: "deputy-insights" },
+  // Games is super admin only (no role_permissions key).
+  { value: "games", label: "Games", pageKey: null, superAdminOnly: true },
 ] as const;
 
 function OperationsReportingTabs() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { hasAccess } = useAuth();
+  const { hasAccess, user } = useAuth();
 
-  const visible = TABS.filter((t) => hasAccess(t.pageKey));
+  const visible = TABS.filter((t) =>
+    "superAdminOnly" in t ? user?.role === "super_admin" : hasAccess(t.pageKey)
+  );
   if (visible.length === 0) return null;
 
   // Requested tab if the role may see it, otherwise the first allowed tab.

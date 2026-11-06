@@ -157,6 +157,8 @@ export default function GamesWeeklyView() {
     summary.push({ label: "AUS", vals: (w) => fmt(report.ausByWeek[w] ?? 0), total: fmt(report.totals.aus) });
   if (hasPhl)
     summary.push({ label: "PHL", vals: (w) => fmt(report.phlByWeek[w] ?? 0), total: fmt(report.totals.phl) });
+  if (report.totals.mixed > 0)
+    summary.push({ label: "Mixed", title: "Games with a mixed or unknown location", vals: (w) => fmt(report.mixedByWeek[w] ?? 0), total: fmt(report.totals.mixed) });
   if (hasAus)
     summary.push({
       label: "% AUS",
@@ -264,14 +266,7 @@ export default function GamesWeeklyView() {
         {report.excluded.placeholderHalfGames > 0 && (
           <p>
             {fmt(report.excluded.placeholderHalfGames)} game-equivalents allocated
-            to placeholders (Premier Data, ZZ) are left out of the analyst rows
-            but included in the summary rows.
-          </p>
-        )}
-        {report.totals.mixedOrOther > 0 && (
-          <p>
-            {report.totals.mixedOrOther} games with a mixed or unknown location
-            count only in Total games.
+            to ZZ are left out of the analyst rows but included in the summary rows.
           </p>
         )}
         {report.excluded.skippedRows > 0 && (

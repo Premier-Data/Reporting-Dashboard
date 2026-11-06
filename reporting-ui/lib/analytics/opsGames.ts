@@ -1,6 +1,5 @@
 // Pure aggregation for the Operations reporting "Games" tab.
 // No React / supabase imports so it can be unit tested directly.
-import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
 
 // ---- Tunable constants -------------------------------------------------
 // Weekly cell colour bands (games completed by one analyst in one week).
@@ -15,8 +14,8 @@ export const WEEK_BANDS: ReadonlyArray<{
   { min: 3, key: "amber", label: "3 to under 3.5" },
 ];
 
-// Allocation names that are placeholders rather than analysts (lowercase).
-// "PREMIER DATA" is handled by isExcludedAnalystName.
+// Allocation names left out of the analyst rows (lowercase). "PREMIER DATA" is
+// deliberately NOT here: it shows as a normal analyst row on this tab.
 export const PLACEHOLDER_ANALYSTS: readonly string[] = ["zz"];
 
 export type TTGameRow = {
@@ -47,12 +46,14 @@ export type OpsGamesReport = {
   totalsByWeek: Record<number, number>;
   ausByWeek: Record<number, number>;
   phlByWeek: Record<number, number>;
+  mixedByWeek: Record<number, number>;
   pctAusByWeek: Record<number, number | null>;
   totals: {
     all: number;
     aus: number;
     phl: number;
-    mixedOrOther: number;
+    mixed: number; // location neither clearly AUS nor PHL
+    mixedOrOther: number; // alias of mixed
     pctAus: number | null;
   };
   excluded: { placeholderHalfGames: number; skippedRows: number };
@@ -133,7 +134,7 @@ export function latestSeason(rows: TTGameRow[]): number | null {
 }
 
 function isPlaceholder(name: string): boolean {
-  return isExcludedAnalystName(name) || PLACEHOLDER_ANALYSTS.includes(name.toLowerCase());
+  return PLACEHOLDER_ANALYSTS.includes(name.trim().toLowerCase());
 }
 
 function weekNumber(r: TTGameRow): number | null {
@@ -147,6 +148,7 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
   const totalsByWeek: Record<number, number> = {};
   const ausByWeek: Record<number, number> = {};
   const phlByWeek: Record<number, number> = {};
+  const mixedByWeek: Record<number, number> = {};
   // week -> Saturday -> row count (for the label mode)
   const satVotes = new Map<number, Map<string, number>>();
   let skippedRows = 0;
@@ -198,7 +200,10 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
     } else if (loc === "PHL") {
       phlByWeek[week] = (phlByWeek[week] ?? 0) + 1;
       phl += 1;
-    } else mixedOrOther += 1;
+    } else {
+      mixedByWeek[week] = (mixedByWeek[week] ?? 0) + 1;
+      mixedOrOther += 1;
+    }
   }
 
   const weekNums = [...satVotes.keys()];
@@ -222,6 +227,7 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
       totalsByWeek[w] ??= 0;
       ausByWeek[w] ??= 0;
       phlByWeek[w] ??= 0;
+      mixedByWeek[w] ??= 0;
     }
   }
 
@@ -244,8 +250,9 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
     totalsByWeek,
     ausByWeek,
     phlByWeek,
+    mixedByWeek,
     pctAusByWeek,
-    totals: { all, aus, phl, mixedOrOther, pctAus: all > 0 ? aus / all : null },
+    totals: { all, aus, phl, mixed: mixedOrOther, mixedOrOther, pctAus: all > 0 ? aus / all : null },
     excluded: { placeholderHalfGames, skippedRows },
   };
 }

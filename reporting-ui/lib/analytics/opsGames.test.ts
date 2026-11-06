@@ -87,14 +87,16 @@ describe("buildOpsGamesReport", () => {
     expect(latestSeason([])).toBeNull();
   });
 
-  it("excludes placeholders from analysts but not from totals", () => {
+  it("keeps PREMIER DATA as an analyst row but excludes ZZ", () => {
     const r = buildOpsGamesReport(
-      [g({ home_allocated: "PREMIER DATA", away_allocated: "ZZ" }), g({ home_allocated: "A", away_allocated: "zz" })],
+      [g({ home_allocated: " premier  data ".replace("  ", " "), away_allocated: "ZZ" }), g({ home_allocated: "A", away_allocated: "zz" })],
       2026
     );
-    expect(r.analysts.map((a) => a.name)).toEqual(["A"]);
-    expect(r.excluded.placeholderHalfGames).toBe(3 * 0.5);
+    expect(r.analysts.map((a) => a.name.trim())).toEqual(["A", "premier data"]);
+    expect(r.analysts.find((a) => a.name.trim() === "premier data")!.total).toBe(0.5);
+    expect(r.excluded.placeholderHalfGames).toBe(2 * 0.5);
     expect(r.totalsByWeek[1]).toBe(2);
+    expect(r.totals.all).toBe(2);
   });
 
   it("splits locations and pct AUS", () => {
@@ -104,10 +106,26 @@ describe("buildOpsGamesReport", () => {
     );
     expect(r.ausByWeek[1]).toBe(1);
     expect(r.phlByWeek[1]).toBe(1);
-    expect(r.totals.mixedOrOther).toBe(2);
+    expect(r.mixedByWeek[1]).toBe(2);
+    expect(r.totals.mixed).toBe(2);
     expect(r.pctAusByWeek[1]).toBe(0.25);
   });
 
+  it("AUS + PHL + Mixed equals total per week and overall", () => {
+    const r = buildOpsGamesReport(
+      [
+        g({ Week: "1", Location: "AUS" }),
+        g({ Week: "1", Location: "PHL/ AUS" }),
+        g({ Week: "2", Location: "PHL" }),
+        g({ Week: "2", Location: "Elsewhere" }),
+        g({ Week: "3", Location: "AUS" }),
+      ],
+      2026
+    );
+    for (const w of r.weeks.map((x) => x.week))
+      expect(r.ausByWeek[w] + r.phlByWeek[w] + r.mixedByWeek[w]).toBe(r.totalsByWeek[w]);
+    expect(r.totals.aus + r.totals.phl + r.totals.mixed).toBe(r.totals.all);
+  });
   it("pct AUS is null for empty weeks", () => {
     const r = buildOpsGamesReport([g({ Week: "1" }), g({ Week: "3" })], 2026);
     expect(r.pctAusByWeek[2]).toBeNull();
