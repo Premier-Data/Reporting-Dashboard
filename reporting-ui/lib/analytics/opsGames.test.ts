@@ -148,3 +148,18 @@ describe("helpers", () => {
     expect(totalScale(5, 5, 5)).toBe(1);
   });
 });
+
+describe("week boundary end to end", () => {
+  it("keeps a Sunday game in the preceding Saturday's week and labels it", () => {
+    const rows = [
+      g({ Date: "2026-06-03", Week: "11", home_allocated: "A", away_allocated: "A" }),
+      g({ Date: "2026-06-07", Week: "11", home_allocated: "A", away_allocated: "A" }),
+      g({ Date: "2026-06-10", Week: "12", home_allocated: "A", away_allocated: "A" }),
+    ];
+    const r = buildOpsGamesReport(rows, 2026);
+    const a = r.analysts.find((x) => x.name === "A")!;
+    expect(a.weekly[11]).toBe(2);
+    expect(a.weekly[12]).toBe(1);
+    expect(r.weeks.find((w) => w.week === 11)!.saturday).toBe("2026-06-06");
+  });
+});
