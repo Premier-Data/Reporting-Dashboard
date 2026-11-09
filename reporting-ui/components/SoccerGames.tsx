@@ -21,6 +21,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { supabase } from "@/lib/supabase";
+import { buildWeekOneAnchors, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
 import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
@@ -34,8 +35,6 @@ const THEME = {
   muted: "#94a3b8",
 };
 const PALETTE = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#ef4444", "#14b8a6"];
-
-const DAY = 86400000;
 
 export default function SoccerGames({
   ttData,
@@ -76,33 +75,9 @@ export default function SoccerGames({
   }, []);
 
   // Week-1 anchor (Wednesday on/before earliest Week 1 date) per season.
-  const anchors = useMemo(() => {
-    const min: Record<number, string> = {};
-    for (const r of ttData ?? []) {
-      const s = Number(r.season);
-      const w = Number(r.week ?? r.Week);
-      const iso = String(r.Date ?? "").slice(0, 10);
-      if (!Number.isFinite(s) || w !== 1 || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) continue;
-      if (!min[s] || iso < min[s]) min[s] = iso;
-    }
-    const out: Record<number, number> = {};
-    for (const [s, iso] of Object.entries(min)) {
-      const d = new Date(`${iso}T00:00:00Z`);
-      out[Number(s)] = d.getTime() - ((d.getUTCDay() - 3 + 7) % 7) * DAY;
-    }
-    return out;
-  }, [ttData]);
+  const anchors = useMemo(() => buildWeekOneAnchors(ttData), [ttData]);
 
-  const weekFor = (r: Row): number | null => {
-    const anchor = anchors[Number(r.season)];
-    const iso = String(r.Date ?? "").slice(0, 10);
-    if (anchor != null && /^\d{4}-\d{2}-\d{2}$/.test(iso)) {
-      const ms = new Date(`${iso}T00:00:00Z`).getTime();
-      return ms < anchor ? 0 : Math.floor((ms - anchor) / (7 * DAY)) + 1;
-    }
-    const w = Number(r.week);
-    return Number.isFinite(w) ? w : null;
-  };
+  const weekFor = (r: Row): number | null => soccerWeekFor(r, anchors);
 
   const seasonRows = useMemo(
     () => games.filter((r) => season === "all" || String(r.season) === season),

@@ -143,20 +143,43 @@ function weekNumber(r: TTGameRow): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGamesReport {
+/** Sport-neutral game used by the shared aggregation core. */
+export type GameEntry = {
+  week: number | null;
+  date: string | null; // yyyy-mm-dd
+  home: string | null;
+  away: string | null;
+  loc: string; // already-bucketed location key
+};
+
+export type GamesCore = {
+  weeks: OpsGamesWeek[];
+  analysts: OpsGamesAnalystRow[];
+  totalsByWeek: Record<number, number>;
+  locByWeek: Record<string, Record<number, number>>;
+  locTotals: Record<string, number>;
+  all: number;
+  excluded: { placeholderHalfGames: number; skippedRows: number };
+};
+
+/**
+ * Shared core: each side of a game is worth 0.5 for its analyst (same analyst
+ * on both sides = 1). Week columns span min..max week seen, labelled by the
+ * most common week-ending Saturday of that week's game dates.
+ */
+export function aggregateGames(entries: GameEntry[], locKeys: readonly string[] = []): GamesCore {
   const byName = new Map<string, OpsGamesAnalystRow>();
   const totalsByWeek: Record<number, number> = {};
-  const ausByWeek: Record<number, number> = {};
-  const phlByWeek: Record<number, number> = {};
-  const mixedByWeek: Record<number, number> = {};
-  // week -> Saturday -> row count (for the label mode)
+  const locByWeek: Record<string, Record<number, number>> = {};
+  const locTotals: Record<string, number> = {};
+  for (const k of locKeys) {
+    locByWeek[k] = {};
+    locTotals[k] = 0;
+  }
   const satVotes = new Map<number, Map<string, number>>();
   let skippedRows = 0;
   let placeholderHalfGames = 0;
   let all = 0;
-  let aus = 0;
-  let phl = 0;
-  let mixedOrOther = 0;
 
   const credit = (raw: string | null, week: number, side: "home" | "away") => {
     const name = (raw ?? "").trim();
@@ -175,35 +198,26 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
     a.weekly[week] = (a.weekly[week] ?? 0) + 0.5;
   };
 
-  for (const r of rows) {
-    if (seasonOf(r) !== season) continue;
-    const week = weekNumber(r);
-    const t = r.Date ? parseIso(r.Date) : null;
+  for (const r of entries) {
+    const week = r.week;
+    const t = r.date ? parseIso(r.date) : null;
     if (week === null || t === null) {
       skippedRows += 1;
       continue;
     }
-    const sat = saturdayOfWedTueWeek(r.Date as string);
+    const sat = saturdayOfWedTueWeek(r.date as string);
     let votes = satVotes.get(week);
     if (!votes) satVotes.set(week, (votes = new Map()));
     votes.set(sat, (votes.get(sat) ?? 0) + 1);
 
-    credit(r.home_allocated, week, "home");
-    credit(r.away_allocated, week, "away");
+    credit(r.home, week, "home");
+    credit(r.away, week, "away");
 
     totalsByWeek[week] = (totalsByWeek[week] ?? 0) + 1;
     all += 1;
-    const loc = normaliseLocation(r.Location);
-    if (loc === "AUS") {
-      ausByWeek[week] = (ausByWeek[week] ?? 0) + 1;
-      aus += 1;
-    } else if (loc === "PHL") {
-      phlByWeek[week] = (phlByWeek[week] ?? 0) + 1;
-      phl += 1;
-    } else {
-      mixedByWeek[week] = (mixedByWeek[week] ?? 0) + 1;
-      mixedOrOther += 1;
-    }
+    const lw = (locByWeek[r.loc] ??= {});
+    lw[week] = (lw[week] ?? 0) + 1;
+    locTotals[r.loc] = (locTotals[r.loc] ?? 0) + 1;
   }
 
   const weekNums = [...satVotes.keys()];
@@ -225,16 +239,8 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
       }
       weeks.push({ week: w, saturday, label: saturday ? formatSaturdayLabel(saturday) : `Week ${w}` });
       totalsByWeek[w] ??= 0;
-      ausByWeek[w] ??= 0;
-      phlByWeek[w] ??= 0;
-      mixedByWeek[w] ??= 0;
+      for (const lw of Object.values(locByWeek)) lw[w] ??= 0;
     }
-  }
-
-  const pctAusByWeek: Record<number, number | null> = {};
-  for (const w of weeks) {
-    const tot = totalsByWeek[w.week];
-    pctAusByWeek[w.week] = tot > 0 ? ausByWeek[w.week] / tot : null;
   }
 
   const analysts = [...byName.values()];
@@ -244,15 +250,55 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
   );
 
   return {
-    season,
     weeks,
     analysts,
     totalsByWeek,
-    ausByWeek,
-    phlByWeek,
-    mixedByWeek,
-    pctAusByWeek,
-    totals: { all, aus, phl, mixed: mixedOrOther, mixedOrOther, pctAus: all > 0 ? aus / all : null },
+    locByWeek,
+    locTotals,
+    all,
     excluded: { placeholderHalfGames, skippedRows },
+  };
+}
+
+export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGamesReport {
+  const entries: GameEntry[] = [];
+  for (const r of rows) {
+    if (seasonOf(r) !== season) continue;
+    const loc = normaliseLocation(r.Location);
+    entries.push({
+      week: weekNumber(r),
+      date: r.Date,
+      home: r.home_allocated,
+      away: r.away_allocated,
+      loc: loc === "AUS" || loc === "PHL" ? loc : "MIXED",
+    });
+  }
+  const core = aggregateGames(entries, ["AUS", "PHL", "MIXED"]);
+  const { weeks, totalsByWeek } = core;
+  const ausByWeek = core.locByWeek.AUS;
+  const pctAusByWeek: Record<number, number | null> = {};
+  for (const w of weeks) {
+    const tot = totalsByWeek[w.week];
+    pctAusByWeek[w.week] = tot > 0 ? ausByWeek[w.week] / tot : null;
+  }
+  const aus = core.locTotals.AUS;
+  return {
+    season,
+    weeks,
+    analysts: core.analysts,
+    totalsByWeek,
+    ausByWeek,
+    phlByWeek: core.locByWeek.PHL,
+    mixedByWeek: core.locByWeek.MIXED,
+    pctAusByWeek,
+    totals: {
+      all: core.all,
+      aus,
+      phl: core.locTotals.PHL,
+      mixed: core.locTotals.MIXED,
+      mixedOrOther: core.locTotals.MIXED,
+      pctAus: core.all > 0 ? aus / core.all : null,
+    },
+    excluded: core.excluded,
   };
 }

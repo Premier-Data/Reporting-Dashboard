@@ -1,7 +1,9 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { THEME } from "@/lib/theme";
 import { fetchTTGamesForOps } from "@/lib/api/ttGames";
+import { fetchSoccerGamesForOps } from "@/lib/api/soccerGames";
 import {
   WEEK_BANDS,
   bandForWeekValue,
@@ -9,11 +11,36 @@ import {
   latestSeason,
   seasonsFromGames,
   totalScale,
+  type OpsGamesAnalystRow,
+  type OpsGamesWeek,
   type TTGameRow,
   type WeekBand,
 } from "@/lib/analytics/opsGames";
+import {
+  MIXED_KEY,
+  buildSoccerOpsReport,
+  soccerSeasons,
+  type SoccerGameRow,
+} from "@/lib/analytics/opsSoccer";
 
 type SortKey = "name" | "total" | `w${number}`;
+type Sport = "aussie" | "soccer";
+
+type SummaryRow = {
+  label: string;
+  title?: string;
+  vals: (w: number) => string;
+  total: string;
+};
+
+/** Everything the grid needs, independent of sport. */
+type GridModel = {
+  season: number;
+  weeks: OpsGamesWeek[];
+  analysts: OpsGamesAnalystRow[];
+  summary: SummaryRow[];
+  excluded: { placeholderHalfGames: number; skippedRows: number };
+};
 
 const BAND_STYLE: Record<WeekBand, { bg: string; fg: string }> = {
   blue: { bg: "#1d4ed8", fg: "#ffffff" },
@@ -33,118 +60,80 @@ const cellBase = {
   borderBottom: `1px solid ${THEME.border}`,
 };
 
+const box = { padding: 24, color: THEME.text };
+
 export default function GamesWeeklyView() {
-  const [rows, setRows] = useState<TTGameRow[] | null>(null);
+  const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const sport: Sport = searchParams.get("sport") === "soccer" ? "soccer" : "aussie";
+
+  const setSport = (s: Sport) =>
+    router.replace(
+      s === "soccer" ? `${pathname}?tab=games&sport=soccer` : `${pathname}?tab=games`,
+      { scroll: false }
+    );
+
+  return (
+    <div>
+      {/* Sport sub-tabs, same style as Reporting > TT Games. */}
+      <div style={{ padding: "16px 24px 0" }}>
+        <div
+          role="group"
+          aria-label="Sport"
+          className="inline-flex rounded-lg border border-slate-300 bg-white p-1"
+        >
+          {(["aussie", "soccer"] as const).map((s) => (
+            <button
+              key={s}
+              type="button"
+              aria-pressed={sport === s}
+              onClick={() => setSport(s)}
+              className={`rounded-md px-4 py-1.5 text-sm font-semibold ${
+                sport === s ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-100"
+              }`}
+            >
+              {s === "aussie" ? "Aussie Rules" : "Soccer"}
+            </button>
+          ))}
+        </div>
+      </div>
+      {sport === "aussie" ? <AussieGames /> : <SoccerOpsGames />}
+    </div>
+  );
+}
+
+/** Loads rows once (and again on retry). Soccer mounts lazily so it only fetches when opened. */
+function useLoader<T>(loader: () => Promise<T>) {
+  const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [season, setSeason] = useState<number | null>(null);
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
-    key: "name",
-    dir: "asc",
-  });
-
   const [attempt, setAttempt] = useState(0);
-
   useEffect(() => {
     let cancelled = false;
-    fetchTTGamesForOps()
-      .then((r) => {
-        if (cancelled) return;
-        setRows(r);
-        setSeason((s) => s ?? latestSeason(r));
+    loader()
+      .then((d) => {
+        if (!cancelled) setData(d);
       })
       .catch((e: unknown) => {
-        if (!cancelled)
-          setError(e instanceof Error ? e.message : "Failed to load games");
+        if (!cancelled) setError(e instanceof Error ? e.message : "Failed to load games");
       });
     return () => {
       cancelled = true;
     };
+    // loader is a stable module-level function
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt]);
-
-  const load = () => {
-    setRows(null);
+  const reload = useCallback(() => {
+    setData(null);
     setError(null);
     setAttempt((n) => n + 1);
-  };
-  const seasons = useMemo(() => (rows ? seasonsFromGames(rows) : []), [rows]);
-  const report = useMemo(
-    () => (rows && season !== null ? buildOpsGamesReport(rows, season) : null),
-    [rows, season]
-  );
+  }, []);
+  return { data, error, reload };
+}
 
-  const sorted = useMemo(() => {
-    if (!report) return [];
-    const list = [...report.analysts];
-    const m = sort.dir === "asc" ? 1 : -1;
-    if (sort.key === "name") return sort.dir === "asc" ? list : list.reverse();
-    const val = (a: (typeof list)[number]) =>
-      sort.key === "total" ? a.total : a.weekly[Number(sort.key.slice(1))] ?? 0;
-    return list.sort(
-      (a, b) => m * (val(a) - val(b)) || a.name.localeCompare(b.name)
-    );
-  }, [report, sort]);
-
-  const range = useMemo(() => {
-    const t = sorted.map((a) => a.total);
-    return { min: t.length ? Math.min(...t) : 0, max: t.length ? Math.max(...t) : 0 };
-  }, [sorted]);
-
-  const toggle = (key: SortKey) =>
-    setSort((s) =>
-      s.key === key
-        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "name" ? "asc" : "desc" }
-    );
-
-  const ariaSort = (key: SortKey) =>
-    sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none";
-
-  const box = { padding: 24, color: THEME.text };
-
-  if (error)
-    return (
-      <div role="alert" style={box}>
-        <p style={{ color: THEME.bad }}>Could not load games: {error}</p>
-        <button
-          onClick={load}
-          style={{ marginTop: 8, padding: "4px 12px", border: `1px solid ${THEME.border}`, borderRadius: 4 }}
-        >
-          Retry
-        </button>
-      </div>
-    );
-  if (!rows) return <div role="status" style={box}>Loading games...</div>;
-  if (!report || report.weeks.length === 0)
-    return (
-      <div style={box}>
-        <SeasonSelect seasons={seasons} season={season} onChange={setSeason} />
-        <p style={{ marginTop: 12, color: THEME.muted }}>
-          No games for season {season ?? "\u2013"}.
-        </p>
-      </div>
-    );
-
-  const stickyHead = (extra: React.CSSProperties = {}): React.CSSProperties => ({
-    ...cellBase,
-    position: "sticky",
-    top: 0,
-    background: THEME.panelSoft,
-    color: THEME.muted,
-    fontWeight: 600,
-    zIndex: 2,
-    ...extra,
-  });
-  const nameCell = (head = false): React.CSSProperties => ({
-    ...cellBase,
-    textAlign: "left",
-    position: "sticky",
-    left: 0,
-    minWidth: NAME_W,
-    background: head ? THEME.panelSoft : THEME.panel,
-    zIndex: head ? 3 : 1,
-  });
-
-  const summary: { label: string; title?: string; vals: (w: number) => string; total: string }[] = [
+function aussieModel(rows: TTGameRow[], season: number): GridModel {
+  const report = buildOpsGamesReport(rows, season);
+  const summary: SummaryRow[] = [
     {
       label: "Total games",
       vals: (w) => fmt(report.totalsByWeek[w] ?? 0),
@@ -166,11 +155,202 @@ export default function GamesWeeklyView() {
       vals: (w) => pct(report.pctAusByWeek[w] ?? null),
       total: pct(report.totals.pctAus),
     });
+  return { season, weeks: report.weeks, analysts: report.analysts, summary, excluded: report.excluded };
+}
+
+function soccerModel(rows: SoccerGameRow[], tt: TTGameRow[], season: number): GridModel {
+  const report = buildSoccerOpsReport(rows, tt as unknown as Record<string, unknown>[], season);
+  const summary: SummaryRow[] = [
+    {
+      label: "Total games",
+      vals: (w) => fmt(report.totalsByWeek[w] ?? 0),
+      total: fmt(report.totals.all),
+    },
+    // No "% AUS" row for soccer (VN dominates, so it is not meaningful).
+    ...report.locations.map((l) => ({
+      label: l.key,
+      title: l.key === MIXED_KEY ? "Games with a mixed or unrecognised location (e.g. AUS/ VN)" : undefined,
+      vals: (w: number) => fmt(l.byWeek[w] ?? 0),
+      total: fmt(l.total),
+    })),
+  ];
+  return { season, weeks: report.weeks, analysts: report.analysts, summary, excluded: report.excluded };
+}
+
+function AussieGames() {
+  const { data: rows, error, reload } = useLoader(fetchTTGamesForOps);
+  const [season, setSeason] = useState<number | null>(null);
+  useEffect(() => {
+    if (rows) setSeason((s) => s ?? latestSeason(rows));
+  }, [rows]);
+  const seasons = useMemo(() => (rows ? seasonsFromGames(rows) : []), [rows]);
+  const model = useMemo(
+    () => (rows && season !== null ? aussieModel(rows, season) : null),
+    [rows, season]
+  );
+  return (
+    <GamesGrid
+      loaded={!!rows}
+      error={error}
+      onRetry={reload}
+      seasons={seasons}
+      season={season}
+      onSeason={setSeason}
+      model={model}
+      emptyLabel="games"
+      footnote={
+        <>
+          Weeks follow the sheet&apos;s Week column and are labelled by their
+          week-ending Saturday. A game is worth 0.5 per team side. Total Games = (Home + Away) / 2.
+        </>
+      }
+    />
+  );
+}
+
+// Soccer needs TT rows as well, only to anchor each season's Week 1 so the
+// weeks match the Reporting > Soccer Games card.
+const loadSoccerBundle = async () => {
+  const [soccer, tt] = await Promise.all([fetchSoccerGamesForOps(), fetchTTGamesForOps()]);
+  return { soccer, tt };
+};
+
+function SoccerOpsGames() {
+  const { data, error, reload } = useLoader(loadSoccerBundle);
+  const [season, setSeason] = useState<number | null>(null);
+  useEffect(() => {
+    if (data) setSeason((s) => s ?? soccerSeasons(data.soccer)[0] ?? null);
+  }, [data]);
+  const seasons = useMemo(() => (data ? soccerSeasons(data.soccer) : []), [data]);
+  const model = useMemo(
+    () => (data && season !== null ? soccerModel(data.soccer, data.tt, season) : null),
+    [data, season]
+  );
+  return (
+    <GamesGrid
+      loaded={!!data}
+      error={error}
+      onRetry={reload}
+      seasons={seasons}
+      season={season}
+      onSeason={setSeason}
+      model={model}
+      emptyLabel="soccer games"
+      footnote={
+        <>
+          Soccer weeks follow the Reporting Soccer Games card: Week 1 starts on the Wednesday on or
+          before the season&apos;s first Aussie Rules Week 1 date, earlier games are Week 0, and
+          columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side.
+          Total Games = (Home + Away) / 2. Location rows plus Mixed add up to Total games.
+        </>
+      }
+    />
+  );
+}
+
+function GamesGrid({
+  loaded,
+  error,
+  onRetry,
+  seasons,
+  season,
+  onSeason,
+  model,
+  emptyLabel,
+  footnote,
+}: {
+  loaded: boolean;
+  error: string | null;
+  onRetry: () => void;
+  seasons: number[];
+  season: number | null;
+  onSeason: (s: number) => void;
+  model: GridModel | null;
+  emptyLabel: string;
+  footnote: React.ReactNode;
+}) {
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
+    key: "name",
+    dir: "asc",
+  });
+
+  const sorted = useMemo(() => {
+    if (!model) return [];
+    const list = [...model.analysts];
+    const m = sort.dir === "asc" ? 1 : -1;
+    if (sort.key === "name") return sort.dir === "asc" ? list : list.reverse();
+    const val = (a: (typeof list)[number]) =>
+      sort.key === "total" ? a.total : a.weekly[Number(sort.key.slice(1))] ?? 0;
+    return list.sort(
+      (a, b) => m * (val(a) - val(b)) || a.name.localeCompare(b.name)
+    );
+  }, [model, sort]);
+
+  const range = useMemo(() => {
+    const t = sorted.map((a) => a.total);
+    return { min: t.length ? Math.min(...t) : 0, max: t.length ? Math.max(...t) : 0 };
+  }, [sorted]);
+
+  const toggle = (key: SortKey) =>
+    setSort((s) =>
+      s.key === key
+        ? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+        : { key, dir: key === "name" ? "asc" : "desc" }
+    );
+
+  const ariaSort = (key: SortKey) =>
+    sort.key === key ? (sort.dir === "asc" ? "ascending" : "descending") : "none";
+
+  if (error)
+    return (
+      <div role="alert" style={box}>
+        <p style={{ color: THEME.bad }}>Could not load games: {error}</p>
+        <button
+          onClick={onRetry}
+          style={{ marginTop: 8, padding: "4px 12px", border: `1px solid ${THEME.border}`, borderRadius: 4 }}
+        >
+          Retry
+        </button>
+      </div>
+    );
+  if (!loaded) return <div role="status" style={box}>Loading games...</div>;
+  if (!model || model.weeks.length === 0)
+    return (
+      <div style={box}>
+        <SeasonSelect seasons={seasons} season={season} onChange={onSeason} />
+        <p style={{ marginTop: 12, color: THEME.muted }}>
+          No {emptyLabel} for season {season ?? "\u2013"}.
+        </p>
+      </div>
+    );
+
+  const report = model;
+  const summary = model.summary;
+
+  const stickyHead = (extra: React.CSSProperties = {}): React.CSSProperties => ({
+    ...cellBase,
+    position: "sticky",
+    top: 0,
+    background: THEME.panelSoft,
+    color: THEME.muted,
+    fontWeight: 600,
+    zIndex: 2,
+    ...extra,
+  });
+  const nameCell = (head = false): React.CSSProperties => ({
+    ...cellBase,
+    textAlign: "left",
+    position: "sticky",
+    left: 0,
+    minWidth: NAME_W,
+    background: head ? THEME.panelSoft : THEME.panel,
+    zIndex: head ? 3 : 1,
+  });
 
   return (
     <div style={{ padding: 24, color: THEME.text }}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", marginBottom: 12 }}>
-        <SeasonSelect seasons={seasons} season={season} onChange={setSeason} />
+        <SeasonSelect seasons={seasons} season={season} onChange={onSeason} />
         <ul aria-label="Colour legend" style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: 12, listStyle: "none", padding: 0, margin: 0 }}>
           {WEEK_BANDS.map((b) => (
             <li key={b.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
@@ -259,10 +439,7 @@ export default function GamesWeeklyView() {
       </div>
 
       <div style={{ marginTop: 8, fontSize: 12, color: THEME.muted }}>
-        <p>
-          Weeks follow the sheet&apos;s Week column and are labelled by their
-          week-ending Saturday. A game is worth 0.5 per team side. Total Games = (Home + Away) / 2.
-        </p>
+        <p>{footnote}</p>
         {report.excluded.placeholderHalfGames > 0 && (
           <p>
             {fmt(report.excluded.placeholderHalfGames)} game-equivalents allocated
@@ -324,5 +501,3 @@ function SeasonSelect({
     </label>
   );
 }
-
-
