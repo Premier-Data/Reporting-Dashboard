@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 import {
   ResponsiveContainer,
   BarChart,
@@ -80,6 +81,8 @@ export default function TTGames({ data }: { data: any[] }) {
   const rows = useMemo(() => {
     return (data ?? []).map((r) => ({
       week: String(r.week ?? r.Week ?? "").trim(),
+      date: r.Date,
+      season: r.season,
       month: norm(r.column11 ?? r.Column11),
       home: norm(r.home_allocated),
       away: norm(r.away_allocated),
@@ -94,6 +97,8 @@ export default function TTGames({ data }: { data: any[] }) {
     const set = new Set(rows.map((r) => r.week).filter(Boolean));
     return Array.from(set).sort((a, b) => Number(a) - Number(b));
   }, [rows]);
+
+  const weekRanges = useMemo(() => buildWeekRanges(rows), [rows]);
 
   const MONTH_ORDER = [
     "january","february","march","april","may","june",
@@ -274,7 +279,7 @@ export default function TTGames({ data }: { data: any[] }) {
           <option value="all">All Weeks</option>
           {weeks.map((w) => (
             <option key={w} value={w}>
-              Week {w}
+              {weekOptionLabel(`Week ${w}`, weekRanges.get(w))}
             </option>
           ))}
         </select>

@@ -21,6 +21,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { supabase } from "@/lib/supabase";
+import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
 
@@ -113,6 +114,8 @@ export default function SoccerGames({
       seasonRows
         .map((r) => ({
           week: weekFor(r),
+          date: r.Date,
+          season: r.season,
           loc: String(r.Location ?? "").trim().toUpperCase() || "Unknown",
         }))
         .filter((r) => r.week != null) as { week: number; loc: string }[],
@@ -124,6 +127,7 @@ export default function SoccerGames({
     () => [...new Set(rows.map((r) => r.week))].sort((a, b) => a - b),
     [rows]
   );
+  const weekRanges = useMemo(() => buildWeekRanges(rows), [rows]);
   const locations = useMemo(() => [...new Set(rows.map((r) => r.loc))].sort(), [rows]);
 
   // Reset an out-of-range week when the season changes.
@@ -185,7 +189,7 @@ export default function SoccerGames({
           <option value="all">All Weeks</option>
           {weeks.map((w) => (
             <option key={w} value={w}>
-              {weekLabel(w)}
+              {weekOptionLabel(weekLabel(w), weekRanges.get(String(w)))}
             </option>
           ))}
         </select>

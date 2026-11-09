@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState, useEffect } from "react";
+import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 import {
   BarChart,
   Bar,
@@ -17,6 +18,11 @@ export default function CostByArea({ data }: { data: any[] }) {
   // -------------------------
   // GET ALL AVAILABLE WEEKS
   // -------------------------
+  const weekRanges = useMemo(
+    () => buildWeekRanges((data ?? []).map((r) => ({ week: r.week, date: r.shift_date }))),
+    [data]
+  );
+
   const weeks = useMemo(() => {
     const uniqueWeeks = Array.from(
       new Set(
@@ -147,7 +153,7 @@ export default function CostByArea({ data }: { data: any[] }) {
 
           {weeks.map((week) => (
             <option key={week} value={week}>
-              {week}
+              {weekOptionLabel(/^\d+$/.test(week) ? `Week ${week}` : week, weekRanges.get(week))}
             </option>
           ))}
         </select>

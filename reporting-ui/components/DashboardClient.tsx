@@ -4,6 +4,7 @@ import { useMemo, useState, useEffect } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { calculateKPIs } from "@/lib/analytics";
+import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 // Chart components pull in recharts (a heavy dependency). Load them lazily so
 // recharts stays out of the dashboard's initial bundle and only downloads when
@@ -174,6 +175,17 @@ export default function DashboardClient({
     }
     return [...set].sort((a, b) => Number(a) - Number(b));
   }, [seasonDeputy, seasonTT]);
+
+  // Date span of each week, for the dropdown labels (plain "Week N" when the
+  // season is "all" and a week number spans several seasons).
+  const weekRanges = useMemo(
+    () =>
+      buildWeekRanges([
+        ...seasonDeputy.map((r) => ({ week: r.week, date: r.shift_date })),
+        ...seasonTT.map((r) => ({ week: r.week ?? r.Week, date: r.Date, season: r.season })),
+      ]),
+    [seasonDeputy, seasonTT]
+  );
 
   // Week numbers mean different dates per season, so reset the week filter to
   // "all" whenever the season changes (a stale "W5" from another season would
@@ -401,7 +413,7 @@ export default function DashboardClient({
                 <option value="all">All weeks</option>
                 {weekOptions.map((w) => (
                   <option key={w} value={w}>
-                    Week {w}
+                    {weekOptionLabel(`Week ${w}`, weekRanges.get(w))}
                   </option>
                 ))}
               </select>
