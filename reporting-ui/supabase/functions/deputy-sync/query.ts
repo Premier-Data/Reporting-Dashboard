@@ -32,6 +32,36 @@ export function buildQuery(opts: {
   return { search, start: opts.start, max: opts.max, sort: { Id: "asc" } };
 }
 
+// Add one calendar day to a yyyy-mm-dd date. Pure UTC date arithmetic on the
+// date parts, so there is no timezone shift. Returns null for a malformed or
+// non-existent date (e.g. 2026-02-31).
+//
+// Why it exists: Deputy's range filter used above is `Date lt <to>` (exclusive).
+// Callers (the nightly cron, the Reload button, manual runs) pass an INCLUSIVE
+// endDate meaning "up to and including this day", so the function sends
+// Deputy the day AFTER endDate. Without this, today's shifts were never fetched.
+export function nextDay(isoDate: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  // Reject dates JS silently normalised (2026-02-31 -> 3 Mar, year 0026 -> 1926).
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== mo - 1 ||
+    dt.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  const yy = String(dt.getUTCFullYear()).padStart(4, "0");
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
 // Decide whether to keep paging: stop when a page returns fewer than `max`
 // rows, or is empty. Never relies on a total-count field (not guaranteed).
 export function hasMorePages(pageLen: number, max: number): boolean {

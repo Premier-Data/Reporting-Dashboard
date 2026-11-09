@@ -19,6 +19,7 @@ import {
   dedupeByDeputyId,
   isRetryable,
   backoffMs,
+  nextDay,
 } from "../../supabase/functions/deputy-sync/query";
 
 // ── Scalar coercion ──────────────────────────────────────────────────────────
@@ -181,3 +182,45 @@ describe("retry policy", () => {
   });
 });
 
+
+// ── Inclusive end date ───────────────────────────────────────────────────────
+// Deputy's range filter is `Date lt <to>` (exclusive), but callers (nightly
+// cron, Reload, manual runs) pass an INCLUSIVE endDate. The function sends
+// Deputy nextDay(endDate), otherwise "today" is never fetched.
+describe("nextDay (makes the exclusive Deputy upper bound inclusive)", () => {
+  it("adds one day", () => {
+    expect(nextDay("2026-11-09")).toBe("2026-11-10");
+  });
+
+  it("rolls over month and year ends", () => {
+    expect(nextDay("2026-11-30")).toBe("2026-12-01");
+    expect(nextDay("2026-12-31")).toBe("2027-01-01");
+  });
+
+  it("handles leap years", () => {
+    expect(nextDay("2028-02-28")).toBe("2028-02-29");
+    expect(nextDay("2028-02-29")).toBe("2028-03-01");
+    expect(nextDay("2026-02-28")).toBe("2026-03-01");
+  });
+
+  it("returns null for malformed or non-existent dates", () => {
+    expect(nextDay("2026-02-31")).toBeNull();
+    expect(nextDay("2026-13-01")).toBeNull();
+    expect(nextDay("not-a-date")).toBeNull();
+    expect(nextDay("2026-1-5")).toBeNull();
+    expect(nextDay("")).toBeNull();
+  });
+
+  it("an inclusive endDate of 'today' yields a Deputy upper bound that includes today", () => {
+    // Regression: endDate 2026-11-09 used to be sent as `Date lt 2026-11-09`,
+    // which excluded Monday 9 Nov's shifts entirely.
+    const q = buildQuery({
+      start: 0,
+      max: 500,
+      dateField: "Date",
+      from: "2026-10-27",
+      to: nextDay("2026-11-09") ?? undefined,
+    });
+    expect(q.search?.s3).toEqual({ field: "Date", type: "lt", data: "2026-11-10" });
+  });
+});

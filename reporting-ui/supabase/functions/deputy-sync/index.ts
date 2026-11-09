@@ -33,6 +33,7 @@ import {
   dedupeByDeputyId,
   isRetryable,
   backoffMs,
+  nextDay,
 } from "./query.ts";
 import { RESOURCE_MAP, type Json } from "./mappers.ts";
 
@@ -140,7 +141,13 @@ async function syncResource(
         max: PAGE_SIZE,
         dateField: cfg.dateField,
         from: cfg.dateField ? body.startDate : undefined,
-        to: cfg.dateField ? body.endDate : undefined,
+        // endDate is INCLUSIVE for callers, but Deputy's filter is `Date < to`,
+        // so send the day after. (Passing endDate straight through meant a
+        // sync never fetched today's shifts.) Dates were validated up front.
+        to:
+          cfg.dateField && body.endDate
+            ? nextDay(body.endDate) ?? undefined
+            : undefined,
       });
       const raw = await fetchPage(base, token, cfg.deputyResource, q);
       read += raw.length;
@@ -237,7 +244,9 @@ Deno.serve(async (req: Request) => {
   // Validate dates (yyyy-mm-dd) if supplied.
   const dateRe = /^\d{4}-\d{2}-\d{2}$/;
   for (const d of [body.startDate, body.endDate]) {
-    if (d != null && !dateRe.test(d)) return json({ error: "invalid_date", value: d }, 400);
+    if (d != null && (!dateRe.test(d) || nextDay(d) === null)) {
+      return json({ error: "invalid_date", value: d }, 400);
+    }
   }
 
   const supabase = createClient(supaUrl, serviceKey, {
