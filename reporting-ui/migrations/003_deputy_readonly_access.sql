@@ -16,8 +16,11 @@
 --     and a small connection limit.
 --   * The view runs with its OWNER's rights (the Postgres default, i.e. NOT
 --     security_invoker), so the reader needs no grant on deputy.* at all.
---   * PAY IS DELIBERATELY NOT EXPOSED (no cost / on_cost columns). Add them to
---     the view only if the developer genuinely needs wages.
+--   * PAY IS EXPOSED: total_pay is Deputy's calculated cost for the shift (the
+--     same "Total Pay" the dashboard shows). Together with employee_name this is
+--     named-employee wage data, so protect the credentials accordingly and
+--     rotate the password if it ever leaks. (The first version of this view had
+--     no pay column; it was added at the end of the column list later.)
 --   * NO PASSWORD IS STORED IN THIS FILE. The role is created NOLOGIN. Enable it
 --     with a password in a separate step that is never committed (see bottom).
 --
@@ -37,6 +40,8 @@ revoke all on schema deputy_export from public, anon, authenticated;
 -- display name, then the raw id. Dates: shift_date is the Australia/Sydney
 -- calendar date of the shift; start_at / end_at are exact instants (timestamptz).
 -- modified_at is Deputy's last-modified time, useful for incremental pulls.
+-- total_pay is Deputy's Cost for the shift (AUD), kept as the LAST column so
+-- that create or replace view can add it without recreating the view.
 create or replace view deputy_export.approved_shifts as
 select
   t.deputy_id                                         as shift_id,
@@ -56,7 +61,8 @@ select
     t.operational_unit_deputy_id
   )                                                   as area_name,
   coalesce(t.is_leave, false)                         as is_leave,
-  t.source_modified_at                                as modified_at
+  t.source_modified_at                                as modified_at,
+  t.cost                                              as total_pay
 from deputy.timesheets t
 left join deputy.employees e
   on e.deputy_id = t.employee_deputy_id
@@ -100,6 +106,8 @@ commit;
 --   grant deputy_reader to postgres;   -- lets you SET ROLE in the editor
 --   set role deputy_reader;
 --   select count(*) from deputy_export.approved_shifts;   -- works
+--   select shift_date, employee_name, hours, total_pay
+--     from deputy_export.approved_shifts order by shift_date desc limit 5;  -- pay visible
 --   select * from deputy.timesheets limit 1;              -- must FAIL: permission denied
 --   select * from public.user_accounts limit 1;           -- must FAIL: permission denied
 --   insert into deputy_export.approved_shifts (shift_id) values ('x');  -- must FAIL
