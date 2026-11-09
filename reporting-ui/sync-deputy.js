@@ -531,6 +531,20 @@ function completionDateFor(completion, date, home, away) {
   return completion.byHomeAway.get(`${h}|${a}`) ?? null;
 }
 
+// Builds a unique, deterministic game_key for a SoccerData row.
+// The key includes Competition and Round so that double round-robin
+// tournaments (same two teams meeting twice on one date in different rounds)
+// are not collapsed into one row. `seen` is a per-parse Map used to number
+// truly identical rows in sheet order: the 1st occurrence has no suffix, the
+// 2nd gets "#2", the 3rd "#3"... so keys stay stable across syncs as long as
+// the sheet order of those identical rows is unchanged.
+function makeSoccerGameKey({ date, competition, round, home, away }, seen) {
+  const base = [date, competition ?? "-", round ?? "-", home, away].join("_");
+  const n = (seen.get(base) ?? 0) + 1;
+  seen.set(base, n);
+  return n === 1 ? base : `${base}#${n}`;
+}
+
 function parseSoccerData(buffer, completion) {
   const workbook = XLSX.read(buffer, { type: "buffer" });
   const sheet = getSheetExact(workbook, "SoccerData");
@@ -551,13 +565,29 @@ function parseSoccerData(buffer, completion) {
 
   let skipped = 0;
   let matched = 0;
-  const parsed = rows
-    .slice(1)
-    .filter(r => r && r.length)
-    .map(r => {
+  const skippedExamples = [];
+  const seenKeys = new Map();
+  const dataRows = rows.slice(1).filter(r => r && r.length);
+  const parsed = dataRows
+    .map((r, idx) => {
       const date = excelDateToJS(r[0]);
       const home_team = clean(r[3]);
       const away_team = clean(r[4]);
+      const competition = clean(r[1]);
+      const round = r[2] == null || r[2] === "" ? null : String(r[2]);
+      // Sheet row number (1-based, header is row 1) is approximate if blank
+      // rows were filtered out above; good enough to locate the problem.
+      const sheetRow = idx + 2;
+      const valid = date && home_team && away_team;
+      if (!valid) {
+        skipped++;
+        if (skippedExamples.length < 10) {
+          skippedExamples.push(
+            `row ${sheetRow}: date=${date} home=${home_team} away=${away_team}`
+          );
+        }
+        return null;
+      }
       // Completion date (when the fixture was actually finished), from the
       // Completion Times sheet. Null when unmatched → excluded from the
       // "completed each week" view. season/week are DERIVED from this date,
@@ -568,10 +598,13 @@ function parseSoccerData(buffer, completion) {
         : null;
       if (completed_date) matched++;
       return {
-        game_key: `${date}_${home_team}_${away_team}`,
+        game_key: makeSoccerGameKey(
+          { date, competition, round, home: home_team, away: away_team },
+          seenKeys
+        ),
         Date: date,
-        Competition: clean(r[1]),
-        Round: r[2] == null || r[2] === "" ? null : String(r[2]),
+        Competition: competition,
+        Round: round,
         home_team,
         away_team,
         home_allocated: clean(r[5]),
@@ -587,15 +620,11 @@ function parseSoccerData(buffer, completion) {
         completed_week: completed_date ? seasonWeekFromDate(completed_date) : null,
       };
     })
-    .filter(row => {
-      if (!row.Date || !row.home_team || !row.away_team) {
-        skipped++;
-        return false;
-      }
-      return true;
-    });
+    .filter(Boolean);
 
-  console.log("Skipped malformed Soccer rows:", skipped);
+  console.log(`Soccer sheet rows read: ${dataRows.length}, parsed: ${parsed.length}`);
+  console.log("Skipped malformed Soccer rows (missing Date/Home/Away):", skipped);
+  skippedExamples.forEach(e => console.log("  skipped", e));
   console.log(`Soccer games with a completion date: ${matched} / ${parsed.length}`);
   console.log("First Parsed Soccer Row:", parsed[0]);
   return parsed;
@@ -1006,8 +1035,15 @@ async function sync() {
     // ----------------------
     const completion = parseCompletionTimes(buffer);
     let soccer = parseSoccerData(buffer, completion);
+    // Safety net: keys are unique per row now, so this should remove 0.
+    const soccerParsed = soccer.length;
     soccer = dedupe(soccer, "game_key");
-    console.log("SOCCER ROWS:", soccer.length);
+    console.log(
+      `SOCCER ROWS: ${soccer.length} (parsed ${soccerParsed}, removed by dedupe: ${soccerParsed - soccer.length})`
+    );
+    if (soccerParsed !== soccer.length) {
+      console.log("⚠️ Soccer dedupe removed rows — game_key is not unique per fixture!");
+    }
 
     const osTeam = parseOSTeam(buffer);
     console.log("OS TEAM ROWS:", osTeam.length);
@@ -1067,4 +1103,10 @@ async function sync() {
   }
 }
 
-sync();
+// Only run the sync when executed directly (`node sync-deputy.js`), so the
+// parsers can be required for read-only checks/tests.
+if (require.main === module) {
+  sync();
+} else {
+  module.exports = { getExcelBuffer, parseSoccerData, parseTTData, makeSoccerGameKey, parseCompletionTimes };
+}
