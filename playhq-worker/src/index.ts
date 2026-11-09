@@ -2427,6 +2427,9 @@ type BackfillBatchResult = {
   skipped: number;
   nextOffset: number | null;
   done: boolean;
+  // Per-game failures in this slice (only set by runSweepBatch). Not-found
+  // games are benign skips and are NOT counted here.
+  failed?: number;
   // Optional sweep throttle signals (only set by runSweepBatch; the REST
   // runBackfillBatch leaves them undefined). `throttled`/`retryable` mark a
   // transient 403/429 the caller should retry at the SAME offset after
@@ -2525,6 +2528,7 @@ async function runSweepBatch(
         limit,
         processed: 0,
         skipped: 0,
+        failed: 0,
         nextOffset: offset,
         done: false,
         retryable: true,
@@ -2539,6 +2543,7 @@ async function runSweepBatch(
 
   let processed = 0;
   let skipped = 0;
+  let failed = 0;
   for (let i = 0; i < slice.length; i++) {
     const id = slice[i];
     if (!id) {
@@ -2568,6 +2573,7 @@ async function runSweepBatch(
           limit,
           processed,
           skipped,
+          failed,
           nextOffset: offset + i,
           done: false,
           retryable: true,
@@ -2576,8 +2582,9 @@ async function runSweepBatch(
         };
       }
       // Per-game failure (graphql/etc.) — count and continue, never abort the
-      // batch.
+      // batch. Counted as `failed` so the grade is NOT marked complete.
       skipped++;
+      failed++;
     }
     // Gentle pacing between games (skip after the last one).
     if (i < slice.length - 1) {
@@ -2593,6 +2600,7 @@ async function runSweepBatch(
     limit,
     processed,
     skipped,
+    failed,
     nextOffset: reachedEnd ? null : offset + limit,
     done: reachedEnd,
     retryAfterMs: 800,
@@ -2611,7 +2619,8 @@ async function updateSweepLog(
   resolved: SeasonGrades,
   seasonId: string,
   gradeId: string,
-  gradeName: string
+  gradeName: string,
+  completion?: { offset: number; reachedEnd: boolean; failedTotal: number }
 ): Promise<void> {
   try {
     const rows = await sbGet(
@@ -2622,17 +2631,28 @@ async function updateSweepLog(
     );
     const n = Number((rows[0] as { player_count?: unknown } | undefined)?.player_count ?? 0);
     const count = Number.isFinite(n) ? n : 0;
-    await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id,grade_id", [
-      {
-        season_id: seasonId,
-        grade_id: gradeId,
-        competition_name: resolved.competition.name,
-        organisation_name: resolved.organisation.name,
-        grade_name: gradeName,
-        player_count: count,
-        last_swept_at: new Date().toISOString(),
-      },
-    ]);
+    const nowIso = new Date().toISOString();
+    const row: Record<string, unknown> = {
+      season_id: seasonId,
+      grade_id: gradeId,
+      competition_name: resolved.competition.name,
+      organisation_name: resolved.organisation.name,
+      grade_name: gradeName,
+      player_count: count,
+      last_swept_at: nowIso,
+    };
+    // Completion marker (resume support). Complete only when the final slice
+    // was reached without throttle and with zero per-game failures. A batch at
+    // offset 0 clears any earlier completion while the re-sweep is in progress.
+    // Otherwise the key is omitted so merge-duplicates leaves it untouched.
+    if (completion) {
+      if (completion.reachedEnd && completion.failedTotal === 0) {
+        row.completed_at = nowIso;
+      } else if (completion.offset === 0) {
+        row.completed_at = null;
+      }
+    }
+    await sbUpsert(env, "playhq_sweep_log?on_conflict=season_id,grade_id", [row]);
   } catch (e) {
     console.warn("updateSweepLog failed:", e instanceof Error ? e.message : e);
   }
@@ -2888,6 +2908,13 @@ export default {
         Number.isFinite(limitRaw) && limitRaw > 0
           ? Math.min(12, Math.floor(limitRaw))
           : 10;
+      // Per-game failures already seen earlier in this grade (client-carried;
+      // the worker is stateless). Used only to decide grade completion.
+      const failedSoFarRaw = Number(url.searchParams.get("failedSoFar") ?? "0");
+      const failedSoFar =
+        Number.isFinite(failedSoFarRaw) && failedSoFarRaw > 0
+          ? Math.floor(failedSoFarRaw)
+          : 0;
 
       // Resolve the season's grade list through the edge cache (it is identical
       // for every batch). A throttle here is resumable, not a hard error: hand
@@ -3007,12 +3034,15 @@ export default {
         // Best-effort per-batch sweep log (distinct player_count for this
         // season+grade). Never throws into the handler; does not change the
         // response.
+        const reachedEnd = batch.nextOffset == null && !batch.throttled;
+        const failedTotal = failedSoFar + (batch.failed ?? 0);
         await updateSweepLog(
           env,
           resolved,
           resolved.season.id,
           gradeId,
-          grades[gradeIndex].name ?? ""
+          grades[gradeIndex].name ?? "",
+          { offset, reachedEnd, failedTotal }
         );
 
         // Compute the next cursor: a transient throttle resumes the SAME grade
@@ -3048,6 +3078,8 @@ export default {
             limit,
             processed: batch.processed,
             skipped: batch.skipped,
+            failed: batch.failed ?? 0,
+            gradeComplete: reachedEnd && failedTotal === 0,
             done,
             next,
             retryable: batch.retryable ?? false,
@@ -3254,7 +3286,7 @@ export default {
         const [grades, seasons] = await Promise.all([
           sbGet(
             env,
-            "playhq_sweep_log?select=season_id,grade_id,competition_name,organisation_name,grade_name,player_count,last_swept_at&order=competition_name.asc,grade_name.asc"
+            "playhq_sweep_log?select=season_id,grade_id,competition_name,organisation_name,grade_name,player_count,last_swept_at,completed_at&order=competition_name.asc,grade_name.asc"
           ),
           sbGet(env, "playhq_sweep_season_counts?select=season_id,player_count"),
         ]);

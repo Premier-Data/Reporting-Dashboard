@@ -57,6 +57,10 @@ export type SweepBatchResult = {
   retryable?: boolean;
   throttled?: boolean;
   retryAfterMs?: number;
+  // Resume support: per-game failures in this slice, and whether this slice
+  // finished the grade cleanly (final slice, no failures, no throttle).
+  failed?: number;
+  gradeComplete?: boolean;
 };
 
 /**
@@ -172,14 +176,18 @@ export async function sweepCompetitionBatch(args: {
   offset: number;
   limit: number;
   token: string;
+  failedSoFar?: number;
 }): Promise<SweepBatchResult> {
-  const { season, gradeIndex, offset, limit, token } = args;
+  const { season, gradeIndex, offset, limit, token, failedSoFar } = args;
 
   const qs =
     `season=${encodeURIComponent(season)}` +
     `&gradeIndex=${encodeURIComponent(String(gradeIndex))}` +
     `&offset=${encodeURIComponent(String(offset))}` +
     `&limit=${encodeURIComponent(String(limit))}` +
+    (failedSoFar && failedSoFar > 0
+      ? `&failedSoFar=${encodeURIComponent(String(failedSoFar))}`
+      : "") +
     `&token=${encodeURIComponent(token)}`;
 
   const res = await fetch(
@@ -205,6 +213,8 @@ export type SweepLogEntry = {
   gradeName: string;
   playerCount: number;
   lastSweptAt: string;
+  /** ISO time the grade last finished cleanly; null/absent = not completed. */
+  completedAt: string | null;
 };
 
 /**
@@ -258,6 +268,7 @@ export async function getSweepLog(): Promise<SweepLog> {
       gradeName: String(r.grade_name ?? ""),
       playerCount: Number(r.player_count ?? 0),
       lastSweptAt: String(r.last_swept_at ?? ""),
+      completedAt: r.completed_at ? String(r.completed_at) : null,
     })),
     seasonTotals,
   };

@@ -28,6 +28,12 @@ import {
 } from "lucide-react";
 
 import {
+  completedGradeIds,
+  nextRemainingIndex,
+  remainingGradeIndexes,
+  summarizeResume,
+} from "@/lib/api/sweepResume";
+import {
   getSeasonGrades,
   sweepCompetitionBatch,
   getSweepLog,
@@ -100,6 +106,10 @@ export default function PlayerSweepPage() {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [season, setSeason] = useState<SeasonGradesResponse | null>(null);
+  // Resume: grade ids of the previewed season that already finished cleanly,
+  // and the escape hatch to ignore them and sweep every grade again.
+  const [completedIds, setCompletedIds] = useState<Set<string>>(new Set());
+  const [forceAll, setForceAll] = useState(false);
 
   // ── Step 2: sweep ────────────────────────────────────────────────────
   const [token, setToken] = useState("");
@@ -196,6 +206,17 @@ export default function PlayerSweepPage() {
     setProgress(EMPTY_PROGRESS);
     try {
       const data = await getSeasonGrades(seasonId);
+      // Fresh log read so per-grade statuses are current (non-fatal on failure).
+      let done = new Set<string>();
+      try {
+        const log = await getSweepLog();
+        setSweepLog(log.entries);
+        setSeasonTotals(log.seasonTotals);
+        done = completedGradeIds(log.entries, data.season.id);
+      } catch {
+        /* non-fatal: treat as nothing swept yet */
+      }
+      setCompletedIds(done);
       setSeason(data);
     } catch (e) {
       setPreviewError(
@@ -225,14 +246,40 @@ export default function PlayerSweepPage() {
       return;
     }
 
+    // Resume: decide which grades are already completed (fresh log read; fall
+    // back to the previewed state if it fails). Force => sweep everything.
+    let completed = new Set<string>(completedIds);
+    if (forceAll) {
+      completed = new Set();
+    } else {
+      try {
+        const log = await getSweepLog();
+        completed = completedGradeIds(log.entries, seasonId);
+      } catch {
+        /* keep the previewed state */
+      }
+    }
+    const firstRemaining = nextRemainingIndex(season.grades, completed, 0);
+    if (firstRemaining === null) {
+      setCompletedIds(completed);
+      setSweepError(
+        `All ${totalGrades} grades already swept. Tick "Re-sweep all grades" to run again.`
+      );
+      return;
+    }
+
     cancelRef.current = false;
     setSweepError(null);
     setProgress({ ...EMPTY_PROGRESS, running: true });
 
     let cursor: { gradeIndex: number; offset: number } = {
-      gradeIndex: 0,
+      gradeIndex: firstRemaining,
       offset: 0,
     };
+    // Per-game failures seen so far in the grade currently being swept; the
+    // worker is stateless so we carry it to decide grade completion.
+    let gradeFailed = 0;
+    let failedGradeIndex = firstRemaining;
     let totalProcessed = 0;
     let totalSkipped = 0;
     let batches = 0;
@@ -253,6 +300,7 @@ export default function PlayerSweepPage() {
           offset: cursor.offset,
           limit: SWEEP_LIMIT,
           token: tok,
+          failedSoFar: cursor.gradeIndex === failedGradeIndex ? gradeFailed : 0,
         });
         consecutiveErrors = 0;
       } catch (e) {
@@ -270,12 +318,20 @@ export default function PlayerSweepPage() {
           }
           // Otherwise skip past this (grade, offset): advance to the next grade
           // at offset 0 where it's safe to continue; stop if that was the last.
-          const nextGrade = cursor.gradeIndex + 1;
-          if (nextGrade >= totalGrades) {
+          // The skipped grade is left partial (never marked complete) and is
+          // redone on the next run.
+          const nextGrade = nextRemainingIndex(
+            season.grades,
+            completed,
+            cursor.gradeIndex + 1
+          );
+          if (nextGrade === null) {
             outcome = "error";
             break;
           }
           cursor = { gradeIndex: nextGrade, offset: 0 };
+          gradeFailed = 0;
+          failedGradeIndex = nextGrade;
           continue;
         }
         // HTTP 403/429 throttle: fall through to the throttle handling below
@@ -299,6 +355,7 @@ export default function PlayerSweepPage() {
         ) {
           totalProcessed += result.processed;
           totalSkipped += result.skipped;
+          gradeFailed += result.failed ?? 0;
           cursor = result.next;
           throttleCount = 0;
         }
@@ -325,6 +382,11 @@ export default function PlayerSweepPage() {
       batches += 1;
       totalProcessed += result.processed;
       totalSkipped += result.skipped;
+      gradeFailed += result.failed ?? 0;
+      if (result.gradeComplete) {
+        completed.add(result.gradeId);
+        setCompletedIds(new Set(completed));
+      }
 
       setProgress({
         running: true,
@@ -351,7 +413,23 @@ export default function PlayerSweepPage() {
       }
       // Gentle inter-batch pacing to avoid tripping the upstream rate limiter.
       await sleep(result.retryAfterMs ?? 800);
-      cursor = result.next;
+      if (result.next.gradeIndex !== cursor.gradeIndex) {
+        // Moving to another grade: jump over grades that are already complete.
+        const target = nextRemainingIndex(
+          season.grades,
+          completed,
+          result.next.gradeIndex
+        );
+        if (target === null) {
+          outcome = "complete";
+          break;
+        }
+        cursor = { gradeIndex: target, offset: 0 };
+        gradeFailed = 0;
+        failedGradeIndex = target;
+      } else {
+        cursor = result.next;
+      }
     }
 
     // Finalise: mark not-running; done=true ONLY when the worker said done.
@@ -373,6 +451,11 @@ export default function PlayerSweepPage() {
 
   const running = progress.running;
   const totalGrades = season?.grades.length ?? 0;
+  const remainingCount = season
+    ? remainingGradeIndexes(season.grades, completedIds).length
+    : 0;
+  const sweptCount = totalGrades - remainingCount;
+  const resuming = !forceAll && sweptCount > 0;
 
   // Derive the competition list IN RENDER (no new state): one row per season,
   // total from the Postgres season view (distinct players, not a grade sum).
@@ -389,8 +472,9 @@ export default function PlayerSweepPage() {
         <p className="mt-1.5 max-w-3xl text-sm text-slate-400">
           Ingest every player appearance across a whole PlayHQ season. Preview a
           season&apos;s grades, then run a resumable sweep that processes one
-          small slice at a time — it can be stopped and restarted safely
-          (re-running upserts, so no duplicates).
+          small slice at a time — it can be stopped and restarted safely,
+          continuing with the grades not yet completed (upserts, so no
+          duplicates).
         </p>
 
         {/* ── Step 1: preview ────────────────────────────────────────── */}
@@ -457,6 +541,7 @@ export default function PlayerSweepPage() {
                       <th className="px-3 py-2 font-semibold">Gender</th>
                       <th className="px-3 py-2 font-semibold">Age</th>
                       <th className="px-3 py-2 font-semibold">Grade id</th>
+                      <th className="px-3 py-2 font-semibold">Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -475,12 +560,23 @@ export default function PlayerSweepPage() {
                         <td className="px-3 py-2 font-mono text-xs text-slate-400">
                           {g.id}
                         </td>
+                        <td className="px-3 py-2">
+                          {completedIds.has(g.id) && !forceAll ? (
+                            <span className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-300">
+                              Swept
+                            </span>
+                          ) : (
+                            <span className="rounded-md border border-white/15 bg-white/5 px-2 py-0.5 text-xs font-semibold text-slate-300">
+                              Remaining
+                            </span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                     {season.grades.length === 0 && (
                       <tr>
                         <td
-                          colSpan={5}
+                          colSpan={6}
                           className="px-3 py-8 text-center text-slate-400"
                         >
                           This season has no grades.
@@ -493,6 +589,13 @@ export default function PlayerSweepPage() {
               <p className="mt-2 text-xs text-slate-500">
                 {totalGrades} grade{totalGrades === 1 ? "" : "s"} found.
               </p>
+              {totalGrades > 0 && sweptCount > 0 && !forceAll && (
+                <p className="mt-1 text-sm text-emerald-300">
+                  {remainingCount === 0
+                    ? `All ${totalGrades} grades already swept. Tick "Re-sweep all grades" to run again.`
+                    : summarizeResume(totalGrades, remainingCount)}
+                </p>
+              )}
             </div>
           )}
         </section>
@@ -524,7 +627,11 @@ export default function PlayerSweepPage() {
                 ) : (
                   <Play size={15} />
                 )}
-                {running ? "Sweeping…" : "Start sweep"}
+                {running
+                  ? "Sweeping…"
+                  : resuming
+                    ? "Resume sweep"
+                    : "Start sweep"}
               </button>
               <button
                 type="button"
@@ -536,10 +643,21 @@ export default function PlayerSweepPage() {
               </button>
             </div>
 
+            <label className="mt-2 flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={forceAll}
+                onChange={(e) => setForceAll(e.target.checked)}
+                disabled={running}
+              />
+              Re-sweep all grades (ignore completed)
+            </label>
+
             <p className="mt-2 text-xs text-slate-500">
               The token is sent with each request and never stored. The sweep
-              runs one small slice per request; use Stop to halt — progress is
-              preserved and re-running is safe.
+              runs one small slice per request; use Stop to halt. Re-running
+              continues with the grades not yet completed (a grade stopped
+              part-way is redone from its start).
             </p>
 
             {sweepError && (
