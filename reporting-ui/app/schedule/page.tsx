@@ -31,6 +31,23 @@ import {
 
 import { syncMessage } from "@/lib/data/syncMessage";
 
+import {
+    getDeputyTimesheets,
+    type DeputyTimesheetRow,
+} from "@/lib/api/deputy";
+
+import { useAuth } from "@/components/auth/AuthContext";
+
+import {
+    formatAud,
+    formatHours2,
+} from "@/lib/deputy/format";
+
+import {
+    aggregateApprovedTimesheets,
+    unmatchedLabel,
+} from "@/lib/data/scheduleTimesheets";
+
 import { RefreshCw } from "lucide-react";
 
 import {
@@ -463,6 +480,105 @@ export default function SchedulePage() {
     ] =
         useState("");
 
+    /*
+     * APPROVED TIMESHEETS FOR VISIBLE WEEK
+     *
+     * Separate from the roster load so a failure here never affects rosters
+     * or allocation. Never requests sync; after a manual sync the roster
+     * effect bumps timesheetReloadKey once its sync request has returned.
+     */
+
+    const [
+        timesheets,
+        setTimesheets,
+    ] =
+        useState<DeputyTimesheetRow[]>([]);
+
+    const [
+        timesheetLoading,
+        setTimesheetLoading,
+    ] =
+        useState(true);
+
+    const [
+        timesheetError,
+        setTimesheetError,
+    ] =
+        useState(false);
+
+    const [
+        timesheetReloadKey,
+        setTimesheetReloadKey,
+    ] =
+        useState(0);
+
+    // True when the load follows a sync: keep current rows visible.
+    const keepTimesheetsRef =
+        useRef(false);
+
+    useEffect(
+        () => {
+
+            let cancelled = false;
+
+            async function loadTimesheetsForWeek() {
+
+                const keep =
+                    keepTimesheetsRef.current;
+
+                keepTimesheetsRef.current = false;
+
+                if (!keep) {
+                    setTimesheetLoading(true);
+                }
+
+                try {
+
+                    const rows =
+                        await getDeputyTimesheets({
+                            from: days[0]?.key,
+                            to: days[days.length - 1]?.key,
+                        });
+
+                    if (!cancelled) {
+                        setTimesheets(rows);
+                        setTimesheetError(false);
+                    }
+
+                }
+                catch (err) {
+
+                    console.error(
+                        "Failed loading approved timesheets for week:",
+                        err
+                    );
+
+                    if (!cancelled) {
+                        setTimesheets([]);
+                        setTimesheetError(true);
+                    }
+
+                }
+                finally {
+
+                    if (!cancelled) {
+                        setTimesheetLoading(false);
+                    }
+
+                }
+
+            }
+
+            loadTimesheetsForWeek();
+
+            return () => {
+                cancelled = true;
+            };
+
+        },
+        [days, timesheetReloadKey]
+    );
+
     useEffect(
         () => {
 
@@ -547,6 +663,13 @@ export default function SchedulePage() {
                     // mid-sync (a cancelled load must not leave it disabled).
                     if (withSync) {
                         setSyncing(false);
+
+                        // The sync-carrying roster request has finished (even
+                        // if it failed or the week changed): now re-read
+                        // approved timesheets WITHOUT sync, for the current
+                        // week, keeping existing rows on screen meanwhile.
+                        keepTimesheetsRef.current = true;
+                        setTimesheetReloadKey(k => k + 1);
                     }
 
                 }
@@ -1597,6 +1720,20 @@ export default function SchedulePage() {
     }
 
 
+    // Pay is shown only to users who may open the Deputy API page. This is
+    // UI-level gating only (false while the session is still loading).
+    const { hasAccess } = useAuth();
+    const canSeePay = hasAccess("deputy-api");
+
+    const approved = useMemo(
+        () => aggregateApprovedTimesheets(
+            timesheets,
+            days.map(d => d.key),
+            analysts
+        ),
+        [timesheets, days, analysts]
+    );
+
     const hasFilters =
         search !== "" ||
         statusFilter !== "All" ||
@@ -1675,6 +1812,18 @@ export default function SchedulePage() {
                             text-slate-400
                         ">
                             Loading shifts...
+                        </span>
+
+                    )}
+
+                    {timesheetLoading && (
+
+                        <span className="
+                            mr-1
+                            text-xs
+                            text-slate-400
+                        ">
+                            Loading approved shifts...
                         </span>
 
                     )}
@@ -1856,6 +2005,58 @@ export default function SchedulePage() {
                             font-medium
                             text-red-700
                             hover:bg-red-100
+                        "
+                    >
+                        Retry
+                    </button>
+                </div>
+
+            )}
+
+            {/* APPROVED TIMESHEETS LOAD ERROR (non-blocking) */}
+
+            {timesheetError && (
+
+                <div
+                    role="alert"
+                    className="
+                        mb-4
+                        flex
+                        items-center
+                        justify-between
+                        rounded-lg
+                        border
+                        border-amber-200
+                        bg-amber-50
+                        px-3
+                        py-2
+                        text-xs
+                        text-amber-800
+                    "
+                >
+                    <span>
+                        Could not load approved shifts. Rostered shifts and
+                        allocation still work.
+                    </span>
+
+                    <button
+                        type="button"
+                        onClick={() =>
+                            setTimesheetReloadKey(
+                                current =>
+                                    current + 1
+                            )
+                        }
+                        className="
+                            rounded-md
+                            border
+                            border-amber-300
+                            bg-white
+                            px-3
+                            py-1
+                            font-medium
+                            text-amber-800
+                            hover:bg-amber-100
                         "
                     >
                         Retry
@@ -2383,6 +2584,98 @@ export default function SchedulePage() {
 
                     <tbody>
 
+                        {/* DAILY TOTAL (APPROVED) - all approved shifts, unaffected by filters */}
+
+                        <tr className="border-b border-slate-200">
+
+                            <td className="
+                                sticky
+                                left-0
+                                z-20
+                                border-r
+                                border-slate-200
+                                bg-slate-100
+                                px-3
+                                py-2
+                                align-top
+                            ">
+                                <div className="text-sm font-semibold text-slate-900">
+                                    Daily total (approved)
+                                </div>
+
+                                <div className="mt-0.5 text-[10px] text-slate-500">
+                                    Week: {formatHours2(approved.week.hours)} h
+                                    {" · "}
+                                    {approved.week.count}{" "}
+                                    {approved.week.count === 1 ? "shift" : "shifts"}
+                                    {canSeePay && (
+                                        <>{" · "}{formatAud(approved.week.cost)}</>
+                                    )}
+                                </div>
+                            </td>
+
+                            {days.map(
+                                day => {
+
+                                    const total =
+                                        approved.dailyTotals.get(day.key);
+
+                                    return (
+
+                                        <td
+                                            key={`total-${day.key}`}
+                                            className="
+                                                border-r
+                                                border-slate-200
+                                                bg-slate-100
+                                                p-1.5
+                                                text-center
+                                                align-top
+                                            "
+                                        >
+                                            {total && total.count > 0 ? (
+                                                <div
+                                                    title={
+                                                        total.unmatchedCount > 0
+                                                            ? unmatchedLabel(total.unmatchedCount)
+                                                            : undefined
+                                                    }
+                                                >
+                                                    <div className="text-xs font-semibold text-slate-800">
+                                                        {formatHours2(total.hours)} h
+                                                    </div>
+
+                                                    <div className="text-[10px] text-slate-600">
+                                                        {total.count}{" "}
+                                                        {total.count === 1 ? "shift" : "shifts"}
+                                                    </div>
+
+                                                    {canSeePay && (
+                                                        <div className="text-[10px] font-semibold text-slate-700">
+                                                            {formatAud(total.cost)}
+                                                        </div>
+                                                    )}
+
+                                                    {total.unmatchedCount > 0 && (
+                                                        <div className="mt-0.5 text-[9px] text-slate-400">
+                                                            {unmatchedLabel(total.unmatchedCount)}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-slate-400">
+                                                    —
+                                                </span>
+                                            )}
+                                        </td>
+
+                                    );
+
+                                }
+                            )}
+
+                        </tr>
+
                         {filteredAnalysts.map(
                             analyst => (
 
@@ -2471,6 +2764,11 @@ export default function SchedulePage() {
                                             const available =
                                                 shifts.length >
                                                 0;
+
+                                            const approvedCell =
+                                                approved.cells.get(
+                                                    `${analyst.id}|${day.key}`
+                                                );
 
 
                                             return (
@@ -2591,9 +2889,103 @@ export default function SchedulePage() {
                                                         )}
 
 
+                                                        {/* APPROVED (ACTUAL) SHIFTS */}
+
+                                                        {approvedCell && (
+
+                                                            <div className="
+                                                                mt-1
+                                                                rounded-md
+                                                                border
+                                                                border-emerald-200
+                                                                bg-white
+                                                                px-2
+                                                                py-1
+                                                                text-[10px]
+                                                                leading-tight
+                                                            ">
+
+                                                                <div className="
+                                                                    flex
+                                                                    items-center
+                                                                    gap-1
+                                                                    text-[9px]
+                                                                    font-semibold
+                                                                    text-emerald-700
+                                                                ">
+                                                                    <span>✓ Approved</span>
+                                                                    {approvedCell.hasLeave && (
+                                                                        <span className="rounded bg-amber-100 px-1 text-amber-800">
+                                                                            Leave
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+
+                                                                {approvedCell.entries.map(
+                                                                    entry => (
+
+                                                                        <div
+                                                                            key={entry.id}
+                                                                            className="font-semibold text-slate-700"
+                                                                        >
+                                                                            {entry.start ?? "—"}
+                                                                            {" - "}
+                                                                            {entry.end ?? "—"}
+                                                                        </div>
+
+                                                                    )
+                                                                )}
+
+                                                                <div className="mt-0.5 text-slate-600">
+                                                                    {formatHours2(approvedCell.hours)} h
+                                                                    {canSeePay && (
+                                                                        <>{" · "}{formatAud(approvedCell.cost)}</>
+                                                                    )}
+                                                                </div>
+
+                                                                {!available && (
+                                                                    <div className="mt-0.5 text-[9px] text-slate-400">
+                                                                        unrostered
+                                                                    </div>
+                                                                )}
+
+                                                            </div>
+
+                                                        )}
+
+
+                                                        {/* ROSTER SHIFT (muted when approved shifts exist) */}
+
+                                                        {available && approvedCell && (
+
+                                                            <div className="mt-1 text-[9px] text-slate-400">
+                                                                {shifts.map(
+                                                                    (
+                                                                        shift,
+                                                                        index
+                                                                    ) => (
+
+                                                                        <div
+                                                                            key={
+                                                                                `${shift.roster_key}-${index}`
+                                                                            }
+                                                                        >
+                                                                            Rostered{" "}
+                                                                            {shift.start_time ?? "—"}
+                                                                            {" - "}
+                                                                            {shift.end_time ?? "—"}
+                                                                        </div>
+
+                                                                    )
+                                                                )}
+                                                            </div>
+
+                                                        )}
+
+
                                                         {/* ROSTER SHIFT */}
 
-                                                        {available && (
+                                                        {available && !approvedCell && (
 
                                                             <div className="
                                                                 mt-1
@@ -2685,6 +3077,7 @@ export default function SchedulePage() {
                                                         {/* NOT ROSTERED */}
 
                                                         {!available &&
+                                                            !approvedCell &&
                                                             games.length === 0 && (
 
                                                                 <div className="
