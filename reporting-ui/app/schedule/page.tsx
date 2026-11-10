@@ -3,6 +3,7 @@
 import {
     useEffect,
     useMemo,
+    useRef,
     useState,
 } from "react";
 
@@ -25,7 +26,12 @@ import {
 
 import {
     loadDeputyApiRoster,
+    loadDeputyApiRosterWithSync,
 } from "@/lib/data/loadDeputyApiRoster";
+
+import { syncMessage } from "@/lib/data/syncMessage";
+
+import { RefreshCw } from "lucide-react";
 
 import {
     analystRosterKeys,
@@ -440,6 +446,23 @@ export default function SchedulePage() {
     ] =
         useState(0);
 
+    // Set ONLY by the "Sync from Deputy" button; consumed (and cleared) by
+    // the next roster load. Every other load path leaves it false.
+    const syncRequestedRef =
+        useRef(false);
+
+    const [
+        syncing,
+        setSyncing,
+    ] =
+        useState(false);
+
+    const [
+        syncNote,
+        setSyncNote,
+    ] =
+        useState("");
+
     useEffect(
         () => {
 
@@ -447,7 +470,16 @@ export default function SchedulePage() {
 
             async function loadRosterForWeek() {
 
-                setRosterLoading(true);
+                const withSync =
+                    syncRequestedRef.current;
+
+                syncRequestedRef.current = false;
+
+                // A sync keeps the current shifts on screen until the new
+                // rows arrive; a normal load shows the usual loading hint.
+                if (!withSync) {
+                    setRosterLoading(true);
+                }
 
                 try {
 
@@ -457,15 +489,36 @@ export default function SchedulePage() {
                     const endDate =
                         days[days.length - 1]?.key;
 
-                    const rosterData =
-                        await loadDeputyApiRoster({
-                            startDate,
-                            endDate,
-                        });
+                    if (withSync) {
 
-                    if (!cancelled) {
-                        setRoster(rosterData);
-                        setRosterError(false);
+                        const result =
+                            await loadDeputyApiRosterWithSync({
+                                startDate,
+                                endDate,
+                            });
+
+                        if (!cancelled) {
+                            setRoster(result.roster);
+                            setRosterError(false);
+                            setSyncNote(
+                                syncMessage(result.synced)
+                            );
+                        }
+
+                    }
+                    else {
+
+                        const rosterData =
+                            await loadDeputyApiRoster({
+                                startDate,
+                                endDate,
+                            });
+
+                        if (!cancelled) {
+                            setRoster(rosterData);
+                            setRosterError(false);
+                        }
+
                     }
 
                 }
@@ -488,6 +541,12 @@ export default function SchedulePage() {
 
                     if (!cancelled) {
                         setRosterLoading(false);
+                    }
+
+                    // Always release the button, even if the week changed
+                    // mid-sync (a cancelled load must not leave it disabled).
+                    if (withSync) {
+                        setSyncing(false);
                     }
 
                 }
@@ -1619,6 +1678,61 @@ export default function SchedulePage() {
                         </span>
 
                     )}
+
+                    {syncNote && (
+
+                        <span
+                            role="status"
+                            className="
+                                mr-1
+                                max-w-xs
+                                text-xs
+                                text-slate-500
+                            "
+                        >
+                            {syncNote}
+                        </span>
+
+                    )}
+
+                    <button
+                        type="button"
+                        disabled={syncing}
+                        onClick={() => {
+                            if (syncing) return;
+                            syncRequestedRef.current = true;
+                            setSyncing(true);
+                            setSyncNote("");
+                            setRosterReloadKey(
+                                current =>
+                                    current + 1
+                            );
+                        }}
+                        className="
+                            mr-2
+                            inline-flex
+                            items-center
+                            gap-1.5
+                            rounded-md
+                            border
+                            border-slate-300
+                            bg-white
+                            px-3
+                            py-1.5
+                            text-xs
+                            font-medium
+                            text-slate-700
+                            hover:bg-slate-50
+                            disabled:cursor-not-allowed
+                            disabled:opacity-60
+                        "
+                    >
+                        <RefreshCw
+                            className={`h-3.5 w-3.5 ${syncing ? "animate-spin" : ""}`}
+                            aria-hidden="true"
+                        />
+                        {syncing ? "Syncing..." : "Sync from Deputy"}
+                    </button>
 
                     <button
                         type="button"

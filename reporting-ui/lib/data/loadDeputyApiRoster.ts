@@ -1,4 +1,4 @@
-import { getDeputyRosters } from "@/lib/api/deputy";
+import { getDeputyRosters, getDeputyRostersWithMeta } from "@/lib/api/deputy";
 import { mapApiRosters } from "@/lib/data/deputyApiRoster";
 import type { DeputyRoster } from "@/types/deputyRoster";
 
@@ -27,5 +27,26 @@ export async function loadDeputyApiRoster(
     });
 
     return mapApiRosters(rows, { startDate, endDate });
+
+}
+
+/**
+ * Same mapping as loadDeputyApiRoster, but asks deputy-read to sync from
+ * Deputy first and also reports whether a sync actually ran. Only call this
+ * from an explicit user action.
+ */
+export async function loadDeputyApiRosterWithSync(
+    options: LoadDeputyApiRosterOptions = {}
+): Promise<{ roster: DeputyRoster[]; synced: boolean }> {
+
+    const { startDate, endDate } = options;
+
+    const { rows, synced } = await getDeputyRostersWithMeta({
+        from: startDate,
+        to: endDate,
+        sync: true,
+    });
+
+    return { roster: mapApiRosters(rows, { startDate, endDate }), synced };
 
 }

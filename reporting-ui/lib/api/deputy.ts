@@ -25,10 +25,24 @@ export type DeputyReadOptions = {
   to?: string;
 };
 
-async function call<T>(
+/** Rows plus whether deputy-read actually ran a sync for this request. */
+export type DeputyReadResult<T> = { rows: T[]; synced: boolean };
+
+/** Parses a deputy-read response body. `synced` is true only when literally true. */
+export function parseDeputyBody<T>(body: {
+  rows?: T[];
+  synced?: unknown;
+}): DeputyReadResult<T> {
+  return {
+    rows: Array.isArray(body?.rows) ? body.rows : [],
+    synced: body?.synced === true,
+  };
+}
+
+async function callWithMeta<T>(
   dataset: Dataset,
   opts?: DeputyReadOptions
-): Promise<T[]> {
+): Promise<DeputyReadResult<T>> {
   const qs = new URLSearchParams({ dataset });
   if (opts?.sync) qs.set("sync", "1");
   if (opts?.from) qs.set("from", opts.from);
@@ -40,8 +54,16 @@ async function call<T>(
   if (!res.ok) {
     throw new Error(`deputy-read ${dataset} failed: ${res.status}`);
   }
-  const body = (await res.json()) as { rows?: T[] };
-  return Array.isArray(body.rows) ? body.rows : [];
+  return parseDeputyBody<T>(
+    (await res.json()) as { rows?: T[]; synced?: unknown }
+  );
+}
+
+async function call<T>(
+  dataset: Dataset,
+  opts?: DeputyReadOptions
+): Promise<T[]> {
+  return (await callWithMeta<T>(dataset, opts)).rows;
 }
 
 /** A rostered shift from deputy.rosters, with names resolved server-side. */
@@ -77,5 +99,8 @@ export interface DeputyTimesheetRow {
 
 export const getDeputyRosters = (opts?: DeputyReadOptions) =>
   call<DeputyRosterRow>("rosters", opts);
+/** Like getDeputyRosters, but also returns whether a sync actually ran. */
+export const getDeputyRostersWithMeta = (opts?: DeputyReadOptions) =>
+  callWithMeta<DeputyRosterRow>("rosters", opts);
 export const getDeputyTimesheets = (opts?: DeputyReadOptions) =>
   call<DeputyTimesheetRow>("timesheets", opts);
