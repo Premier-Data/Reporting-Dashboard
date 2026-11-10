@@ -21,6 +21,7 @@ import {
   backoffMs,
   nextDay,
 } from "../../supabase/functions/deputy-sync/query";
+import { planRosterReconcile } from "../../supabase/functions/deputy-sync/reconcile";
 
 // ── Scalar coercion ──────────────────────────────────────────────────────────
 describe("scalar coercion (never invents a default)", () => {
@@ -222,5 +223,95 @@ describe("nextDay (makes the exclusive Deputy upper bound inclusive)", () => {
       to: nextDay("2026-11-09") ?? undefined,
     });
     expect(q.search?.s3).toEqual({ field: "Date", type: "lt", data: "2026-11-10" });
+  });
+});
+
+// ── Roster soft-delete reconcile ─────────────────────────────────────────────
+describe("mapRoster is_deleted", () => {
+  it("writes is_deleted:false so a reappearing roster is un-hidden", () => {
+    expect(mapRoster({ Id: 9, Date: "2026-11-10" }).is_deleted).toBe(false);
+  });
+});
+
+describe("planRosterReconcile", () => {
+  const base = {
+    resource: "Roster",
+    status: "succeeded" as const,
+    dryRun: false,
+    startDate: "2026-10-28",
+    endDate: "2026-12-08",
+    readCount: 18,
+    returnedIds: Array.from({ length: 18 }, (_, i) => String(i + 1)),
+    existingIds: Array.from({ length: 20 }, (_, i) => String(i + 1)),
+  };
+
+  it("soft-deletes stored ids Deputy no longer returns (sorted, deduped)", () => {
+    const p = planRosterReconcile({ ...base, existingIds: [...base.existingIds, "20"] });
+    expect(p.action).toBe("apply");
+    expect(p.idsToDelete).toEqual(["19", "20"]);
+  });
+
+  it("is idempotent: once applied, re-planning finds nothing", () => {
+    const p = planRosterReconcile({
+      ...base,
+      existingIds: base.existingIds.filter((id) => base.returnedIds.includes(id)),
+    });
+    expect(p.action).toBe("skip");
+    expect(p.idsToDelete).toEqual([]);
+    expect(p.reason).toBe("nothing_to_delete");
+  });
+
+  it("never runs for partial or failed syncs", () => {
+    expect(planRosterReconcile({ ...base, status: "partial" }).reason).toBe("sync_not_succeeded");
+    expect(planRosterReconcile({ ...base, status: "failed" }).action).toBe("skip");
+  });
+
+  it("never runs on dryRun", () => {
+    expect(planRosterReconcile({ ...base, dryRun: true }).reason).toBe("dry_run");
+  });
+
+  it("only applies to Roster", () => {
+    expect(planRosterReconcile({ ...base, resource: "Timesheet" }).reason).toBe("not_roster");
+  });
+
+  it("requires a strictly bounded window", () => {
+    expect(planRosterReconcile({ ...base, startDate: undefined }).reason).toBe("no_window");
+    expect(planRosterReconcile({ ...base, endDate: "" }).reason).toBe("no_window");
+  });
+
+  it("refuses an empty read when the window has stored rows", () => {
+    const p = planRosterReconcile({ ...base, readCount: 0, returnedIds: [] });
+    expect(p.action).toBe("skip");
+    expect(p.reason).toBe("empty_read_guard");
+    expect(p.idsToDelete).toEqual([]);
+  });
+
+  it("zero read + zero stored is a no-op, not an error", () => {
+    const p = planRosterReconcile({ ...base, readCount: 0, returnedIds: [], existingIds: [] });
+    expect(p.action).toBe("skip");
+    expect(p.reason).toBe("nothing_to_delete");
+  });
+
+  it("circuit breaker: refuses 12 of 20, allows 2 of 20", () => {
+    const refused = planRosterReconcile({
+      ...base,
+      readCount: 8,
+      returnedIds: base.returnedIds.slice(0, 8),
+      minAbsolute: 5,
+    });
+    expect(refused.reason).toBe("mass_delete_guard");
+    expect(refused.idsToDelete).toEqual([]);
+    expect(planRosterReconcile(base).action).toBe("apply");
+  });
+
+  it("small windows may delete up to minAbsolute even above the fraction", () => {
+    const p = planRosterReconcile({
+      ...base,
+      readCount: 1,
+      returnedIds: ["1"],
+      existingIds: ["1", "2", "3"],
+    });
+    expect(p.action).toBe("apply");
+    expect(p.idsToDelete).toEqual(["2", "3"]);
   });
 });

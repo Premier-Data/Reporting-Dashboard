@@ -7,7 +7,8 @@
 // ready-to-render rows (names already resolved) to the static front end.
 //
 // Datasets (selected via ?dataset=):
-//   - rosters     → all rows from deputy.rosters
+//   - rosters     → deputy.rosters rows with is_deleted = false (soft-deleted by
+//                   the deputy-sync reconcile are hidden)
 //   - timesheets  → deputy.timesheets filtered to time_approved = true AND
 //                   coalesce(discarded, false) = false (approved, non-discarded)
 //
@@ -20,8 +21,12 @@
 // that anon JWT only lets the function RUN; the service-role client inside does
 // the actual read.
 //
+// Optional ?from=yyyy-mm-dd&to=yyyy-mm-dd (inclusive, validated; invalid -> 400
+// invalid_date) restrict rosters by roster_date / timesheets by timesheet_date.
+// Absent = unfiltered.
+//
 // Optional ?sync=1: before reading, trigger a fixed-scope deputy-sync (Timesheet +
-// Roster, trailing 14 Sydney days, manual, not dry-run). Nothing but sync=1 is
+// Roster, 14 Sydney days back to 28 days forward, manual, not dry-run). Nothing but sync=1 is
 // read from the request. A server-side throttle (deputy.sync_runs, 60s) skips
 // redundant syncs and FAILS SAFE (no sync) if it cannot be checked. Any sync
 // failure is logged and the read still returns. DEPUTY_SYNC_SECRET stays
@@ -39,6 +44,7 @@ import {
   buildUnitMap,
   distinctIds,
   needsAnotherPage,
+  parseDateRange,
   shouldSync,
   sydneySyncWindow,
   type EmployeeLookup,
@@ -226,12 +232,15 @@ async function maybeSync(
   }
 }
 
+type DateRange = { from?: string; to?: string };
+
 async function readRosters(
   supabase: SupabaseClient,
-  synced: boolean
+  synced: boolean,
+  range: DateRange
 ): Promise<Response> {
-  const { rows: data, error } = await fetchAllPages((from, to) =>
-    supabase
+  const { rows: data, error } = await fetchAllPages((from, to) => {
+    let q = supabase
       .schema("deputy")
       .from("rosters")
       .select(
@@ -239,9 +248,11 @@ async function readRosters(
        published, open_shift,
        employee_deputy_id, operational_unit_deputy_id`
       )
-      .order("roster_date", { ascending: false })
-      .range(from, to)
-  );
+      .eq("is_deleted", false);
+    if (range.from) q = q.gte("roster_date", range.from);
+    if (range.to) q = q.lte("roster_date", range.to);
+    return q.order("roster_date", { ascending: false }).range(from, to);
+  });
 
   if (error) {
     console.error("deputy-read rosters query failed:", error.message);
@@ -254,10 +265,11 @@ async function readRosters(
 
 async function readTimesheets(
   supabase: SupabaseClient,
-  synced: boolean
+  synced: boolean,
+  range: DateRange
 ): Promise<Response> {
-  const { rows: data, error } = await fetchAllPages((from, to) =>
-    supabase
+  const { rows: data, error } = await fetchAllPages((from, to) => {
+    let q = supabase
       .schema("deputy")
       .from("timesheets")
       .select(
@@ -269,10 +281,11 @@ async function readTimesheets(
       // Approved + non-discarded. `.or` expresses coalesce(discarded,false)=false
       // as "discarded IS NULL OR discarded = false".
       .eq("time_approved", true)
-      .or("discarded.is.null,discarded.eq.false")
-      .order("timesheet_date", { ascending: false })
-      .range(from, to)
-  );
+      .or("discarded.is.null,discarded.eq.false");
+    if (range.from) q = q.gte("timesheet_date", range.from);
+    if (range.to) q = q.lte("timesheet_date", range.to);
+    return q.order("timesheet_date", { ascending: false }).range(from, to);
+  });
 
   if (error) {
     console.error("deputy-read timesheets query failed:", error.message);
@@ -304,6 +317,15 @@ Deno.serve(async (req: Request) => {
     return json({ error: "unknown_dataset" }, 400);
   }
 
+  const parsed = parseDateRange(
+    url.searchParams.get("from"),
+    url.searchParams.get("to")
+  );
+  if (!parsed.ok) {
+    return json({ error: "invalid_date" }, 400);
+  }
+  const range: DateRange = { from: parsed.from, to: parsed.to };
+
   const supabase = createClient(supaUrl, serviceKey, {
     auth: { persistSession: false },
   });
@@ -314,6 +336,6 @@ Deno.serve(async (req: Request) => {
       : false;
 
   return dataset === "rosters"
-    ? await readRosters(supabase, synced)
-    : await readTimesheets(supabase, synced);
+    ? await readRosters(supabase, synced, range)
+    : await readTimesheets(supabase, synced, range);
 });

@@ -24,8 +24,14 @@ import {
 } from "@/lib/api/downloadJobs";
 
 import {
-    loadDeputyRoster,
-} from "@/lib/data/loadDeputyRoster";
+    loadDeputyApiRoster,
+} from "@/lib/data/loadDeputyApiRoster";
+
+import {
+    analystRosterKeys,
+    rosterIndexKey,
+    shiftsForAnalystDay,
+} from "@/lib/data/rosterMatch";
 
 import type {
     DeputyRoster,
@@ -94,41 +100,14 @@ type FixtureFilter =
 
 
 /*
- * ROSTER MATCH KEY
+ * ROSTER MATCH KEYS
  *
- * deputy_roster often records shortened nicknames or slightly
- * different spellings than the AutoDownload API's analyst name
- * (e.g. "Ella" vs "Ella Southgate", "Jonathan Trickey" vs
- * "Jonathon Trickey"). Email is present and consistent on both
- * sides, so match on normalised email first and only fall back
- * to normalised name when either side has no email recorded.
+ * Shifts now come from the Deputy API, which records the employee's legal
+ * name and no email. Roster rows are indexed by email when they have one,
+ * otherwise by normalised name, and each analyst is looked up by its email,
+ * name and a small name alias (e.g. "Tom" vs "Thomas", "(NEW)" suffixes).
+ * See lib/data/rosterMatch.ts.
  */
-function normaliseIdentifier(
-    value: string | null | undefined
-): string {
-
-    return String(value ?? "")
-        .trim()
-        .toLowerCase();
-
-}
-
-function rosterMatchKey(
-    email: string | null | undefined,
-    name: string | null | undefined
-): string {
-
-    const normalisedEmail =
-        normaliseIdentifier(email);
-
-    if (normalisedEmail) {
-        return normalisedEmail;
-    }
-
-    return normaliseIdentifier(name);
-
-}
-
 
 function formatDateKey(
     date: Date
@@ -449,6 +428,18 @@ export default function SchedulePage() {
     ] =
         useState(true);
 
+    const [
+        rosterError,
+        setRosterError,
+    ] =
+        useState(false);
+
+    const [
+        rosterReloadKey,
+        setRosterReloadKey,
+    ] =
+        useState(0);
+
     useEffect(
         () => {
 
@@ -467,13 +458,14 @@ export default function SchedulePage() {
                         days[days.length - 1]?.key;
 
                     const rosterData =
-                        await loadDeputyRoster({
+                        await loadDeputyApiRoster({
                             startDate,
                             endDate,
                         });
 
                     if (!cancelled) {
                         setRoster(rosterData);
+                        setRosterError(false);
                     }
 
                 }
@@ -483,6 +475,13 @@ export default function SchedulePage() {
                         "Failed loading Deputy roster for week:",
                         err
                     );
+
+                    // No fallback to legacy data: clear stale shifts and flag
+                    // the failure so the page can show a Retry banner.
+                    if (!cancelled) {
+                        setRoster([]);
+                        setRosterError(true);
+                    }
 
                 }
                 finally {
@@ -502,7 +501,7 @@ export default function SchedulePage() {
             };
 
         },
-        [days]
+        [days, rosterReloadKey]
     );
 
 
@@ -917,7 +916,7 @@ export default function SchedulePage() {
                 ) {
 
                     const key =
-                        `${rosterMatchKey(shift.email, shift.employee_name)}|${shift.shift_date}`;
+                        `${rosterIndexKey(shift.email, shift.employee_name)}|${shift.shift_date}`;
 
                     const existing =
                         map.get(
@@ -1073,10 +1072,12 @@ export default function SchedulePage() {
     ): FilterStatus {
 
         const shifts =
-            rosterByAnalystAndDay.get(
-                `${rosterMatchKey(analyst.email, analyst.name)}|${dayKey}`
-            ) ??
-            [];
+            shiftsForAnalystDay(
+                rosterByAnalystAndDay,
+                analyst.email,
+                analyst.name,
+                dayKey
+            );
 
 
         const games =
@@ -1227,8 +1228,9 @@ export default function SchedulePage() {
                                 const hasRosterLocation =
                                     roster.some(
                                         shift =>
-                                            rosterMatchKey(shift.email, shift.employee_name) ===
-                                            rosterMatchKey(analyst.email, analyst.name) &&
+                                            analystRosterKeys(analyst.email, analyst.name).includes(
+                                                rosterIndexKey(shift.email, shift.employee_name)
+                                            ) &&
                                             shift.location ===
                                             locationFilter
                                     );
@@ -1695,6 +1697,58 @@ export default function SchedulePage() {
 
             </div>
 
+
+            {/* ROSTER LOAD ERROR */}
+
+            {rosterError && (
+
+                <div
+                    role="alert"
+                    className="
+                        mb-4
+                        flex
+                        items-center
+                        justify-between
+                        rounded-lg
+                        border
+                        border-red-200
+                        bg-red-50
+                        px-3
+                        py-2
+                        text-xs
+                        text-red-700
+                    "
+                >
+                    <span>
+                        Could not load shifts from Deputy. Shifts shown as
+                        &quot;Not rostered&quot; may be wrong until this loads.
+                    </span>
+
+                    <button
+                        type="button"
+                        onClick={() =>
+                            setRosterReloadKey(
+                                current =>
+                                    current + 1
+                            )
+                        }
+                        className="
+                            rounded-md
+                            border
+                            border-red-300
+                            bg-white
+                            px-3
+                            py-1
+                            font-medium
+                            text-red-700
+                            hover:bg-red-100
+                        "
+                    >
+                        Retry
+                    </button>
+                </div>
+
+            )}
 
             {/* FILTERS */}
 
@@ -2278,10 +2332,12 @@ export default function SchedulePage() {
                                         day => {
 
                                             const shifts =
-                                                rosterByAnalystAndDay.get(
-                                                    `${rosterMatchKey(analyst.email, analyst.name)}|${day.key}`
-                                                ) ??
-                                                [];
+                                                shiftsForAnalystDay(
+                                                    rosterByAnalystAndDay,
+                                                    analyst.email,
+                                                    analyst.name,
+                                                    day.key
+                                                );
 
 
                                             const games =

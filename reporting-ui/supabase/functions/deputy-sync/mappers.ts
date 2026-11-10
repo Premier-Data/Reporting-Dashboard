@@ -165,6 +165,9 @@ export function mapRoster(r: Json): Json {
     source_created_at: toIso(r.Created),
     source_modified_at: toIso(r.Modified),
     source_data: r,
+    // A roster present in Deputy is live; this un-hides one the reconcile had
+    // soft-deleted if it reappears.
+    is_deleted: false,
   };
 }
 

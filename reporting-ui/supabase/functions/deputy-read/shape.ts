@@ -154,14 +154,16 @@ export function shouldSync(
 }
 
 /**
- * Trailing sync window in Australia/Sydney local dates (DST-correct via Intl).
- * endDate is "today" in Sydney; startDate is trailingDays-1 days earlier
- * (default 14 days inclusive => 13 day difference). Calendar arithmetic uses
+ * Sync window in Australia/Sydney local dates (DST-correct via Intl).
+ * startDate is trailingDays-1 days before Sydney "today" (default 14 days
+ * inclusive => 13 day difference); endDate is Sydney "today" + forwardDays
+ * (default 28, so upcoming rosters are synced too). Calendar arithmetic uses
  * a UTC carrier so no time-zone conversion can shift the result.
  */
 export function sydneySyncWindow(
   nowMs: number,
-  trailingDays = 14
+  trailingDays = 14,
+  forwardDays = 28
 ): { startDate: string; endDate: string } {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Australia/Sydney",
@@ -174,12 +176,62 @@ export function sydneySyncWindow(
   const m = get("month");
   const d = get("day");
   const days = Math.max(1, Math.floor(trailingDays));
+  const fwd = Math.max(0, Math.floor(forwardDays));
   const fmt = (dt: Date) =>
     `${String(dt.getUTCFullYear()).padStart(4, "0")}-${String(
       dt.getUTCMonth() + 1
     ).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
   return {
     startDate: fmt(new Date(Date.UTC(y, m - 1, d - (days - 1)))),
-    endDate: fmt(new Date(Date.UTC(y, m - 1, d))),
+    endDate: fmt(new Date(Date.UTC(y, m - 1, d + fwd))),
+  };
+}
+
+const MAX_RANGE_DAYS = 400;
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isRealDate(s: string): number | null {
+  if (!ISO_DATE.test(s)) return null;
+  const [y, m, d] = s.split("-").map(Number);
+  const t = Date.UTC(y, m - 1, d);
+  const dt = new Date(t);
+  if (
+    dt.getUTCFullYear() !== y ||
+    dt.getUTCMonth() !== m - 1 ||
+    dt.getUTCDate() !== d
+  ) {
+    return null;
+  }
+  return t;
+}
+
+/**
+ * Validate the optional inclusive ?from / ?to yyyy-mm-dd params. Both are
+ * optional; each must be a real calendar date; from <= to when both present;
+ * span limited to 400 days. Empty string is treated as invalid (a param that
+ * was supplied but blank), null/undefined as absent.
+ */
+export function parseDateRange(
+  from: string | null | undefined,
+  to: string | null | undefined
+): { ok: true; from?: string; to?: string } | { ok: false } {
+  let f: number | null = null;
+  let t: number | null = null;
+  if (from != null) {
+    f = isRealDate(from);
+    if (f === null) return { ok: false };
+  }
+  if (to != null) {
+    t = isRealDate(to);
+    if (t === null) return { ok: false };
+  }
+  if (f !== null && t !== null) {
+    if (f > t) return { ok: false };
+    if ((t - f) / 86_400_000 > MAX_RANGE_DAYS) return { ok: false };
+  }
+  return {
+    ok: true,
+    ...(from != null ? { from } : {}),
+    ...(to != null ? { to } : {}),
   };
 }

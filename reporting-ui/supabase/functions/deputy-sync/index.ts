@@ -36,10 +36,13 @@ import {
   nextDay,
 } from "./query.ts";
 import { RESOURCE_MAP, type Json } from "./mappers.ts";
+import { planRosterReconcile } from "./reconcile.ts";
 
 const PAGE_SIZE = 500;
 const MAX_PAGES = 200; // runaway guard (200 * 500 = 100k records/resource)
 const BATCH_SIZE = 500; // DB upsert batch
+const RECONCILE_PAGE = 1000; // PostgREST caps responses at 1000 rows
+const RECONCILE_BATCH = 200; // ids per soft-delete UPDATE
 
 type SyncBody = {
   resources?: string[];
@@ -133,6 +136,9 @@ async function syncResource(
   let skipped = 0;
   let status: "succeeded" | "partial" | "failed" = "succeeded";
   let errorMessage: string | null = null;
+  const returnedIds = new Set<string>();
+  let reconcileMeta: Json | null = null;
+  let softDeleted = 0;
 
   try {
     for (let page = 0; page < MAX_PAGES; page++) {
@@ -151,6 +157,9 @@ async function syncResource(
       });
       const raw = await fetchPage(base, token, cfg.deputyResource, q);
       read += raw.length;
+      for (const r of raw) {
+        if (r.Id != null) returnedIds.add(String(r.Id));
+      }
 
       const mapped = raw.map((r) => cfg.mapper(r));
       const { unique, duplicates } = dedupeByDeputyId(mapped);
@@ -175,6 +184,70 @@ async function syncResource(
     errorMessage = e instanceof Error ? e.message : "error";
   }
 
+  // Roster soft-delete reconcile. Deputy's QUERY cannot expose deleted rosters,
+  // so rows in the synced window that Deputy no longer returns are hidden
+  // (is_deleted = true). Only after a fully succeeded, non-dry-run Roster sync;
+  // see reconcile.ts for the guards. A failure here never changes sync status.
+  if (resourceName === "Roster" && status === "succeeded" && !dryRun) {
+    try {
+      const existingIds: string[] = [];
+      for (let from = 0; ; from += RECONCILE_PAGE) {
+        const { data, error } = await supabase
+          .schema("deputy")
+          .from("rosters")
+          .select("deputy_id")
+          .gte("roster_date", body.startDate ?? "")
+          .lte("roster_date", body.endDate ?? "")
+          .eq("is_deleted", false)
+          .order("deputy_id", { ascending: true })
+          .range(from, from + RECONCILE_PAGE - 1);
+        if (error) throw new Error(`reconcile_read: ${error.message}`);
+        const page = (data ?? []) as { deputy_id: string }[];
+        for (const p of page) existingIds.push(String(p.deputy_id));
+        if (page.length < RECONCILE_PAGE) break;
+      }
+
+      const plan = planRosterReconcile({
+        resource: resourceName,
+        status,
+        dryRun,
+        startDate: body.startDate,
+        endDate: body.endDate,
+        readCount: read,
+        returnedIds,
+        existingIds,
+      });
+
+      if (plan.action === "apply") {
+        for (let i = 0; i < plan.idsToDelete.length; i += RECONCILE_BATCH) {
+          const batch = plan.idsToDelete.slice(i, i + RECONCILE_BATCH);
+          const { error } = await supabase
+            .schema("deputy")
+            .from("rosters")
+            .update({ is_deleted: true })
+            .in("deputy_id", batch)
+            .gte("roster_date", body.startDate ?? "")
+            .lte("roster_date", body.endDate ?? "")
+            .eq("is_deleted", false);
+          if (error) throw new Error(`reconcile_update: ${error.message}`);
+          softDeleted += batch.length;
+        }
+      } else if (
+        plan.reason === "empty_read_guard" ||
+        plan.reason === "mass_delete_guard"
+      ) {
+        console.error(
+          `deputy-sync roster reconcile refused: ${plan.reason} (read=${read}, existing=${existingIds.length})`
+        );
+      }
+      reconcileMeta = { action: plan.action, softDeleted, reason: plan.reason };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "error";
+      console.error("deputy-sync roster reconcile failed:", msg);
+      reconcileMeta = { action: "error", softDeleted, reason: msg };
+    }
+  }
+
   // Close the run.
   if (runId != null) {
     await supabase
@@ -188,6 +261,7 @@ async function syncResource(
         records_updated: 0,
         records_skipped: skipped,
         error_message: errorMessage,
+        ...(reconcileMeta ? { metadata: { dryRun, reconcile: reconcileMeta } } : {}),
       })
       .eq("id", runId);
 
@@ -208,7 +282,16 @@ async function syncResource(
     }
   }
 
-  return { resource: resourceName, status, read, written, skipped, dryRun, error: errorMessage };
+  return {
+    resource: resourceName,
+    status,
+    read,
+    written,
+    skipped,
+    dryRun,
+    error: errorMessage,
+    ...(reconcileMeta ? { reconcile: reconcileMeta } : {}),
+  };
 }
 
 Deno.serve(async (req: Request) => {
