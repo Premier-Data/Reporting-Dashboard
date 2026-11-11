@@ -439,7 +439,7 @@ export default function SchedulePage() {
      * ROSTER FOR VISIBLE WEEK
      *
      * Loaded separately from the rest of the schedule data and scoped
-     * to the currently visible week's date range. deputy_roster holds
+     * to the currently visible week's date range. Deputy roster holds
      * 2000+ rows — fetching everything on every load is unnecessary
      * and slow when only one week is ever shown at a time. Re-runs
      * whenever the visible week changes (Previous / Today / Next).

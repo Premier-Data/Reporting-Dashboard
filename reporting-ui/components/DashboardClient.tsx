@@ -58,6 +58,7 @@ import AnalystHeaderCard from "@/app/analyst-profile/AnalystHeaderCard";
 import {
   buildAnalystMetrics,
 } from "@/lib/analytics/buildAnalystMetrics";
+import { analystShifts } from "@/lib/api/deputyShifts";
 import {
   seasonsFromTT,
   dateInSeason,
@@ -117,8 +118,8 @@ export default function DashboardClient({
   // SEASON TOGGLE
   // -------------------------
   // The 2027 season runs 1 Oct 2026 – 30 Sep 2027. TT_Games carry an explicit
-  // `season` column (stamped per sheet in sync-deputy.js); deputy_shifts don't,
-  // so they're scoped by the season's Oct→Sep date window instead.
+  // `season` column (stamped per sheet in sync-deputy.js); the Deputy API shift
+  // rows are scoped by the season's Oct→Sep date window here instead.
   const seasonInfo = useMemo(() => seasonsFromTT(ttData ?? []), [ttData]);
   const [season, setSeason] = useState<string>("all");
   const [ttSport, setTtSport] = useState<"aussie" | "soccer">("aussie");
@@ -278,9 +279,13 @@ export default function DashboardClient({
   // -------------------------
   // ANALYST METRICS
   // -------------------------
+  // Employee-level views drop unresolved ("Unknown") employees; cost and hours
+  // totals elsewhere keep them.
+  const analystFiltered = useMemo(() => analystShifts(filtered), [filtered]);
+  const analystWeekDeputy = useMemo(() => analystShifts(weekDeputy), [weekDeputy]);
   const analystMetrics = useMemo(() => {
-    return buildAnalystMetrics(filtered, filteredTT);
-  }, [filtered, filteredTT]);
+    return buildAnalystMetrics(analystFiltered, filteredTT);
+  }, [analystFiltered, filteredTT]);
 
   // -------------------------
   // SELECTED ANALYST
@@ -515,7 +520,7 @@ export default function DashboardClient({
                 marginTop: 20,
               }}
             >
-              <HoursByEmployee data={filtered} />
+              <HoursByEmployee data={analystFiltered} />
               <CostByArea data={weekDeputy} />
             </div>
 
@@ -531,7 +536,7 @@ export default function DashboardClient({
               selector and filters internally, independent of the header
               season/week toggle. */}
           <TabsContent value="weekly">
-            <WeeklyReport deputyData={deputyData} ttData={ttData} />
+            <WeeklyReport ttData={ttData} />
           </TabsContent>
 
           {/* AWS COSTS */}
@@ -576,12 +581,12 @@ export default function DashboardClient({
 
           {/* PERFORMANCE */}
           <TabsContent value="performance">
-            <AveHoursTopAnalysts deputyData={weekDeputy} ttData={weekTT} />
+            <AveHoursTopAnalysts deputyData={analystWeekDeputy} ttData={weekTT} />
 
             <AnalystInsightsTable analysts={analystMetrics} />
 
             <AveHoursPerGame
-              deputyData={weekDeputy}
+              deputyData={analystWeekDeputy}
               ttData={weekTT}
             />
           </TabsContent>

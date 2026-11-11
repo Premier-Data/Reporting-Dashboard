@@ -1,5 +1,5 @@
 /**
- * "PREMIER DATA" is a placeholder name recorded in deputy_shifts and
+ * "PREMIER DATA" is a placeholder name recorded in Deputy shifts and
  * TT_Games when a shift or game was jointly handled by multiple analysts
  * rather than a single individual. It is not a real analyst and must be
  * excluded from every page that ranks, scores, lists, or attributes work

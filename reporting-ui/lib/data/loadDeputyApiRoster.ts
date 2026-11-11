@@ -11,7 +11,7 @@ type LoadDeputyApiRosterOptions = {
 
 /**
  * Loads rostered shifts from the Deputy API pipeline (deputy-read ->
- * deputy.rosters), shaped like the legacy deputy_roster rows. Same call shape
+ * deputy.rosters), shaped like the legacy Deputy roster rows. Same call shape
  * as loadDeputyRoster. Throws on failure: there is deliberately NO fallback to
  * the legacy table, so the page can show an error instead of stale data.
  */

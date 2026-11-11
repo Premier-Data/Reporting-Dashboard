@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import { supabase } from "@/lib/supabase";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
+import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
+import DeputyLoadError from "@/components/DeputyLoadError";
 import { seasonsFromTT, dateInSeason } from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
 import type { AnalystMetrics } from "@/types/analyst";
@@ -56,26 +58,38 @@ export default function LeaderboardPage() {
   const [shiftRows, setShiftRows] = useState<DeputyShift[]>([]);
   const [gameRows, setGameRows] = useState<TTGame[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [team, setTeam] = useState<Team>("AUS");
   // Season filter: games by explicit season, shifts by Oct→Sep window.
   const [season, setSeason] = useState<string>("all");
 
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       setLoading(true);
+      setLoadError(null);
 
-      const [shifts, games] = await Promise.all([
-        fetchAll<DeputyShift>("deputy_shifts"),
-        fetchAll<TTGame>("TT_Games"),
-      ]);
-
-      setShiftRows(shifts);
-      setGameRows(games);
-      setLoading(false);
+      try {
+        const [shifts, games] = await Promise.all([
+          getDeputyShifts({ force: reloadKey > 0 }),
+          fetchAll<TTGame>("TT_Games"),
+        ]);
+        if (cancelled) return;
+        setShiftRows(analystShifts(shifts));
+        setGameRows(games);
+      } catch (e) {
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
     load();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   const seasonInfo = useMemo(() => seasonsFromTT(gameRows), [gameRows]);
 
@@ -125,6 +139,14 @@ export default function LeaderboardPage() {
 
   const podium = ranked.slice(0, 3);
   const rest = ranked.slice(3);
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen p-10" style={{ background: THEME.bg }}>
+        <DeputyLoadError message={loadError} onRetry={() => setReloadKey((k) => k + 1)} />
+      </div>
+    );
+  }
 
   if (loading) {
     return (

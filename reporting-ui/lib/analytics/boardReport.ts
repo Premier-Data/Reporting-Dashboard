@@ -1,15 +1,20 @@
-// Board-report summariser: turns the raw deputy_shifts (labour cost + hours)
+// Board-report summariser: turns the raw Deputy shifts (labour cost + hours)
 // and TT_Games (games coded) rows into the handful of roll-ups a board report
 // needs, for a chosen date range. Pure functions — no fetching — so they're
 // trivially testable and reused by the page.
 //
 // Source of truth is the SAME Supabase data the Reporting dashboard reads
-// (deputy_shifts, TT_Games), so the numbers reconcile with that page. Labour
-// cost/hours come from deputy_shifts; games come from TT_Games. The two are
+// (Deputy shifts, TT_Games), so the numbers reconcile with that page. Labour
+// cost/hours come from Deputy shifts; games come from TT_Games. The two are
 // filtered by their own date fields (shift_date / Date) over the chosen range.
 
 import { calculateKPIs } from "@/lib/analytics";
 import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
+
+// Name given to Deputy timesheets whose employee could not be resolved (see
+// normaliseEmployeeName in lib/api/deputyShifts.ts). Their cost and hours still
+// count, but they are not real analysts: no headcount, no analyst leaderboard.
+const UNRESOLVED_EMPLOYEE = "Unknown";
 
 // Rows arrive untyped from Supabase (`select("*")`); we read defensively.
 export type ShiftRow = Record<string, unknown>;
@@ -72,7 +77,7 @@ export type AnalystSummary = {
 };
 
 // The weekly fixed cost of the Philippines coding team. Their cost is NOT in
-// deputy_shifts (they're a fixed retainer, not Deputy-rostered), so their
+// Deputy shifts (they're a fixed retainer, not Deputy-rostered), so their
 // per-game cost is derived from this rate × the number of weeks in the range.
 export const PHL_WEEKLY_FIXED_COST = 3800;
 
@@ -103,7 +108,7 @@ export type BoardReport = {
   avgCostPerHour: number;
   avgCostPerGame: number;
   avgHoursPerGame: number;
-  // ── AUS coding team (Home + Office analysts in deputy_shifts) ──
+  // ── AUS coding team (Home + Office analysts in Deputy shifts) ──
   // AUS games are coded by the Home + Office analyst areas, so their per-game
   // figures are measured against AUS games ONLY (not total games).
   pureCodingCost: number; // Home + Office analyst labour cost
@@ -118,7 +123,7 @@ export type BoardReport = {
   incCodingHours: number;
   incCostPerGame: number; // incCodingCost / ausGames
   incHoursPerGame: number; // incCodingHours / ausGames
-  // ── Philippines team (fixed cost, not in deputy_shifts) ──
+  // ── Philippines team (fixed cost, not in Deputy shifts) ──
   weeksInRange: number; // (range length in days) / 7
   phlFixedCost: number; // PHL_WEEKLY_FIXED_COST × weeksInRange
   phlGames: number; // games coded in PHL over the range
@@ -169,7 +174,7 @@ export function buildBoardReport(
 
 /**
  * Build the board report for a single data WEEK (the Wed→Tue week number
- * carried on deputy_shifts.week / TT_Games.Week). Week numbers RESTART each
+ * carried on the Deputy shift week / TT_Games.Week). Week numbers RESTART each
  * season, so a week must be qualified by its season — otherwise the two
  * "week 1"s (one per season) merge. When `season` is given, only rows of that
  * season are counted; omit it to keep the legacy number-only behaviour. The
@@ -229,7 +234,9 @@ function summarise(
   const realNames = new Set<string>();
   for (const r of shifts) {
     const name = str(r.employee_name);
-    if (name && !isExcludedAnalystName(name)) realNames.add(name.toLowerCase());
+    if (name && name !== UNRESOLVED_EMPLOYEE && !isExcludedAnalystName(name)) {
+      realNames.add(name.toLowerCase());
+    }
   }
 
   // By area.
@@ -333,7 +340,7 @@ function summarise(
   };
   for (const r of shifts) {
     const name = str(r.employee_name);
-    if (!name || isExcludedAnalystName(name)) continue;
+    if (!name || name === UNRESOLVED_EMPLOYEE || isExcludedAnalystName(name)) continue;
     const a = getAnalyst(name);
     a.cost += num(r.total_cost);
     a.hours += num(r.total_hours);

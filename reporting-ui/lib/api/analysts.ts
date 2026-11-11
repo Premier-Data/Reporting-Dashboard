@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { getDeputyShiftEmployeeNames } from "@/lib/api/deputyShifts";
 
 const API_URL =
     process.env.NODE_ENV === "development"
@@ -649,7 +650,7 @@ export async function createAnalystsBulk(
 
 /**
  * Distinct analyst names for pickers. Unions the shared `analysts` table with
- * the Deputy roster (deputy_shifts.employee_name) so both manually-added
+ * the employee names in approved Deputy API timesheets so both manually-added
  * analysts and rostered staff appear. Case-insensitively de-duplicated,
  * name-sorted.
  */
@@ -674,25 +675,17 @@ export async function getPlatformAnalystNames(): Promise<string[]> {
         console.error("getPlatformAnalystNames: analysts table failed", err);
     }
 
-    // Deputy roster (paged).
-    const pageSize = 1000;
-    let from = 0;
-    while (true) {
-        const { data, error } = await supabase
-            .from("deputy_shifts")
-            .select("employee_name")
-            .range(from, from + pageSize - 1);
-
-        if (error) {
-            console.error("getPlatformAnalystNames: deputy_shifts failed", error);
-            break;
-        }
-        if (!data || data.length === 0) break;
-        for (const r of data) add((r as { employee_name?: string }).employee_name);
-        from += pageSize;
-        if (data.length < pageSize) break;
+    // Deputy API timesheets. This is the one deliberate degraded path: pickers
+    // must not break because Deputy is down, so on failure only the analysts
+    // table names are returned (a subset, never another Deputy source).
+    try {
+        for (const n of await getDeputyShiftEmployeeNames()) add(n);
+    } catch (err) {
+        console.error(
+            "getPlatformAnalystNames: deputy names unavailable",
+            (err as { code?: string })?.code ?? err
+        );
     }
-
     return names.sort((a, b) => a.localeCompare(b));
 }
 

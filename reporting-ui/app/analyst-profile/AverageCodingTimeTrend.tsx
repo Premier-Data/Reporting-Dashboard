@@ -50,9 +50,6 @@ export default function AverageCodingTimeTrend({
   ttData,
   analystName,
 }: Props) {
-  console.log("DEPUTY SAMPLE:", deputyData?.[0]); // 👈 ADD HERE
-  console.log("ANALYST NAME PROP:", analystName);
-  console.log("FULL SHIFT SAMPLE:", deputyData[0]);
 
   const selected = norm(analystName);
   const SLA = 7;
@@ -88,10 +85,6 @@ export default function AverageCodingTimeTrend({
         hours: 0,
         games: 0,
       };
-      console.log("FILTERED ROWS:", deputyData?.filter(r => {
-        const area = String(r.area ?? "").toLowerCase();
-        return area.includes("home") || area.includes("office");
-      }));
       existing.hours += Number(r.total_hours ?? 0);
       weeks.set(week, existing);
     }

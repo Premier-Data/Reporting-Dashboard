@@ -35,11 +35,12 @@ export default function ComparisonTrendCharts({
     >();
 
     shifts.forEach((shift) => {
-      const week =
+      const week = String(
         shift.week ??
         shift.week_name ??
         shift.week_start ??
-        "Unknown";
+        "Unknown"
+      );
 
       if (!map.has(week)) {
         map.set(week, {

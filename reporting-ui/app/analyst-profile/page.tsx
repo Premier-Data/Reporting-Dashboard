@@ -34,6 +34,8 @@ import AttributeRatings from "./AttributeRatings";
 import type { DeputyShift } from "@/types/deputy";
 import type { TTGame } from "@/types/ttgame";
 import { supabase } from "@/lib/supabase";
+import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
+import DeputyLoadError from "@/components/DeputyLoadError";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
 import { getCompAllocationGames } from "@/lib/api/compFixtures";
 import type { AnalystMetrics } from "@/types/analyst";
@@ -76,6 +78,8 @@ function AnalystProfileContent() {
   const [affiliations, setAffiliations] =
     useState<Map<string, string[]>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [gameSortField, setGameSortField] = useState("Week");
   const [gameSortDir, setGameSortDir] = useState<"asc" | "desc">("desc");
 
@@ -115,10 +119,21 @@ async function fetchAll<T>(table: string): Promise<T[]> {
   // LOAD DATA
   // -------------------------
   useEffect(() => {
+    let cancelled = false;
     async function load() {
       setLoading(true);
+      setLoadError(null);
 
-const shiftsData = await fetchAll<DeputyShift>("deputy_shifts");
+let shiftsData: DeputyShift[];
+      try {
+        shiftsData = analystShifts(await getDeputyShifts({ force: reloadKey > 0 }));
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(e instanceof Error ? e.message : String(e));
+          setLoading(false);
+        }
+        return;
+      }
 const gamesData = await fetchAll<TTGame>("TT_Games");
 
       // Merge comp-fixture allocations (home/away team-side analyst) so a
@@ -224,6 +239,7 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
         // Affiliations are supplementary — fail quietly
       }
 
+      if (cancelled) return;
       setShifts(shiftsData);
       setGames(gamesData);
 
@@ -240,7 +256,10 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
     }
 
     load();
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
 
   // -------------------------
   // DROPDOWN LIST
@@ -274,7 +293,6 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
     );
   }, [selectedAnalyst, analysts]);
 
-  console.log("ACTIVE ANALYST", activeData);
 
   // -------------------------
   // FILTERING (CRITICAL FIX)
@@ -300,6 +318,14 @@ const filteredGames = useMemo(() => {
   // -------------------------
   // LOADING STATE
   // -------------------------
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[#0b1220] p-10">
+        <DeputyLoadError message={loadError} onRetry={() => setReloadKey((k) => k + 1)} />
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-[#0b1220] text-white p-10">

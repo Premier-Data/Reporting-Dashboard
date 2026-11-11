@@ -14,6 +14,17 @@ const SUPABASE_ANON_KEY =
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Deputy names come from the Deputy API tables in the private `deputy` schema,
+// which only the service role can read. Provide the key via the environment
+// (never hard-code it): SUPABASE_SERVICE_KEY=... node scripts/gen_analyst_accounts.mjs
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+if (!SERVICE_KEY) {
+    console.error("Set SUPABASE_SERVICE_KEY to read employee names from the Deputy API tables.");
+    process.exit(1);
+}
+const deputy = createClient(SUPABASE_URL, SERVICE_KEY, { db: { schema: "deputy" } });
+const REPORT_START = "2026-01-01"; // same cutoff as lib/deputy/reportWeeks.ts
+
 function sqlEscape(s) {
     return s.replace(/'/g, "''");
 }
@@ -55,22 +66,44 @@ async function main() {
     if (pErr) console.error("analysts table:", pErr.message);
     for (const r of platform ?? []) add(r.name);
 
-    // Deputy roster (paged).
+    // Deputy API: employees with an approved, non-discarded timesheet since the
+    // report start. Name rule = first + last, else display_name (as deputy-read).
     const pageSize = 1000;
-    let from = 0;
-    while (true) {
-        const { data, error } = await supabase
-            .from("deputy_shifts")
-            .select("employee_name")
+    const employeeIds = new Set();
+    for (let from = 0; ; from += pageSize) {
+        const { data, error } = await deputy
+            .from("timesheets")
+            .select("employee_deputy_id")
+            .eq("time_approved", true)
+            .or("discarded.is.null,discarded.eq.false")
+            .gte("timesheet_date", REPORT_START)
+            .order("deputy_id", { ascending: true })
             .range(from, from + pageSize - 1);
         if (error) {
-            console.error("deputy_shifts:", error.message);
-            break;
+            console.error("deputy.timesheets:", error.message);
+            process.exit(1);
         }
-        if (!data || data.length === 0) break;
-        for (const r of data) add(r.employee_name);
-        from += pageSize;
-        if (data.length < pageSize) break;
+        for (const r of data ?? []) {
+            if (r.employee_deputy_id != null) employeeIds.add(String(r.employee_deputy_id));
+        }
+        if (!data || data.length < pageSize) break;
+    }
+    for (let from = 0; ; from += pageSize) {
+        const { data, error } = await deputy
+            .from("employees")
+            .select("deputy_id, first_name, last_name, display_name")
+            .order("deputy_id", { ascending: true })
+            .range(from, from + pageSize - 1);
+        if (error) {
+            console.error("deputy.employees:", error.message);
+            process.exit(1);
+        }
+        for (const e of data ?? []) {
+            if (!employeeIds.has(String(e.deputy_id))) continue;
+            const full = `${e.first_name ?? ""} ${e.last_name ?? ""}`.trim();
+            add(full || e.display_name);
+        }
+        if (!data || data.length < pageSize) break;
     }
 
     // Existing usernames so we don't collide (case-insensitive).

@@ -2,7 +2,7 @@
 
 // Board Report — a summarised, print-ready view of workforce cost, hours and
 // games over a chosen month or date range. All data comes from the project's
-// own Supabase tables (deputy_shifts for labour cost/hours, TT_Games for games
+// own data (Deputy API shifts for labour cost/hours, TT_Games for games
 // coded) — the same source the Reporting dashboard reads — so no spreadsheet
 // upload is needed and the numbers reconcile with that page.
 //
@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 
 import { supabase } from "@/lib/supabase";
+import { getDeputyShifts } from "@/lib/api/deputyShifts";
 import {
   buildBoardReport,
   buildWeekReport,
@@ -436,6 +437,7 @@ export default function BoardReportPage() {
   const [gameRows, setGameRows] = useState<GameRow[]>([]);
   const [dataReady, setDataReady] = useState(false);
   const [dataError, setDataError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const [report, setReport] = useState<BoardReport | null>(null);
   const [prevReport, setPrevReport] = useState<BoardReport | null>(null);
@@ -446,14 +448,15 @@ export default function BoardReportPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setDataError(null);
     (async () => {
       try {
         const [shifts, games] = await Promise.all([
-          loadAll("deputy_shifts"),
+          getDeputyShifts({ force: reloadKey > 0 }),
           loadAll("TT_Games"),
         ]);
         if (cancelled) return;
-        setShiftRows(shifts as ShiftRow[]);
+        setShiftRows(shifts as unknown as ShiftRow[]);
         setGameRows(games as GameRow[]);
         setDataReady(true);
       } catch (err) {
@@ -467,7 +470,7 @@ export default function BoardReportPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [reloadKey]);
 
   // Seasons present in the shift data (descending). Week numbers restart each
   // season, so the week picker is scoped to the chosen season.
@@ -649,6 +652,13 @@ export default function BoardReportPage() {
           {dataError && (
             <div className="mb-3 flex items-center gap-2 text-sm text-red-600">
               <AlertTriangle size={15} /> {dataError}
+              <button
+                type="button"
+                onClick={() => setReloadKey((k) => k + 1)}
+                className="rounded-lg border border-red-300 px-2 py-0.5 text-xs font-semibold text-red-700 hover:bg-red-50"
+              >
+                Retry
+              </button>
             </div>
           )}
           <div className="flex flex-wrap items-end gap-4">

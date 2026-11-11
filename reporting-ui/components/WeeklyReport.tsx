@@ -19,13 +19,8 @@ import { useEffect, useMemo, useState } from "react";
 import { seasonsFromTT } from "@/lib/analytics/season";
 import { supabase } from "@/lib/supabase";
 import type { SummaryWeek } from "@/lib/exports/weeklySummaryExcel";
-import {
-  WEEKLY_REPORT_VIEW,
-  fetchAllViewRows,
-  isViewMissing,
-  pickDeputyRows,
-  type PageResult,
-} from "@/lib/weeklyReport/deputySource";
+import { getDeputyShiftAggregates } from "@/lib/api/deputyShifts";
+import DeputyLoadError from "@/components/DeputyLoadError";
 
 type Row = Record<string, unknown>;
 
@@ -69,10 +64,8 @@ function groupOf(area: string): Group {
 }
 
 export default function WeeklyReport({
-  deputyData,
   ttData,
 }: {
-  deputyData: Row[];
   ttData: Row[];
 }) {
   // Soccer games are fetched here (self-contained tab) so the Soccer group's
@@ -100,43 +93,32 @@ export default function WeeklyReport({
     };
   }, []);
 
-  // Deputy shift rows: from the weekly_report_shifts view (Excel for season <
-  // 2027, Deputy API from 2027 Week 1). If the view isn't there yet or errors,
-  // fall back to the `deputyData` prop (Excel deputy_shifts) exactly as before.
-  const [viewRows, setViewRows] = useState<Row[] | null>(null);
-  const [viewState, setViewState] = useState<"loading" | "ok" | "missing" | "error">("loading");
+  // Deputy shift rows: ONLY from the Deputy API (name-free view) via the shared
+  // data layer, lib/api/deputyShifts.ts. There is no fallback to any other source; a failure shows
+  // an error state with a retry.
+  const [shiftRows, setShiftRows] = useState<Row[]>([]);
+  const [shiftState, setShiftState] = useState<"loading" | "ok" | "error">("loading");
+  const [shiftError, setShiftError] = useState<string>("");
+  const [reloadKey, setReloadKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setShiftState("loading");
     (async () => {
-      let lastError: PageResult["error"] = null;
-      const rows = await fetchAllViewRows(async (from, to) => {
-        const res = await supabase
-          .from(WEEKLY_REPORT_VIEW)
-          .select("*")
-          .order("shift_key")
-          .range(from, to);
-        lastError = res.error ? { code: res.error.code, message: res.error.message, status: res.status } : null;
-        return { data: (res.data as Row[] | null) ?? null, error: lastError };
-      });
-      if (cancelled) return;
-      if (rows) {
-        setViewRows(rows);
-        setViewState("ok");
-      } else {
-        console.warn(
-          "Weekly Report: weekly_report_shifts unavailable, using deputy_shifts (Excel).",
-          lastError
-        );
-        setViewState(isViewMissing(lastError) ? "missing" : "error");
+      try {
+        const rows = await getDeputyShiftAggregates({ force: reloadKey > 0 });
+        if (cancelled) return;
+        setShiftRows(rows as unknown as Row[]);
+        setShiftState("ok");
+      } catch (e) {
+        if (cancelled) return;
+        setShiftError(e instanceof Error ? e.message : String(e));
+        setShiftState("error");
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
-  const picked = useMemo(() => pickDeputyRows(viewRows, deputyData), [viewRows, deputyData]);
-  const shiftRows = picked.rows;
-
+  }, [reloadKey]);
   // OS (offshore) team: fixed weekly cost per person from the "OS Team" sheet
   // (synced to os_team). Cost-only — there are no hours or games for this group.
   // Each row carries start_season/start_week; the cost only counts from there on.
@@ -478,6 +460,21 @@ export default function WeeklyReport({
     void import("@/lib/exports/weeklySummaryExcel").then((m) => m.exportWeeklySummary(weeksOut, season));
   };
 
+  if (shiftState === "error") {
+    return (
+      <div style={{ marginTop: 20 }}>
+        <DeputyLoadError message={shiftError} onRetry={() => setReloadKey((k) => k + 1)} />
+      </div>
+    );
+  }
+  if (shiftState === "loading") {
+    return (
+      <div style={{ marginTop: 20 }} className="text-sm text-slate-500">
+        Loading Deputy data...
+      </div>
+    );
+  }
+
   const { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost } = report;
   const cols: (string | number)[] = ["total", ...weeks];
 
@@ -516,11 +513,7 @@ export default function WeeklyReport({
             separate from Aussie Rules.
           </p>
           <p className="text-[11px] text-slate-400">
-            {picked.source === "view"
-              ? "Source: Deputy API from 2027 Week 1; Excel before."
-              : viewState === "loading"
-                ? "Source: loading…"
-                : `Source: Excel (deputy_shifts). Deputy API view ${viewState === "missing" ? "not set up yet" : "unavailable"}.`}
+            Source: Deputy API
           </p>
         </div>
         <div className="flex items-center gap-3">

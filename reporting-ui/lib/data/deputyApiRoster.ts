@@ -7,7 +7,7 @@ import type { DeputyRoster } from "@/types/deputyRoster";
  *
  * Times are converted to Australia/Sydney local time with Intl (never the
  * browser's zone, never a hardcoded offset) and formatted HH:mm:ss to match the
- * legacy deputy_roster display.
+ * legacy Deputy roster display.
  */
 
 const TZ = "Australia/Sydney";

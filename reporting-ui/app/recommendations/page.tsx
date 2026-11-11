@@ -7,6 +7,15 @@ import { getHubConnection } from "@/lib/signalr";
 import Image from "next/image";
 
 import { supabase } from "@/lib/supabase";
+import {
+  analystShifts,
+  getDeputyRostersWithWeek,
+  getDeputyShifts,
+  type DeputyRosterWithSeason,
+} from "@/lib/api/deputyShifts";
+import { deputySeasonOf } from "@/lib/deputy/reportWeeks";
+import { filterRosterForFixture } from "@/lib/recommendations/rosterSeason";
+import DeputyLoadError from "@/components/DeputyLoadError";
 import { leagueLogos } from "@/app/analyst-profile/leagueLogos";
 
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
@@ -37,7 +46,6 @@ import { assignFixture } from "@/lib/api/assignFixture";
 import type { TTGame } from "@/types/ttgame";
 import type { DeputyShift } from "@/types/deputy";
 import type { AnalystMetrics } from "@/types/analyst";
-import type { DeputyRoster } from "@/types/deputyRoster";
 import { buildAnalystAvailability } from "@/lib/recommendations/buildAnalystAvailability";
 import { Info } from "lucide-react";
 
@@ -110,7 +118,9 @@ export default function RecommendationPage() {
   const [loading, setLoading] = useState(true);
 
   const [analysts, setAnalysts] = useState<AnalystMetrics[]>([]);
-  const [roster, setRoster] = useState<DeputyRoster[]>([]);
+  const [roster, setRoster] = useState<DeputyRosterWithSeason[]>([]);
+  const [deputyError, setDeputyError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
   const [sortField, setSortField] = useState<
     | "Week"
     | "Round"
@@ -132,30 +142,20 @@ export default function RecommendationPage() {
     async function loadHistory() {
       setLoading(true);
 
-      // deputy_shifts can exceed 1000 rows — an unpaginated select("*") is
-      // silently capped at 1000, dropping shifts. Page through with .range()
-      // like deputy_roster below so every shift loads.
-      const shifts: DeputyShift[] = [];
-      let shiftFrom = 0;
-      const shiftPageSize = 1000;
-
-      while (true) {
-        const { data: shiftPage, error: shiftError } =
-          await supabase
-            .from("deputy_shifts")
-            .select("*")
-            .range(shiftFrom, shiftFrom + shiftPageSize - 1);
-
-        if (shiftError) throw shiftError;
-        if (!shiftPage?.length) break;
-
-        shifts.push(...(shiftPage as DeputyShift[]));
-
-        if (shiftPage.length < shiftPageSize) break;
-
-        shiftFrom += shiftPageSize;
+      // Deputy shifts and rosters come only from the Deputy API (shared layer).
+      setDeputyError(null);
+      let shifts: DeputyShift[];
+      let rosterData: DeputyRosterWithSeason[];
+      try {
+        [shifts, rosterData] = await Promise.all([
+          getDeputyShifts({ force: reloadKey > 0 }).then(analystShifts),
+          getDeputyRostersWithWeek({ force: reloadKey > 0 }),
+        ]);
+      } catch (e) {
+        setDeputyError(e instanceof Error ? e.message : String(e));
+        setLoading(false);
+        return;
       }
-
       const { data: affiliationData, error: affiliationError } =
         await supabase
           .from("analyst_team_affiliations")
@@ -206,31 +206,6 @@ export default function RecommendationPage() {
           "ALL AFFILIATIONS:",
           Object.fromEntries(affiliationMap)
         );
-      }
-
-      // deputy_roster now holds 2000+ rows — Supabase caps an
-      // unpaginated select("*") at 1000, so page through with
-      // .range() to make sure every row (including current week) loads.
-      const rosterData: DeputyRoster[] = [];
-      let rosterFrom = 0;
-      const rosterPageSize = 1000;
-
-      while (true) {
-        const { data: rosterPage, error: rosterError } =
-          await supabase
-            .from("deputy_roster")
-            .select("*")
-            .range(rosterFrom, rosterFrom + rosterPageSize - 1);
-
-        if (rosterError) throw rosterError;
-
-        if (!rosterPage?.length) break;
-
-        rosterData.push(...(rosterPage as DeputyRoster[]));
-
-        if (rosterPage.length < rosterPageSize) break;
-
-        rosterFrom += rosterPageSize;
       }
 
       setRoster(rosterData);
@@ -320,7 +295,7 @@ export default function RecommendationPage() {
     }
 
     loadHistory();
-  }, []);
+  }, [reloadKey]);
 
   useEffect(() => {
     if (historicalGames.length === 0) return;
@@ -588,9 +563,25 @@ export default function RecommendationPage() {
   // --------------------------------------------------
   // BUILD RECOMMENDATIONS
   // --------------------------------------------------
+  // Roster week numbers repeat across seasons, so scope the roster to the
+  // selected fixture's season before matching by week.
+  const seasonRoster = useMemo(() => {
+    let fixtureSeason: number | undefined;
+    if (selectedFixture) {
+      const s = Number(selectedFixture.season);
+      fixtureSeason =
+        selectedFixture.season != null && Number.isFinite(s)
+          ? s
+          : deputySeasonOf(selectedFixture.Date.substring(0, 10));
+    } else if (roster.length > 0) {
+      fixtureSeason = Math.max(...roster.map((r) => r.season));
+    }
+    return fixtureSeason == null ? [] : filterRosterForFixture(roster, fixtureSeason);
+  }, [roster, selectedFixture]);
+
   const analystAvailability = useMemo(() => {
     const availabilityByAnalyst =
-      buildAnalystAvailability(roster);
+      buildAnalystAvailability(seasonRoster);
 
     const currentWeek = selectedFixture
       ? Number(selectedFixture.Week)
@@ -608,7 +599,7 @@ export default function RecommendationPage() {
 
     return availabilityForWeek;
 
-  }, [roster, selectedFixture, selectedWeek]);
+  }, [seasonRoster, selectedFixture, selectedWeek]);
 
   // --------------------------------------------------
   // ANALYST SCHEDULE DATES FOR TOOLTIP
@@ -620,7 +611,7 @@ export default function RecommendationPage() {
 
     const scheduleMap = new Map<string, { day: string; date: string }[]>();
 
-    for (const shift of roster) {
+    for (const shift of seasonRoster) {
       if (
         !shift.employee_name ||
         !shift.shift_date ||
@@ -652,7 +643,7 @@ export default function RecommendationPage() {
     });
 
     return scheduleMap;
-  }, [roster, selectedFixture, selectedWeek]);
+  }, [seasonRoster, selectedFixture, selectedWeek]);
 
   const selectedRecommendation = useMemo(() => {
 
@@ -1274,7 +1265,12 @@ export default function RecommendationPage() {
               )}
             </div>
 
-            {loading ? (
+            {deputyError ? (
+              <DeputyLoadError
+                message={deputyError}
+                onRetry={() => setReloadKey((k) => k + 1)}
+              />
+            ) : loading ? (
               <div>Loading...</div>
             ) : (
               <div className="overflow-hidden rounded-lg border border-slate-700 flex flex-col flex-1">

@@ -13,7 +13,8 @@ Two independently deployed pieces:
 
 Data sources:
 
-- **Supabase** — `TT_Games` (fixture master list), `deputy_shifts`, `deputy_roster`, `teams`, `analyst_team_affiliations`
+- **Supabase** — `TT_Games` (fixture master list), `teams`, `analyst_team_affiliations`
+- **Deputy API** — shifts and rosters come only from the Deputy API tables (via `lib/api/deputyShifts.ts`), never from the Excel-loaded Deputy tables
 - **PDAutoDownload API** (PostgreSQL) — live download status, fixture assignments, computers, analysts
 - **SignalR** (`/operationsHub`) — real-time allocation/progress broadcasts to all open pages
 

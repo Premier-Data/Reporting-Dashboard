@@ -5,6 +5,8 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 
 import { supabase } from "@/lib/supabase";
+import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
+import DeputyLoadError from "@/components/DeputyLoadError";
 import AnalystSelect from "./AnalystSelect";
 import AnalystHero from "../analyst-profile/AnalystHero";
 import AttributeRatings from "../analyst-profile/AttributeRatings";
@@ -74,6 +76,8 @@ async function fetchAll<T>(table: string): Promise<T[]> {
 export default function AnalystComparePage() {
 
     const [loading, setLoading] = useState(true);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
 
     const [shiftRows, setShiftRows] = useState<ShiftRow[]>([]);
     const [ttRows, setTTRows] = useState<TTGameRow[]>([]);
@@ -85,24 +89,36 @@ export default function AnalystComparePage() {
 
     useEffect(() => {
 
+        let cancelled = false;
+
         async function load() {
 
             setLoading(true);
+            setLoadError(null);
 
-            const [shifts, tt] = await Promise.all([
-                fetchAll<ShiftRow>("deputy_shifts"),
-                fetchAll<TTGameRow>("TT_Games"),
-            ]);
+            try {
+                const [shifts, tt] = await Promise.all([
+                    getDeputyShifts({ force: reloadKey > 0 }),
+                    fetchAll<TTGameRow>("TT_Games"),
+                ]);
 
-            setShiftRows(shifts);
-            setTTRows(tt);
-
-            setLoading(false);
+                if (cancelled) return;
+                setShiftRows(analystShifts(shifts));
+                setTTRows(tt);
+            } catch (e) {
+                if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
         }
 
         load();
 
-    }, []);
+        return () => {
+            cancelled = true;
+        };
+
+    }, [reloadKey]);
 
     const seasonInfo = useMemo(() => seasonsFromTT(ttRows), [ttRows]);
 
@@ -187,6 +203,14 @@ export default function AnalystComparePage() {
         const b = analystB;
         setAnalystA(b);
         setAnalystB(a);
+    }
+
+    if (loadError) {
+        return (
+            <div className="min-h-screen bg-[#081220] p-10">
+                <DeputyLoadError message={loadError} onRetry={() => setReloadKey((k) => k + 1)} />
+            </div>
+        );
     }
 
     if (loading) {

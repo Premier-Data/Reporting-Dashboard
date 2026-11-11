@@ -4,7 +4,7 @@ export interface DeputyShift {
   area_name?: string;
   area?: string;
 
-  week?: string;
+  week?: string | number;
   week_name?: string;
   week_start?: string;
   pay_week?: string;
@@ -15,5 +15,5 @@ export interface DeputyShift {
   total_cost: number;
 
   shift_hours?: number;
-  hourly_rate?: number;
+  hourly_rate?: number | null;
 }

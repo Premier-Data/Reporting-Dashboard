@@ -5,7 +5,7 @@
 // explicit `season` column stamped from the source sheet in sync-deputy.js, so
 // for games the season is authoritative and date-independent.
 //
-// deputy_shifts rows are scoped by the season DATE WINDOW below when needed.
+// Deputy shift rows are scoped by the season DATE WINDOW below when needed.
 // This file is the single source of truth for that boundary and MUST match
 // deputySeasonFromDate() in sync-deputy.js.
 //

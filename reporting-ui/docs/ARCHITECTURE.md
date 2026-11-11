@@ -322,7 +322,7 @@ these blobs are large:
   colours, excluded-analyst rules.
 - `lib/recommendations/` — analyst-to-fixture scoring engine (league
   experience, availability, weights).
-- `lib/data/loadDeputyRoster.ts` — loads the Deputy roster for the dashboard.
+- `lib/api/deputyShifts.ts` — the single data layer for Deputy shifts and rosters. All Deputy data comes from the Deputy API (the `deputy` schema): the name-free view `weekly_report_shifts` for the Weekly Report, and the `deputy-read` edge function for employee-level pages. Nothing reads the Excel-loaded Deputy tables; `lib/deputy/noExcelDeputyReads.test.ts` enforces that.
 
 ---
 
