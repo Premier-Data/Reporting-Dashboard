@@ -23,6 +23,11 @@ export type DeputyReadOptions = {
   from?: string;
   /** Inclusive yyyy-mm-dd upper bound. */
   to?: string;
+  /**
+   * Throw when a 200 response has no `rows` array instead of returning [].
+   * Used by the shared shift layer so a malformed body is never shown as "no data".
+   */
+  strict?: boolean;
 };
 
 /** Rows plus whether deputy-read actually ran a sync for this request. */
@@ -54,9 +59,11 @@ async function callWithMeta<T>(
   if (!res.ok) {
     throw new Error(`deputy-read ${dataset} failed: ${res.status}`);
   }
-  return parseDeputyBody<T>(
-    (await res.json()) as { rows?: T[]; synced?: unknown }
-  );
+  const body = (await res.json()) as { rows?: T[]; synced?: unknown };
+  if (opts?.strict && !Array.isArray(body?.rows)) {
+    throw new Error(`deputy-read ${dataset} returned no rows array`);
+  }
+  return parseDeputyBody<T>(body);
 }
 
 async function call<T>(
