@@ -112,7 +112,7 @@ describe("mapTimesheetToShift", () => {
       total_cost: 200,
       hourly_rate: 25,
       area_name: "Aussie Rules - Home Analyst",
-      week: 2,
+      week: 27,
       season: 2026,
       day_name: "Wednesday",
       month_name: "April",
@@ -148,19 +148,25 @@ describe("mapTimesheetToShift", () => {
 });
 
 describe("getDeputyShifts", () => {
-  it("requests one strict window per season, drops pre-cutoff rows, sorts by date then key", async () => {
+  it("requests one strict window per season from 2025, keeps all history, drops pre-history rows, sorts by date then key", async () => {
     getTimesheets.mockImplementation(async (o: { from?: string; sync?: boolean }) => {
       if (o.sync) return [];
-      if (o.from === "2026-01-01")
-        return [ts({ deputy_id: "9", timesheet_date: "2026-02-01" }), ts({ deputy_id: "2", timesheet_date: "2025-12-31" })];
-      return [ts({ deputy_id: "3", timesheet_date: "2026-02-01" })];
+      if (o.from === "2025-01-01")
+        return [
+          ts({ deputy_id: "9", timesheet_date: "2026-02-01" }),
+          ts({ deputy_id: "2", timesheet_date: "2025-03-11" }),
+          ts({ deputy_id: "1", timesheet_date: "2024-12-31" }),
+        ];
+      return o.from === "2025-10-01" ? [ts({ deputy_id: "3", timesheet_date: "2026-02-01" })] : [];
     });
     const rows = await getDeputyShifts();
-    expect(rows.map((r) => r.shift_key)).toEqual(["api_3", "api_9"]);
+    expect(rows.map((r) => r.shift_key)).toEqual(["api_2", "api_3", "api_9"]);
+    expect(rows[0]).toMatchObject({ season: 2025, week: 24 });
     const windowCalls = getTimesheets.mock.calls.map((c) => c[0]).filter((o) => !o.sync);
-    expect(windowCalls.length).toBeGreaterThanOrEqual(2);
-    expect(windowCalls[0]).toMatchObject({ from: "2026-01-01", to: "2026-09-29", strict: true });
-    expect(windowCalls[1]).toMatchObject({ from: "2026-09-30", strict: true });
+    expect(windowCalls.length).toBeGreaterThanOrEqual(3);
+    expect(windowCalls[0]).toMatchObject({ from: "2025-01-01", to: "2025-09-30", strict: true });
+    expect(windowCalls[1]).toMatchObject({ from: "2025-10-01", to: "2026-09-29", strict: true });
+    expect(windowCalls[2]).toMatchObject({ from: "2026-09-30", strict: true });
   });
 
   it("throws truncated when a window reaches the ceiling", async () => {
@@ -200,7 +206,7 @@ describe("getDeputyShifts", () => {
   });
 
   it("caches, honours force, shares in-flight calls, does not cache failures, isolates copies", async () => {
-    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2026-01-01" ? [] : [ts()]));
+    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2025-01-01" ? [] : [ts()]));
     const [a, b] = await Promise.all([getDeputyShifts(), getDeputyShifts()]);
     const calls = () => getTimesheets.mock.calls.filter((c) => !c[0].sync).length;
     const first = calls();
@@ -217,14 +223,14 @@ describe("getDeputyShifts", () => {
       throw new Error("deputy-read timesheets failed: 500");
     });
     await expect(getDeputyShifts()).rejects.toBeInstanceOf(DeputyShiftsError);
-    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2026-01-01" ? [] : [ts()]));
+    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2025-01-01" ? [] : [ts()]));
     await expect(getDeputyShifts()).resolves.toHaveLength(1);
   });
 
   it("expires the cache after 60 s", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-11-11T00:00:00Z"));
-    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2026-01-01" ? [] : [ts()]));
+    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2025-01-01" ? [] : [ts()]));
     await getDeputyShifts();
     const n = getTimesheets.mock.calls.length;
     vi.setSystemTime(new Date("2026-11-11T00:00:30Z"));
@@ -236,7 +242,7 @@ describe("getDeputyShifts", () => {
   });
 
   it("returns rows that tolerate frozen input objects", async () => {
-    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2026-01-01" ? [] : [Object.freeze(ts())]));
+    getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) => (o.sync || o.from !== "2025-01-01" ? [] : [Object.freeze(ts())]));
     await expect(getDeputyShifts()).resolves.toHaveLength(1);
   });
 });
@@ -244,7 +250,7 @@ describe("getDeputyShifts", () => {
 describe("getDeputyShiftEmployeeNames", () => {
   it("returns sorted distinct names and excludes Unknown", async () => {
     getTimesheets.mockImplementation(async (o: { sync?: boolean; from?: string }) =>
-      o.sync || o.from !== "2026-01-01"
+      o.sync || o.from !== "2025-01-01"
         ? []
         : [
             ts({ deputy_id: "1", employee_name: "Zed" }),
@@ -281,6 +287,11 @@ describe("getDeputyShiftAggregates", () => {
     expect(rows[0].total_hours).toBe(2.5);
   });
 
+  it("overrides week and season from shift_date (stale view numbering)", async () => {
+    handler = () => ({ data: [{ ...viewRow(1), shift_date: "2025-10-01", week: 0, season: 2026 }, { ...viewRow(2), shift_date: "2025-09-30", week: 1, season: 2026 }], error: null });
+    const rows = await getDeputyShiftAggregates();
+    expect(rows.map((r) => [r.season, r.week])).toEqual([[2026, 1], [2025, 53]]);
+  });
   it("throws stale_view when a row is not from the API", async () => {
     handler = () => ({ data: [viewRow(1, "excel")], error: null });
     await expect(getDeputyShiftAggregates()).rejects.toMatchObject({ code: "stale_view" });
@@ -318,10 +329,10 @@ describe("getDeputyRostersWithWeek", () => {
     ]);
     const rows = await getDeputyRostersWithWeek();
     expect(rows.map((r) => [r.roster_key, r.employee_name, r.week, r.season])).toEqual([
-      ["deputy:r1", "Jane Doe", 2, 2026],
+      ["deputy:r1", "Jane Doe", 27, 2026],
       ["deputy:r2", "Jane Doe", 2, 2027],
     ]);
-    expect(getRosters).toHaveBeenCalledWith(expect.objectContaining({ from: "2026-01-01", strict: true }));
+    expect(getRosters).toHaveBeenCalledWith(expect.objectContaining({ from: "2025-01-01", strict: true }));
   });
 
   it("throws truncated at the ceiling", async () => {

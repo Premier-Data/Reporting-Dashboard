@@ -1,39 +1,26 @@
 // Season / week / area rules for Deputy API shift data (pure, no I/O).
 //
-// TS twin of the SQL in migrations/007_deputy_api_shifts_all_seasons.sql
-// (public.deputy_report_start_date, deputy_season2026_week1_start,
-// deputy_report_week_of). Both are pinned by the same fixture list in
-// reportWeeks.test.ts. Keep the constants and rules in lockstep with the SQL.
-import { seasonOfDate, seasonStart, seasonEnd } from "@/lib/analytics/season";
-
-/** API timesheets before this date are never reported (2025 is not a season). */
-export const DEPUTY_REPORT_START_DATE = "2026-01-01";
+// Thin wrapper over the single shared rule in lib/analytics/season.ts. SQL twin:
+// migration 005 (deputy_season_of, deputy_season_week_of) used by 008's
+// deputy_report_week_of. Pinned by the fixture list in reportWeeks.test.ts.
+import { seasonStart, seasonEnd, seasonWeekOfIso } from "@/lib/analytics/season";
 
 /**
- * Season 2026 is SHEET-DEFINED: week 0 = everything before this date and week 1
- * starts on this Wednesday. Later seasons follow the Wed->Tue formula.
+ * Fetch lower bound only (twin of SQL deputy_report_start_date()). Deputy
+ * history starts 2025-03-11, so this is "all history" in practice.
  */
-export const SEASON_2026_WEEK1_START = "2026-03-25";
+export const DEPUTY_HISTORY_START = "2025-01-01";
 
-const DAY_MS = 86400000;
-const toDate = (iso: string): Date => new Date(`${iso.slice(0, 10)}T00:00:00Z`);
 const toIso = (d: Date): string => d.toISOString().slice(0, 10);
 
-/** Season label of a yyyy-mm-dd date (same roll rule as lib/analytics/season). */
+/** Season label of a yyyy-mm-dd date. NaN when the date is invalid. */
 export function deputySeasonOf(iso: string): number {
-  return seasonOfDate(toDate(iso));
+  return seasonWeekOfIso(iso)?.season ?? NaN;
 }
 
-/** Week number within the season (season 2026 is sheet-defined, see above). */
+/** Week number within the season (1-based, season 2025 has 53). NaN when invalid. */
 export function deputyWeekOf(iso: string): number {
-  const d = toDate(iso);
-  const season = seasonOfDate(d);
-  if (season === 2026) {
-    const w1 = toDate(SEASON_2026_WEEK1_START);
-    if (d < w1) return 0;
-    return Math.floor((d.getTime() - w1.getTime()) / DAY_MS / 7) + 1;
-  }
-  return Math.floor((d.getTime() - seasonStart(season).getTime()) / DAY_MS / 7) + 1;
+  return seasonWeekOfIso(iso)?.week ?? NaN;
 }
 
 export interface DeputySeasonWindow {
@@ -43,17 +30,19 @@ export interface DeputySeasonWindow {
 }
 
 /**
- * One inclusive date window per season from 2026 up to the season containing
- * `todayIso`. The first window starts at DEPUTY_REPORT_START_DATE.
+ * One inclusive date window per season from the one containing
+ * DEPUTY_HISTORY_START up to the season containing `todayIso`. The first
+ * window starts at DEPUTY_HISTORY_START.
  */
 export function deputySeasonWindows(todayIso: string): DeputySeasonWindow[] {
-  const last = Math.max(2026, deputySeasonOf(todayIso));
+  const first = deputySeasonOf(DEPUTY_HISTORY_START);
+  const last = Math.max(first, deputySeasonOf(todayIso));
   const out: DeputySeasonWindow[] = [];
-  for (let s = 2026; s <= last; s++) {
+  for (let s = first; s <= last; s++) {
     const start = toIso(seasonStart(s));
     out.push({
       season: s,
-      from: start < DEPUTY_REPORT_START_DATE ? DEPUTY_REPORT_START_DATE : start,
+      from: start < DEPUTY_HISTORY_START ? DEPUTY_HISTORY_START : start,
       to: toIso(seasonEnd(s)),
     });
   }

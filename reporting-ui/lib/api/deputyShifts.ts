@@ -17,7 +17,7 @@ import {
 import { mapApiRosters, sydneyTimeOfDay } from "@/lib/data/deputyApiRoster";
 import type { DeputyRoster } from "@/types/deputyRoster";
 import {
-  DEPUTY_REPORT_START_DATE,
+  DEPUTY_HISTORY_START,
   deputySeasonOf,
   deputySeasonWindows,
   deputyWeekOf,
@@ -276,7 +276,7 @@ async function loadShifts(): Promise<DeputyShiftRow[]> {
         );
       }
       for (const t of rows) {
-        if (!t.timesheet_date || t.timesheet_date < DEPUTY_REPORT_START_DATE) continue;
+        if (!t.timesheet_date || t.timesheet_date < DEPUTY_HISTORY_START) continue;
         const mapped = mapTimesheetToShift(t, areaMap);
         if (mapped) out.push(mapped);
       }
@@ -291,7 +291,7 @@ async function loadShifts(): Promise<DeputyShiftRow[]> {
 
 const shiftsCache = makeCache<DeputyShiftRow>(loadShifts);
 
-/** All approved Deputy API shifts since 2026-01-01 with names, in the legacy row shape. */
+/** All approved Deputy API shifts (all history, since 2025-01-01) with names, in the legacy row shape. */
 export function getDeputyShifts(opts?: { force?: boolean }): Promise<DeputyShiftRow[]> {
   return shiftsCache.get(opts?.force);
 }
@@ -315,17 +315,19 @@ async function loadAggregates(): Promise<DeputyShiftAggregateRow[]> {
         if (r.source !== "deputy-api") {
           throw new DeputyShiftsError(
             "stale_view",
-            "weekly_report_shifts is not API-only yet: run migration 007_deputy_api_shifts_all_seasons.sql"
+            "weekly_report_shifts is not API-only yet: run migrations 007 and 008 (007_deputy_api_shifts_all_seasons.sql, 008_deputy_all_history_unified_weeks.sql)"
           );
         }
+        const shiftDate = String(r.shift_date);
         out.push({
           shift_key: String(r.shift_key),
-          shift_date: String(r.shift_date),
+          shift_date: shiftDate,
           area_name: String(r.area_name),
           total_hours: num(r.total_hours),
           total_cost: num(r.total_cost),
-          week: num(r.week),
-          season: num(r.season),
+          // Re-derived from shift_date so numbering is right whatever state the view is in.
+          week: Number.isFinite(deputyWeekOf(shiftDate)) ? deputyWeekOf(shiftDate) : num(r.week),
+          season: Number.isFinite(deputySeasonOf(shiftDate)) ? deputySeasonOf(shiftDate) : num(r.season),
           source: "deputy-api",
         });
       }
@@ -347,12 +349,12 @@ export function getDeputyShiftAggregates(opts?: { force?: boolean }): Promise<De
 
 async function loadRosters(): Promise<DeputyRosterWithSeason[]> {
   try {
-    const rows = await getDeputyRosters({ from: DEPUTY_REPORT_START_DATE, strict: true });
+    const rows = await getDeputyRosters({ from: DEPUTY_HISTORY_START, strict: true });
     if (rows.length >= DEPUTY_READ_CEILING) {
       throw new DeputyShiftsError("truncated", `deputy-read returned ${rows.length} rosters (ceiling ${DEPUTY_READ_CEILING})`);
     }
     const out: DeputyRosterWithSeason[] = [];
-    for (const r of mapApiRosters(rows, { startDate: DEPUTY_REPORT_START_DATE })) {
+    for (const r of mapApiRosters(rows, { startDate: DEPUTY_HISTORY_START })) {
       const name = normaliseEmployeeName(r.employee_name);
       if (name === UNKNOWN_EMPLOYEE) continue;
       out.push({
@@ -371,7 +373,7 @@ async function loadRosters(): Promise<DeputyRosterWithSeason[]> {
 const rostersCache = makeCache<DeputyRosterWithSeason>(loadRosters);
 
 /**
- * Published Deputy API rosters since 2026-01-01 with week + season derived from
+ * Published Deputy API rosters (all history, since 2025-01-01) with week + season derived from
  * the date. area_name is deliberately the raw Deputy unit name (not mapped via
  * deputy_area_map): Recommendations does not read it.
  */

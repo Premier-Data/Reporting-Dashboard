@@ -366,6 +366,7 @@ function parseTTData(buffer, sheetName, season) {
   console.log("TT Header:", rows[0]);
   console.log("Raw videoURL value:", rows[1][13]);
 
+  let fallbackTT = 0;
   let skippedTT = 0;
 
   const parsed = rows
@@ -403,6 +404,9 @@ function parseTTData(buffer, sheetName, season) {
 
       const date = excelDateToJS(r[0]);
       const home_team = clean(r[3]);
+      const weekFromDate = seasonWeekFromDate(date);
+      const seasonFromDate = deputySeasonFromDate(date);
+      if (weekFromDate == null) fallbackTT++;
       const away_team = clean(r[4]);
 
       return {
@@ -423,10 +427,9 @@ function parseTTData(buffer, sheetName, season) {
         Location: clean(r[7]),
         Additional: clean(r[8]),
 
-        Week:
-          r[9] == null || r[9] === ""
-            ? 0
-            : Number(r[9]),
+        // Season + Week are DERIVED from Date (unified Wed->Tue rule); the
+        // sheet Week column (r[9]) is no longer read.
+        Week: weekFromDate != null ? String(weekFromDate) : "0",
 
         Column11: clean(r[10]),      // Month
 
@@ -436,7 +439,7 @@ function parseTTData(buffer, sheetName, season) {
 
         // Season for this row — the sheet it was read from (2026 = TTRawData,
         // 2027 = 2027_TTRawData).
-        season,
+        season: seasonFromDate ?? season,
 
       };
     })
@@ -459,6 +462,7 @@ function parseTTData(buffer, sheetName, season) {
     });
 
   console.log("Skipped malformed TT rows:", skippedTT);
+  if (fallbackTT) console.warn(`TT rows with unusable Date (sheet season kept, Week "0"): ${fallbackTT}`);
   console.log("First Parsed TT Row:", parsed[0]);
 
   return parsed;
@@ -676,9 +680,10 @@ function parseVNTeam(buffer) {
 //   Philippines → from Week 2 of the 2026 season
 //   Vietnam     → from Week 17 of the 2026 season
 // A location not listed here has no start limit (counts in every week).
+// Dates equal legacy W2 / W17 of the old sheet scheme; season/week are derived.
 const OS_START = {
-  Philippines: { season: 2026, week: 2 },
-  Vietnam: { season: 2026, week: 17 },
+  Philippines: { date: "2026-04-01" },
+  Vietnam: { date: "2026-07-15" },
 };
 
 function parseOSTeam(buffer) {
@@ -743,8 +748,9 @@ function parseOSTeam(buffer) {
     const start = OS_START[r.location];
     return {
       ...r,
-      start_season: start ? start.season : null,
-      start_week: start ? start.week : null,
+      start_date: start ? start.date : null,
+      start_season: start ? deputySeasonFromDate(start.date) : null,
+      start_week: start ? seasonWeekFromDate(start.date) : null,
     };
   });
 
@@ -1108,5 +1114,5 @@ async function sync() {
 if (require.main === module) {
   sync();
 } else {
-  module.exports = { getExcelBuffer, parseSoccerData, parseTTData, makeSoccerGameKey, parseCompletionTimes };
+  module.exports = { deputySeasonFromDate, seasonWeekFromDate, getExcelBuffer, parseSoccerData, parseTTData, makeSoccerGameKey, parseCompletionTimes };
 }

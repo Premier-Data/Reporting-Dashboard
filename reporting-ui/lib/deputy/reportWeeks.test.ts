@@ -1,20 +1,24 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
 import {
-  DEPUTY_REPORT_START_DATE,
+  DEPUTY_HISTORY_START,
   deputySeasonOf,
   deputyWeekOf,
   deputySeasonWindows,
   toAreaName,
 } from "./reportWeeks";
 
-// Shared fixture list: the SQL migration 007 comments carry the same values.
+// Shared fixture list: migration 008's verification query carries the same values.
 const FIXTURES: Array<[string, number, number]> = [
-  ["2026-01-01", 2026, 0],
-  ["2026-03-24", 2026, 0],
-  ["2026-03-25", 2026, 1],
-  ["2026-03-31", 2026, 1],
-  ["2026-04-01", 2026, 2],
-  ["2026-09-29", 2026, 27],
+  ["2025-03-11", 2025, 24],
+  ["2025-09-23", 2025, 52],
+  ["2025-09-24", 2025, 53],
+  ["2025-09-30", 2025, 53],
+  ["2025-10-01", 2026, 1],
+  ["2026-03-25", 2026, 26],
+  ["2026-09-29", 2026, 52],
   ["2026-09-30", 2027, 1],
   ["2026-10-06", 2027, 1],
   ["2026-10-07", 2027, 2],
@@ -26,26 +30,52 @@ describe("deputySeasonOf / deputyWeekOf", () => {
     expect(deputyWeekOf(d)).toBe(week);
   });
 
-  it("a 2025 date is before the report cutoff", () => {
-    expect("2025-12-31" < DEPUTY_REPORT_START_DATE).toBe(true);
-    expect(deputySeasonOf("2025-12-31")).toBe(2026);
+  it("has no Week 0 and no 2026 special case", () => {
+    expect(deputyWeekOf("2026-01-01")).toBe(14);
+    expect(deputyWeekOf("2026-03-24")).toBe(25);
+  });
+
+  it("returns NaN for an invalid date", () => {
+    expect(deputySeasonOf("nope")).toBeNaN();
+    expect(deputyWeekOf("2026-02-31")).toBeNaN();
+  });
+});
+
+describe("cross-checks with the SQL and sync-deputy.js twins", () => {
+  const ROOT = path.resolve(__dirname, "../..");
+
+  it("sync-deputy.js gives the same season/week for every fixture", () => {
+    process.env.SUPABASE_URL = process.env.SUPABASE_URL || "http://localhost";
+    process.env.SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "test-key";
+    const req = createRequire(import.meta.url);
+    const sync = req(path.join(ROOT, "sync-deputy.js"));
+    for (const [d, season, week] of FIXTURES) {
+      expect(sync.deputySeasonFromDate(d)).toBe(season);
+      expect(sync.seasonWeekFromDate(d)).toBe(week);
+    }
+  });
+
+  it("migration 008 verification list carries the same fixtures", () => {
+    const sql = fs.readFileSync(path.join(ROOT, "migrations/008_deputy_all_history_unified_weeks.sql"), "utf8");
+    for (const [d, season, week] of FIXTURES) {
+      expect(sql).toMatch(new RegExp(`'${d}'[^\\n]*${season}[^\\n]*${week}`));
+    }
   });
 });
 
 describe("deputySeasonWindows", () => {
-  it("starts 2026 at the cutoff and ends at the roll", () => {
-    expect(deputySeasonWindows("2026-05-01")).toEqual([
-      { season: 2026, from: "2026-01-01", to: "2026-09-29" },
+  it("starts at the history start and includes 2025", () => {
+    expect(DEPUTY_HISTORY_START).toBe("2025-01-01");
+    expect(deputySeasonWindows("2025-06-01")).toEqual([
+      { season: 2025, from: "2025-01-01", to: "2025-09-30" },
     ]);
   });
-  it("adds 2027 once today is in it", () => {
+  it("adds later seasons as today advances", () => {
     expect(deputySeasonWindows("2026-11-11")).toEqual([
-      { season: 2026, from: "2026-01-01", to: "2026-09-29" },
+      { season: 2025, from: "2025-01-01", to: "2025-09-30" },
+      { season: 2026, from: "2025-10-01", to: "2026-09-29" },
       { season: 2027, from: "2026-09-30", to: "2027-09-28" },
     ]);
-  });
-  it("never goes below 2026", () => {
-    expect(deputySeasonWindows("2025-06-01")).toHaveLength(1);
   });
 });
 

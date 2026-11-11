@@ -1,13 +1,15 @@
-// Season helpers for TT data.
+// Season / week rule: the single source of truth for the whole app.
 //
-// A "season" is NOT a calendar year. A season starts in LATE SEPTEMBER (Week 1
-// can begin on e.g. 30 Sep) and runs ~12 months. TT_Games rows carry an
-// explicit `season` column stamped from the source sheet in sync-deputy.js, so
-// for games the season is authoritative and date-independent.
+// A "season" is NOT a calendar year. Weeks run Wednesday->Tuesday. Season N
+// starts on the Wednesday on or before 1 Oct of year N-1 and that day is
+// Week 1. There is no sheet-defined numbering and no Week 0. A season can
+// have 52 or 53 weeks (season 2025 has 53).
 //
-// Deputy shift rows are scoped by the season DATE WINDOW below when needed.
-// This file is the single source of truth for that boundary and MUST match
-// deputySeasonFromDate() in sync-deputy.js.
+// Season and week are derived from a row's DATE everywhere (TT games, soccer
+// games, Deputy shifts). Stored season/week columns are only a last fallback.
+// Twins that MUST match this file: deputySeasonFromDate()/seasonWeekFromDate()
+// in sync-deputy.js and the SQL functions of migration 005
+// (deputy_season_of, deputy_season_week_of).
 //
 // Boundary rule: WEEK 1 is the Wed→Tue week that CONTAINS 1 October, and the
 // season begins at the start of that week. So the season rolls on the
@@ -70,6 +72,105 @@ export function seasonWeekRange(season: number, week: number): { start: Date; en
   const end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
   return { start, end };
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
+/** Wed 2024-09-25 = season 2025 Week 1 (origin of absoluteWeekIndex). */
+const EPOCH_MS = Date.UTC(2024, 8, 25);
+
+export type SeasonWeek = { season: number; week: number };
+
+/** yyyy-mm-dd (or ISO datetime prefix) -> UTC Date, or null if not a real calendar date. */
+export function parseIsoDate(v: unknown): Date | null {
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v;
+  if (typeof v !== "string") return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(v);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const d = Number(m[3]);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  return dt;
+}
+
+const isoOf = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** The single rule: season + week (1-based, can be 53) of a calendar date. null if invalid. */
+export function seasonWeekOfIso(v: unknown): SeasonWeek | null {
+  const d = parseIsoDate(v);
+  if (!d) return null;
+  const season = seasonOfDate(d);
+  const week = Math.floor((d.getTime() - seasonStart(season).getTime()) / WEEK_MS) + 1;
+  return { season, week };
+}
+
+/** Predecessor of a season-week: week-1, or the last week of the previous season when week === 1. */
+export function prevSeasonWeek(season: number, week: number): SeasonWeek {
+  if (week > 1) return { season, week: week - 1 };
+  const last = seasonWeekOfIso(isoOf(new Date(seasonStart(season).getTime() - DAY_MS)));
+  return last as SeasonWeek;
+}
+
+/** Continuous 0-based week index since Wed 2024-09-25 (season 2025 W1). For "N weeks back" maths across seasons. */
+export function absoluteWeekIndex(season: number, week: number): number {
+  return Math.round((seasonStart(season).getTime() - EPOCH_MS) / WEEK_MS) + (week - 1);
+}
+
+/** Descending union of season numbers from any number of sources; ignores null/NaN. */
+export function unionSeasons(...sources: ReadonlyArray<Iterable<number | null | undefined>>): number[] {
+  const set = new Set<number>();
+  for (const src of sources) {
+    for (const s of src) {
+      if (s == null) continue;
+      const n = Number(s);
+      if (Number.isFinite(n)) set.add(n);
+    }
+  }
+  return [...set].sort((a, b) => b - a);
+}
+
+const finiteOrNull = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/** Seasons derived from rows' dates (falls back to the row's stored `season` when the date is unusable). */
+export function seasonsFromDates(rows: ReadonlyArray<Record<string, unknown>>, dateKey: string): number[] {
+  const out: number[] = [];
+  for (const r of rows) {
+    const sw = seasonWeekOfIso(r?.[dateKey]);
+    const s = sw ? sw.season : finiteOrNull(r?.season);
+    if (s != null) out.push(s);
+  }
+  return unionSeasons(out);
+}
+
+/** Returns a COPY of a TT_Games row with season, Week (string) and week (number) derived from `Date`. */
+export function withFixtureWeekTT<T extends Record<string, unknown>>(
+  row: T
+): T & { season: number | null; Week: string | null; week: number | null } {
+  const sw = seasonWeekOfIso(row?.Date);
+  if (sw) return { ...row, season: sw.season, Week: String(sw.week), week: sw.week };
+  const season = finiteOrNull(row?.season);
+  const week = finiteOrNull(row?.Week ?? row?.week);
+  return { ...row, season, Week: week == null ? null : String(week), week };
+}
+
+/** Same for soccer_games rows: season and week from `Date`; completed_* are left as stored. */
+export function withFixtureWeekSoccer<T extends Record<string, unknown>>(
+  row: T
+): T & { season: number | null; week: number | null } {
+  const sw = seasonWeekOfIso(row?.Date);
+  if (sw) return { ...row, season: sw.season, week: sw.week };
+  return { ...row, season: finiteOrNull(row?.season), week: finiteOrNull(row?.week) };
+}
+
+export const mapFixtureWeekTT = <T extends Record<string, unknown>>(rows: readonly T[]) =>
+  rows.map(withFixtureWeekTT);
+export const mapFixtureWeekSoccer = <T extends Record<string, unknown>>(rows: readonly T[]) =>
+  rows.map(withFixtureWeekSoccer);
 
 /**
  * The distinct seasons present in a set of TT_Games rows (reading the explicit
