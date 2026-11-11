@@ -19,6 +19,13 @@ import { useEffect, useMemo, useState } from "react";
 import { seasonsFromTT } from "@/lib/analytics/season";
 import { supabase } from "@/lib/supabase";
 import type { SummaryWeek } from "@/lib/exports/weeklySummaryExcel";
+import {
+  WEEKLY_REPORT_VIEW,
+  fetchAllViewRows,
+  isViewMissing,
+  pickDeputyRows,
+  type PageResult,
+} from "@/lib/weeklyReport/deputySource";
 
 type Row = Record<string, unknown>;
 
@@ -93,6 +100,43 @@ export default function WeeklyReport({
     };
   }, []);
 
+  // Deputy shift rows: from the weekly_report_shifts view (Excel for season <
+  // 2027, Deputy API from 2027 Week 1). If the view isn't there yet or errors,
+  // fall back to the `deputyData` prop (Excel deputy_shifts) exactly as before.
+  const [viewRows, setViewRows] = useState<Row[] | null>(null);
+  const [viewState, setViewState] = useState<"loading" | "ok" | "missing" | "error">("loading");
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      let lastError: PageResult["error"] = null;
+      const rows = await fetchAllViewRows(async (from, to) => {
+        const res = await supabase
+          .from(WEEKLY_REPORT_VIEW)
+          .select("*")
+          .order("shift_key")
+          .range(from, to);
+        lastError = res.error ? { code: res.error.code, message: res.error.message, status: res.status } : null;
+        return { data: (res.data as Row[] | null) ?? null, error: lastError };
+      });
+      if (cancelled) return;
+      if (rows) {
+        setViewRows(rows);
+        setViewState("ok");
+      } else {
+        console.warn(
+          "Weekly Report: weekly_report_shifts unavailable, using deputy_shifts (Excel).",
+          lastError
+        );
+        setViewState(isViewMissing(lastError) ? "missing" : "error");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const picked = useMemo(() => pickDeputyRows(viewRows, deputyData), [viewRows, deputyData]);
+  const shiftRows = picked.rows;
+
   // OS (offshore) team: fixed weekly cost per person from the "OS Team" sheet
   // (synced to os_team). Cost-only — there are no hours or games for this group.
   // Each row carries start_season/start_week; the cost only counts from there on.
@@ -119,7 +163,7 @@ export default function WeeklyReport({
   // Builds the whole report matrix. `monthly` picks month vs week columns; the
   // Excel export always builds the weekly form regardless of the on-screen view.
   const build = (monthly: boolean) => {
-    const shifts = deputyData.filter((r) => num(r.season) === season);
+    const shifts = shiftRows.filter((r) => num(r.season) === season);
     const afl = ttData.filter((r) => num(r.season) === season);
     const soc = soccerGames.filter((r) => num(r.season) === season);
 
@@ -393,11 +437,11 @@ export default function WeeklyReport({
     return { weeks, weekDates, areasByGroup, cost, hrs, aflGames, socGames, subCost, subHrs, grandCost, grandHrs, ausGames, phlGames, pureAvgTime, pureCostPerGame, phlCostPerGame, totalCodingCostPerGame, totalBlendedCostPerGame, vnCost, phlCost, footyCred, socCred, anchorMs };
   };
   /* eslint-disable react-hooks/exhaustive-deps */
-  const report = useMemo(() => build(view === "month"), [deputyData, ttData, soccerGames, osTeam, season, view]);
+  const report = useMemo(() => build(view === "month"), [shiftRows, ttData, soccerGames, osTeam, season, view]);
   // Weekly form for the Excel export (reuses `report` when already weekly).
   const altWeekly = useMemo(
     () => (view === "week" ? null : build(false)),
-    [deputyData, ttData, soccerGames, osTeam, season, view]
+    [shiftRows, ttData, soccerGames, osTeam, season, view]
   );
   /* eslint-enable react-hooks/exhaustive-deps */
   const weeklyReport = view === "week" ? report : altWeekly!;
@@ -470,6 +514,13 @@ export default function WeeklyReport({
           <p className="text-xs text-slate-500">
             Costs &amp; hours by area, grouped by sport, per week. Soccer kept
             separate from Aussie Rules.
+          </p>
+          <p className="text-[11px] text-slate-400">
+            {picked.source === "view"
+              ? "Source: Deputy API from 2027 Week 1; Excel before."
+              : viewState === "loading"
+                ? "Source: loading…"
+                : `Source: Excel (deputy_shifts). Deputy API view ${viewState === "missing" ? "not set up yet" : "unavailable"}.`}
           </p>
         </div>
         <div className="flex items-center gap-3">
