@@ -355,7 +355,32 @@ function parseDeputyData(buffer, sheetName, season) {
 // ----------------------
 // PARSE TT
 // ----------------------
-function parseTTData(buffer, sheetName, season) {
+// Builds the TT_Games game_key. Default (every existing sheet) is the legacy
+// `${date}_${home}_${away}`, byte-for-byte unchanged. With `disambiguate`
+// (2025 sheet only) a LATER row whose key is already in `used` is made unique
+// deterministically: append the cleaned Competition, then Round, then "#2",
+// "#3"... The first occurrence (sheet order) keeps the plain legacy key.
+// `used` is a per-parse Set; keys stay stable across syncs while the sheet
+// order is unchanged.
+function makeTTGameKey({ date, home, away, competition, round }, used, disambiguate) {
+  const base = `${date}_${home}_${away}`;
+  if (!disambiguate) return base;
+  let key = base;
+  if (used.has(key) && competition) key = `${base}_${competition}`;
+  if (used.has(key) && round) key = `${key}_${round}`;
+  if (used.has(key)) {
+    const start = key;
+    let n = 2;
+    while (used.has(key)) key = `${start}#${n++}`;
+  }
+  used.add(key);
+  return key;
+}
+
+function parseTTData(buffer, sheetName, season, opts = {}) {
+  const uniqueKeys = !!opts.uniqueKeys;
+  const usedKeys = new Set();
+  let suffixedKeys = 0;
 
   const workbook = XLSX.read(buffer, { type: "buffer" });
   const sheet = getSheetExact(workbook, sheetName);
@@ -409,14 +434,23 @@ function parseTTData(buffer, sheetName, season) {
       if (weekFromDate == null) fallbackTT++;
       const away_team = clean(r[4]);
 
+      const competition = clean(r[1]);
+      const round = clean(r[2]);
+      const game_key = makeTTGameKey(
+        { date, home: home_team, away: away_team, competition, round },
+        usedKeys,
+        uniqueKeys
+      );
+      if (uniqueKeys && game_key !== `${date}_${home_team}_${away_team}`) suffixedKeys++;
+
       return {
 
-        game_key: `${date}_${home_team}_${away_team}`,
+        game_key,
 
         Date: date,
 
-        Competition: clean(r[1]),
-        Round: clean(r[2]),
+        Competition: competition,
+        Round: round,
 
         home_team,
         away_team,
@@ -462,6 +496,15 @@ function parseTTData(buffer, sheetName, season) {
     });
 
   console.log("Skipped malformed TT rows:", skippedTT);
+  const readTT = rows.slice(1).filter(r => r && r.length).length;
+  const removedByDedupe = parsed.length - new Set(parsed.map(p => p.game_key)).size;
+  console.log(
+    `TT sheet "${sheetName}": rows read ${readTT}, parsed ${parsed.length}, skipped ${skippedTT}, ` +
+      `collisions suffixed ${suffixedKeys}, removed by dedupe ${removedByDedupe}`
+  );
+  if (removedByDedupe > 0) {
+    console.log(`⚠️ TT sheet "${sheetName}": ${removedByDedupe} rows share a game_key and will be collapsed by dedupe`);
+  }
   if (fallbackTT) console.warn(`TT rows with unusable Date (sheet season kept, Week "0"): ${fallbackTT}`);
   console.log("First Parsed TT Row:", parsed[0]);
 
@@ -1011,8 +1054,12 @@ async function sync() {
     // SEASON → SHEET PAIRS
     // ----------------------
     // Each season has its OWN Deputy + TT sheets. Season is stamped from the
-    // sheet (not the date). To add a new season, append a pair here.
+    // sheet (not the date). To add a new season, append a pair here. `deputy`
+    // / `tt` may be null when a season has no such sheet (2025 is TT-only: its
+    // Deputy data comes from the Deputy API). `uniqueKeys` makes colliding
+    // game_keys unique (2025 sheet only; see makeTTGameKey).
     const SEASON_SHEETS = [
+      { season: 2025, deputy: null, tt: "2025_TTRawData", uniqueKeys: true },
       { season: 2026, deputy: "DeputyRawData", tt: "TTRawData" },
       { season: 2027, deputy: "2027_DeputyRawData", tt: "2027_TTRawData" },
     ];
@@ -1022,6 +1069,7 @@ async function sync() {
     // ----------------------
     let deputy = [];
     for (const { season, deputy: sheet } of SEASON_SHEETS) {
+      if (!sheet) continue;
       try {
         deputy = deputy.concat(parseDeputyData(buffer, sheet, season));
       } catch (e) {
@@ -1035,9 +1083,10 @@ async function sync() {
     // TT (all seasons)
     // ----------------------
     let tt = [];
-    for (const { season, tt: sheet } of SEASON_SHEETS) {
+    for (const { season, tt: sheet, uniqueKeys } of SEASON_SHEETS) {
+      if (!sheet) continue;
       try {
-        tt = tt.concat(parseTTData(buffer, sheet, season));
+        tt = tt.concat(parseTTData(buffer, sheet, season, { uniqueKeys }));
       } catch (e) {
         console.log(`⚠️ TT sheet "${sheet}" skipped: ${e.message}`);
       }
@@ -1123,5 +1172,5 @@ async function sync() {
 if (require.main === module) {
   sync();
 } else {
-  module.exports = { deputySeasonFromDate, seasonWeekFromDate, getExcelBuffer, parseSoccerData, parseTTData, makeSoccerGameKey, parseCompletionTimes };
+  module.exports = { deputySeasonFromDate, seasonWeekFromDate, getExcelBuffer, parseSoccerData, parseTTData, makeTTGameKey, makeSoccerGameKey, parseCompletionTimes };
 }

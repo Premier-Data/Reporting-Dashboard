@@ -20,10 +20,18 @@ function normalise(name: string): string {
     .toLowerCase();
 }
 
+// Placeholder allocations used in the 2025 sheet when a game had no real
+// analyst yet: "PH1".."PH8" and "AUS". Exact (normalised) match only.
+const EXCLUDED_ANALYST_PATTERNS = [/^ph\d+$/, /^aus$/];
+
 export function isExcludedAnalystName(
   name: string | null | undefined
 ): boolean {
   if (!name) return false;
 
-  return EXCLUDED_ANALYST_NAMES.includes(normalise(name));
+  const n = normalise(name);
+  return (
+    EXCLUDED_ANALYST_NAMES.includes(n) ||
+    EXCLUDED_ANALYST_PATTERNS.some((re) => re.test(n))
+  );
 }

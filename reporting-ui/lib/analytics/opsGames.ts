@@ -139,7 +139,9 @@ export function latestSeason(rows: TTGameRow[]): number | null {
 }
 
 function isPlaceholder(name: string): boolean {
-  return PLACEHOLDER_ANALYSTS.includes(name.trim().toLowerCase());
+  const n = name.trim().toLowerCase();
+  // "PH1".."PH8" / "AUS" are 2025-sheet placeholders (no real analyst yet).
+  return PLACEHOLDER_ANALYSTS.includes(n) || /^ph\d+$/.test(n) || n === "aus";
 }
 
 function weekNumber(r: TTGameRow): number | null {
