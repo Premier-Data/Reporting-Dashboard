@@ -3,10 +3,9 @@
 // both sides = 1).
 //
 // Week rule: identical to the Reporting > Soccer Games card (see
-// soccerWeeks.ts): Week 1 starts on the Wednesday on/before the earliest TT
-// Week 1 date of the season, earlier dates are Week 0 (pre-season), and the
-// stored soccer_games.week is only a fallback. Columns are labelled by the
-// week-ending Saturday.
+// soccerWeeks.ts): season and week come from the game Date using the unified
+// Wed->Tue rule (season.ts); stored season/week are only a fallback. Columns
+// are labelled by the week-ending Saturday.
 
 import {
   aggregateGames,
@@ -14,13 +13,13 @@ import {
   type OpsGamesAnalystRow,
   type OpsGamesWeek,
 } from "./opsGames";
-import { buildWeekOneAnchors, soccerWeekFor } from "./soccerWeeks";
+import { soccerSeasonFor, soccerWeekFor } from "./soccerWeeks";
 
 export type SoccerGameRow = {
   game_key: string;
   Date: string | null; // yyyy-mm-dd
   season: number | null;
-  week: number | string | null; // stored (October formula) - fallback only
+  week: number | string | null; // stored - fallback only
   home_allocated: string | null;
   away_allocated: string | null;
   Location: string | null;
@@ -51,35 +50,22 @@ export function soccerLocationKey(raw: string | null | undefined): string {
   return /^[A-Z]{2,5}$/.test(s) ? s : MIXED_KEY;
 }
 
-function seasonOf(r: { season: number | null }): number | null {
-  const s = Number(r.season);
-  return r.season !== null && r.season !== undefined && Number.isFinite(s) ? s : null;
-}
-
 export function soccerSeasons(rows: SoccerGameRow[]): number[] {
   const set = new Set<number>();
   for (const r of rows) {
-    const s = seasonOf(r);
+    const s = soccerSeasonFor(r);
     if (s !== null) set.add(s);
   }
   return [...set].sort((a, b) => b - a);
 }
 
-/**
- * @param rows   soccer_games rows
- * @param ttRows TT rows (season, Week, Date) used only to anchor Week 1
- */
-export function buildSoccerOpsReport(
-  rows: SoccerGameRow[],
-  ttRows: ReadonlyArray<Record<string, unknown>>,
-  season: number
-): OpsSoccerReport {
-  const anchors = buildWeekOneAnchors(ttRows);
+/** @param rows soccer_games rows (raw; season/week are derived from Date) */
+export function buildSoccerOpsReport(rows: SoccerGameRow[], season: number): OpsSoccerReport {
   const entries: GameEntry[] = [];
   for (const r of rows) {
-    if (seasonOf(r) !== season) continue;
+    if (soccerSeasonFor(r) !== season) continue;
     entries.push({
-      week: soccerWeekFor(r, anchors),
+      week: soccerWeekFor(r),
       date: r.Date,
       home: r.home_allocated,
       away: r.away_allocated,

@@ -574,7 +574,7 @@ export default function DashboardClient({
               {ttSport === "aussie" ? (
                 <TTGames data={filteredTT} />
               ) : (
-                <SoccerGames ttData={ttData ?? []} season={season} />
+                <SoccerGames season={season} />
               )}
             </div>
           </TabsContent>

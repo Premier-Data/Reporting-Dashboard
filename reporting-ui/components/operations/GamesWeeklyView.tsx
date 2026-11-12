@@ -158,8 +158,8 @@ function aussieModel(rows: TTGameRow[], season: number): GridModel {
   return { season, weeks: report.weeks, analysts: report.analysts, summary, excluded: report.excluded };
 }
 
-function soccerModel(rows: SoccerGameRow[], tt: TTGameRow[], season: number): GridModel {
-  const report = buildSoccerOpsReport(rows, tt as unknown as Record<string, unknown>[], season);
+function soccerModel(rows: SoccerGameRow[], season: number): GridModel {
+  const report = buildSoccerOpsReport(rows, season);
   const summary: SummaryRow[] = [
     {
       label: "Total games",
@@ -200,30 +200,24 @@ function AussieGames() {
       emptyLabel="games"
       footnote={
         <>
-          Weeks follow the sheet&apos;s Week column and are labelled by their
-          week-ending Saturday. A game is worth 0.5 per team side. Total Games = (Home + Away) / 2.
+          Weeks run Wednesday to Tuesday and are derived from the game date (Week 1
+          starts on the Wednesday on or before 1 October). Columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side. Total Games = (Home + Away) / 2.
         </>
       }
     />
   );
 }
 
-// Soccer needs TT rows as well, only to anchor each season's Week 1 so the
-// weeks match the Reporting > Soccer Games card.
-const loadSoccerBundle = async () => {
-  const [soccer, tt] = await Promise.all([fetchSoccerGamesForOps(), fetchTTGamesForOps()]);
-  return { soccer, tt };
-};
 
 function SoccerOpsGames() {
-  const { data, error, reload } = useLoader(loadSoccerBundle);
+  const { data, error, reload } = useLoader(fetchSoccerGamesForOps);
   const [season, setSeason] = useState<number | null>(null);
   useEffect(() => {
-    if (data) setSeason((s) => s ?? soccerSeasons(data.soccer)[0] ?? null);
+    if (data) setSeason((s) => s ?? soccerSeasons(data)[0] ?? null);
   }, [data]);
-  const seasons = useMemo(() => (data ? soccerSeasons(data.soccer) : []), [data]);
+  const seasons = useMemo(() => (data ? soccerSeasons(data) : []), [data]);
   const model = useMemo(
-    () => (data && season !== null ? soccerModel(data.soccer, data.tt, season) : null),
+    () => (data && season !== null ? soccerModel(data, season) : null),
     [data, season]
   );
   return (
@@ -238,9 +232,9 @@ function SoccerOpsGames() {
       emptyLabel="soccer games"
       footnote={
         <>
-          Soccer weeks follow the Reporting Soccer Games card: Week 1 starts on the Wednesday on or
-          before the season&apos;s first Aussie Rules Week 1 date, earlier games are Week 0, and
-          columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side.
+          Weeks run Wednesday to Tuesday and are derived from the game date (Week 1 starts on the
+          Wednesday on or before 1 October), so they match Deputy and the Reporting Soccer Games
+          card. Columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side.
           Total Games = (Home + Away) / 2. Location rows plus Mixed add up to Total games.
         </>
       }

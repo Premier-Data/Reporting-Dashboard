@@ -4,12 +4,7 @@
 // Source: soccer_games (SoccerData sheet). Kept entirely separate from the
 // Aussie Rules TT_Games view.
 //
-// Weeks are bucketed by game DATE onto the same Wed→Tue anchoring as the
-// Deputy/TT data for that season (Week 1 starts on the Wednesday on/before the
-// earliest TT Week 1 date; earlier = Week 0 / pre-season). The stored
-// soccer_games.week uses the October formula and is only used as a fallback.
-
-import { useEffect, useMemo, useState } from "react";
+// Weeks are bucketed by game DATE using the unified Wed->Tue season rule\n// (lib/analytics/season.ts): season N Week 1 starts on the Wednesday on/before\n// 1 Oct of year N-1. The stored soccer_games season/week are only a fallback.\nimport { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   BarChart,
@@ -21,7 +16,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { supabase } from "@/lib/supabase";
-import { buildWeekOneAnchors, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
+import { soccerSeasonFor, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
 import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
@@ -37,11 +32,8 @@ const THEME = {
 const PALETTE = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#ef4444", "#14b8a6"];
 
 export default function SoccerGames({
-  ttData,
   season,
 }: {
-  /** All TT rows (used only to anchor each season's Week 1). */
-  ttData: Row[];
   /** "all" or a season year, e.g. "2027". */
   season: string;
 }) {
@@ -74,13 +66,8 @@ export default function SoccerGames({
     };
   }, []);
 
-  // Week-1 anchor (Wednesday on/before earliest Week 1 date) per season.
-  const anchors = useMemo(() => buildWeekOneAnchors(ttData), [ttData]);
-
-  const weekFor = (r: Row): number | null => soccerWeekFor(r, anchors);
-
   const seasonRows = useMemo(
-    () => games.filter((r) => season === "all" || String(r.season) === season),
+    () => games.filter((r) => season === "all" || String(soccerSeasonFor(r)) === season),
     [games, season]
   );
 
@@ -88,14 +75,13 @@ export default function SoccerGames({
     () =>
       seasonRows
         .map((r) => ({
-          week: weekFor(r),
+          week: soccerWeekFor(r),
           date: r.Date,
-          season: r.season,
+          season: soccerSeasonFor(r),
           loc: String(r.Location ?? "").trim().toUpperCase() || "Unknown",
         }))
         .filter((r) => r.week != null) as { week: number; loc: string }[],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [seasonRows, anchors]
+    [seasonRows]
   );
 
   const weeks = useMemo(
@@ -132,7 +118,7 @@ export default function SoccerGames({
   }, [filtered]);
 
   const colour = (loc: string) => PALETTE[locations.indexOf(loc) % PALETTE.length];
-  const weekLabel = (w: number) => (w === 0 ? "Pre-season" : `Week ${w}`);
+  const weekLabel = (w: number) => `Week ${w}`;
 
   return (
     <div style={{ background: THEME.bg, color: THEME.text }} className="p-6 rounded-2xl space-y-5">
@@ -174,6 +160,11 @@ export default function SoccerGames({
         <div style={{ color: THEME.muted }} className="text-sm">Loading soccer games…</div>
       ) : (
         <>
+          {filtered.length === 0 && (
+            <div style={{ color: THEME.muted }} className="text-sm">
+              No soccer games for this season
+            </div>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-xl">
               Total: {filtered.length}

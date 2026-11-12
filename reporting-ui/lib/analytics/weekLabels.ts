@@ -1,15 +1,15 @@
 // Shared date-range labels for "Week N" dropdowns.
 //
-// Weeks are Wed→Tue blocks. The sheet's Week column is the source of truth, so
-// each week's range comes from the dates of the rows carrying that week number
-// (NOT a season-start formula: season 2026's Week 1 starts 25 Mar 2026). Week
-// numbers restart every season, so a range is only produced when the rows for
-// that week belong to ONE season; otherwise the plain label is kept.
+// Weeks are Wed->Tue blocks defined by the unified season rule (season.ts):
+// a week's range is seasonWeekRange(season, week), not derived from row dates.
+// Week numbers restart every season, so a range is only produced when the rows
+// for that week belong to ONE season; otherwise the plain label is kept.
+// A non-integer or < 1 week key falls back to the earliest-latest row date.
 //
 // All dates are handled as calendar-date strings (YYYY-MM-DD) and formatted
 // from their parts, so there is no timezone / DST off-by-one.
 
-import { seasonOfDate } from "./season";
+import { seasonOfDate, seasonWeekRange } from "./season";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -47,8 +47,8 @@ export function weekOptionLabel(base: string, range?: WeekRange | null): string 
 }
 
 /**
- * Date range per week key (String(week).trim()). Week >= 1 within a single
- * season uses that season's Wed→Tue definition; week 0 / unmatched weeks use
+ * Date range per week key (String(week).trim()). Integer week >= 1 within a single
+ * season uses that season's Wed→Tue definition; other keys use
  * the earliest/latest row date. Weeks spanning several seasons, or with no
  * usable dates, are omitted (caller falls back to the plain label).
  * A row's season is its own `season` if numeric, else derived from its date.
@@ -75,19 +75,12 @@ export function buildWeekRanges(rows: Iterable<WeekRow>): Map<string, WeekRange>
     if (e.dates.length === 0) continue;
     const w = Number(key);
     if (Number.isInteger(w) && w >= 1) {
-      // Wed→Tue block: the most common "Wednesday on/before the date" wins, so
-      // a stray mis-weeked row cannot move the label.
-      const counts = new Map<string, number>();
-      for (const iso of e.dates) {
-        const ms = Date.parse(`${iso}T00:00:00Z`);
-        const back = (new Date(ms).getUTCDay() - 3 + 7) % 7;
-        const wed = toIso(new Date(ms - back * DAY));
-        counts.set(wed, (counts.get(wed) ?? 0) + 1);
-      }
-      const [wed] = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))[0];
-      out.set(key, { start: wed, end: toIso(new Date(Date.parse(`${wed}T00:00:00Z`) + 6 * DAY)) });
+      const [season] = [...e.seasons];
+      if (season === undefined) continue;
+      const r = seasonWeekRange(season, w);
+      out.set(key, { start: toIso(r.start), end: toIso(r.end) });
     } else {
-      // Week 0 / non-numeric: earliest to latest row date.
+      // Unexpected stored data (non-integer / < 1): earliest to latest row date.
       const sorted = [...e.dates].sort();
       out.set(key, { start: sorted[0], end: sorted[sorted.length - 1] });
     }

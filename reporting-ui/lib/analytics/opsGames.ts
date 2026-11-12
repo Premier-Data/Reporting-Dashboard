@@ -1,5 +1,8 @@
 // Pure aggregation for the Operations reporting "Games" tab.
 // No React / supabase imports so it can be unit tested directly.
+// Season and week are derived from each row's Date (unified Wed->Tue rule in
+// season.ts); the stored season / Week columns are only a fallback.
+import { seasonWeekOfIso } from "./season";
 
 // ---- Tunable constants -------------------------------------------------
 // Weekly cell colour bands (games completed by one analyst in one week).
@@ -116,6 +119,8 @@ export function totalScale(total: number, min: number, max: number): number {
 }
 
 function seasonOf(r: TTGameRow): number | null {
+  const d = seasonWeekOfIso(r.Date);
+  if (d) return d.season;
   const s = Number(r.season);
   return r.season !== null && r.season !== undefined && Number.isFinite(s) ? s : null;
 }
@@ -138,6 +143,8 @@ function isPlaceholder(name: string): boolean {
 }
 
 function weekNumber(r: TTGameRow): number | null {
+  const d = seasonWeekOfIso(r.Date);
+  if (d) return d.week;
   if (r.Week === null || r.Week === undefined || r.Week === "") return null;
   const n = Number(r.Week);
   return Number.isFinite(n) ? n : null;

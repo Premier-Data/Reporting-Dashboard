@@ -1,4 +1,4 @@
-﻿import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vitest";
 import { buildWeekRanges, formatWeekRange, weekOptionLabel } from "./weekLabels";
 
 describe("formatWeekRange", () => {
@@ -36,9 +36,16 @@ describe("buildWeekRanges", () => {
     expect(m.get("1")).toEqual({ start: "2026-09-30", end: "2026-10-06" });
     expect(m.get("3")).toBeUndefined();
   });
-  it("follows the data, not an October formula (season 2026 Week 1 = 25 Mar)", () => {
+  it("uses the season definition, not the row dates (season 2026 Week 1 = 1 Oct 2025)", () => {
     const m = buildWeekRanges([{ week: 1, season: 2026, date: "2026-03-28" }]);
-    expect(m.get("1")).toEqual({ start: "2026-03-25", end: "2026-03-31" });
+    expect(m.get("1")).toEqual({ start: "2025-10-01", end: "2025-10-07" });
+    const k = buildWeekRanges([{ week: 26, season: 2026, date: "2026-03-28" }]);
+    expect(k.get("26")).toEqual({ start: "2026-03-25", end: "2026-03-31" });
+  });
+
+  it("supports week 53 of season 2025", () => {
+    const m = buildWeekRanges([{ week: 53, season: 2025, date: "2025-09-30" }]);
+    expect(m.get("53")).toEqual({ start: "2025-09-24", end: "2025-09-30" });
   });
   it("derives season from the date when the row has none (deputy shifts)", () => {
     const m = buildWeekRanges([{ week: 2, date: "2026-10-08T00:00:00+11:00" }]);
@@ -72,7 +79,7 @@ describe("buildWeekRanges", () => {
     expect(m.has("1")).toBe(false);
     expect(m.has("5")).toBe(false);
   });
-  it("uses min/max row dates for week 0 (pre-season)", () => {
+  it("falls back to min/max row dates for a week key below 1", () => {
     const m = buildWeekRanges([
       { week: 0, season: 2026, date: "2026-01-22" },
       { week: 0, season: 2026, date: "2026-03-22" },
