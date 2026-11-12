@@ -53,7 +53,11 @@ const BAND_STYLE: Record<WeekBand, { bg: string; fg: string }> = {
 const fmt = (v: number) => (Number.isInteger(v) ? String(v) : v.toFixed(1));
 const pct = (v: number | null) => (v === null ? "\u2013" : `${Math.round(v * 100)}%`);
 
-const NAME_W = 180;
+// Frozen (sticky-left) columns: Name, Home Teams, Away Teams, Total Games.
+// Fixed widths make the cumulative `left` offsets exact.
+const FROZEN_W = [180, 90, 90, 125] as const;
+const FROZEN_LEFT = [0, 180, 270, 360] as const;
+const LAST_FROZEN = FROZEN_W.length - 1;
 const cellBase = {
   padding: "4px 8px",
   textAlign: "center" as const,
@@ -322,6 +326,7 @@ function GamesGrid({
   const report = model;
   const summary = model.summary;
 
+  // Week header cells: sticky to the top only.
   const stickyHead = (extra: React.CSSProperties = {}): React.CSSProperties => ({
     ...cellBase,
     position: "sticky",
@@ -332,14 +337,23 @@ function GamesGrid({
     zIndex: 2,
     ...extra,
   });
-  const nameCell = (head = false): React.CSSProperties => ({
+  // Frozen column i: sticky left with a cumulative offset and an opaque background so
+  // week cells scroll underneath. Header cells are also sticky top (corner, highest z).
+  const frozen = (i: number, head = false, background?: string): React.CSSProperties => ({
     ...cellBase,
-    textAlign: "left",
+    boxSizing: "border-box",
+    width: FROZEN_W[i],
+    minWidth: FROZEN_W[i],
+    maxWidth: FROZEN_W[i],
     position: "sticky",
-    left: 0,
-    minWidth: NAME_W,
-    background: head ? THEME.panelSoft : THEME.panel,
-    zIndex: head ? 3 : 1,
+    left: FROZEN_LEFT[i],
+    zIndex: head ? 4 : 1,
+    background: background ?? (head ? THEME.panelSoft : THEME.panel),
+    ...(head ? { top: 0, color: THEME.muted, fontWeight: 600 } : {}),
+    ...(i === 0 ? { textAlign: "left", overflow: "hidden", textOverflow: "ellipsis" } : {}),
+    ...(i === LAST_FROZEN
+      ? { borderRight: `2px solid ${THEME.muted}`, boxShadow: "4px 0 6px -2px rgba(0,0,0,0.5)" }
+      : {}),
   });
 
   return (
@@ -367,12 +381,12 @@ function GamesGrid({
           </caption>
           <thead>
             <tr>
-              <th scope="col" aria-sort={ariaSort("name")} style={{ ...stickyHead(), ...nameCell(true), top: 0 }}>
+              <th scope="col" aria-sort={ariaSort("name")} style={frozen(0, true)}>
                 <SortBtn k="name" sort={sort} onToggle={toggle}>Name</SortBtn>
               </th>
-              <th scope="col" style={stickyHead()}>Home Teams</th>
-              <th scope="col" style={stickyHead()}>Away Teams</th>
-              <th scope="col" aria-sort={ariaSort("total")} style={stickyHead()}>
+              <th scope="col" style={frozen(1, true)}>Home Teams</th>
+              <th scope="col" style={frozen(2, true)}>Away Teams</th>
+              <th scope="col" aria-sort={ariaSort("total")} style={frozen(3, true)}>
                 <SortBtn k="total" sort={sort} onToggle={toggle}>Total Games</SortBtn>
               </th>
               {report.weeks.map((w) => {
@@ -392,10 +406,10 @@ function GamesGrid({
           <tbody>
             {summary.map((s) => (
               <tr key={s.label} style={{ fontWeight: 600 }}>
-                <th scope="row" title={s.title} style={nameCell()}>{s.label}</th>
-                <td style={cellBase} />
-                <td style={cellBase} />
-                <td style={cellBase}>{s.total}</td>
+                <th scope="row" title={s.title} style={frozen(0)}>{s.label}</th>
+                <td style={frozen(1)} />
+                <td style={frozen(2)} />
+                <td style={frozen(3)}>{s.total}</td>
                 {report.weeks.map((w) => (
                   <td key={w.week} style={cellBase}>{s.vals(w.week)}</td>
                 ))}
@@ -405,10 +419,10 @@ function GamesGrid({
               const hue = totalScale(a.total, range.min, range.max) * 120;
               return (
                 <tr key={a.name}>
-                  <th scope="row" style={nameCell()}>{a.name}</th>
-                  <td style={cellBase}>{a.home}</td>
-                  <td style={cellBase}>{a.away}</td>
-                  <td style={{ ...cellBase, background: `hsl(${hue}, 65%, 30%)`, color: "#fff", fontWeight: 600 }}>
+                  <th scope="row" title={a.name} style={frozen(0)}>{a.name}</th>
+                  <td style={frozen(1)}>{a.home}</td>
+                  <td style={frozen(2)}>{a.away}</td>
+                  <td style={{ ...frozen(3, false, `hsl(${hue}, 65%, 30%)`), color: "#fff", fontWeight: 600 }}>
                     {fmt(a.total)}
                   </td>
                   {report.weeks.map((w) => {
