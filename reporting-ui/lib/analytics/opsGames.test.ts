@@ -141,6 +141,25 @@ describe("buildOpsGamesReport", () => {
       expect(r.ausByWeek[w] + r.phlByWeek[w] + r.mixedByWeek[w]).toBe(r.totalsByWeek[w]);
     expect(r.totals.aus + r.totals.phl + r.totals.mixed).toBe(r.totals.all);
   });
+  it("gives clean single-code locations (IND, VN) their own row; Mixed shrinks; rows add up", () => {
+    const r = buildOpsGamesReport(
+      [
+        g({ Location: "AUS" }),
+        g({ Location: "IND" }),
+        g({ Location: "ind " }),
+        g({ Location: "VN" }),
+        g({ Location: "PHL/ AUS" }),
+        g({ Location: null }),
+      ],
+      2026
+    );
+    expect(r.locations.map((l) => l.key)).toEqual(["AUS", "IND", "VN", "Mixed"]);
+    expect(r.locations.find((l) => l.key === "IND")!.total).toBe(2);
+    expect(r.totals.mixed).toBe(2);
+    expect(r.locations.reduce((s, l) => s + l.total, 0)).toBe(r.totals.all);
+    expect(r.locations.reduce((s, l) => s + (l.byWeek[26] ?? 0), 0)).toBe(r.totalsByWeek[26]);
+    expect(r.pctAusByWeek[26]).toBeCloseTo(1 / 6);
+  });
   it("pct AUS is null for empty weeks", () => {
     const r = buildOpsGamesReport([g({ Date: "2026-03-25" }), g({ Date: "2026-04-08" })], 2026);
     expect(r.pctAusByWeek[27]).toBeNull();

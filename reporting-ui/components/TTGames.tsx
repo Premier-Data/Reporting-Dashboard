@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { aggregateTTLocations, ttLocationColours } from "@/lib/analytics/ttLocations";
 import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 import {
   ResponsiveContainer,
@@ -86,7 +87,7 @@ export default function TTGames({ data }: { data: any[] }) {
       month: norm(r.column11 ?? r.Column11),
       home: norm(r.home_allocated),
       away: norm(r.away_allocated),
-      location: norm(r.location ?? r.Location),
+      location: String(r.location ?? r.Location ?? ""),
     }));
   }, [data]);
 
@@ -127,63 +128,19 @@ export default function TTGames({ data }: { data: any[] }) {
   }, [rows, week, month, analyst]);
 
   // -------------------------
-  // CHART DATA
+  // CHART DATA (one category per distinct Location value)
   // -------------------------
-  const chartData = useMemo(() => {
-    const map = new Map<string, any>();
+  const report = useMemo(() => aggregateTTLocations(filtered), [filtered]);
 
-    filtered.forEach((r) => {
-      const weekKey = r.week || "Unknown";
-      const gameKey = `${r.home}-${r.away}-${r.location}`;
-
-      const existing =
-        map.get(weekKey) ?? {
-          week: weekKey,
-          AUS: 0,
-          PHL: 0,
-          Mixed: 0,
-          gamesSet: new Set<string>(),
-        };
-
-      existing.gamesSet.add(gameKey);
-
-      const isAus = r.location.includes("aus");
-      const isPhl = r.location.includes("phl");
-
-      if (isAus && isPhl) existing.Mixed++;
-      else if (isAus) existing.AUS++;
-      else if (isPhl) existing.PHL++;
-
-      map.set(weekKey, existing);
-    });
-
-    return Array.from(map.values())
-      .map((w) => ({
-        week: w.week,
-        AUS: w.AUS,
-        PHL: w.PHL,
-        Mixed: w.Mixed,
-        games: w.gamesSet.size,
-      }))
-      .sort((a, b) => Number(a.week) - Number(b.week));
-  }, [filtered]);
+  const chartData = useMemo(
+    () => report.weeks.map((w) => ({ week: w.week, ...w.counts, games: w.games })),
+    [report]
+  );
 
   // -------------------------
   // SUMMARY
   // -------------------------
-  const summary = useMemo(() => {
-    return chartData.reduce(
-      (acc, w) => {
-        acc.AUS += w.AUS;
-        acc.PHL += w.PHL;
-        acc.Mixed += w.Mixed;
-        acc.games += w.AUS + w.PHL + w.Mixed;
-        return acc;
-      },
-      { AUS: 0, PHL: 0, Mixed: 0, games: 0 }
-    );
-  }, [chartData]);
-
+  const summary = report;
   // -------------------------
   // TOOLTIP
   // -------------------------
@@ -225,21 +182,15 @@ export default function TTGames({ data }: { data: any[] }) {
             </feMerge>
           </filter>
 
-          <linearGradient id="gradAUS" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#4ade80" stopOpacity={0.95} />
-            <stop offset="100%" stopColor="#16a34a" stopOpacity={0.85} />
-          </linearGradient>
-
-          <linearGradient id="gradPHL" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#fbbf24" stopOpacity={0.95} />
-            <stop offset="100%" stopColor="#d97706" stopOpacity={0.85} />
-          </linearGradient>
-
-          <linearGradient id="gradMixed" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#a78bfa" stopOpacity={0.95} />
-            <stop offset="100%" stopColor="#38bdf8" stopOpacity={0.85} />
-          </linearGradient>
-        </defs>
+          {summary.locations.map((loc, i) => {
+            const [top, bottom] = ttLocationColours(loc);
+            return (
+              <linearGradient key={loc} id={`gradLoc${i}`} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor={top} stopOpacity={0.95} />
+                <stop offset="100%" stopColor={bottom} stopOpacity={0.85} />
+              </linearGradient>
+            );
+          })}        </defs>
       </svg>
 
       {/* HEADER */}
@@ -304,17 +255,16 @@ export default function TTGames({ data }: { data: any[] }) {
         <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-xl">
           Total: {summary.games}
         </div>
-        <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: THEME.success }} className="p-4 rounded-xl">
-          AUS: {summary.AUS}
-        </div>
-        <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: THEME.warn }} className="p-4 rounded-xl">
-          PHL: {summary.PHL}
-        </div>
-        <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: THEME.accent }} className="p-4 rounded-xl">
-          Mixed: {summary.Mixed}
-        </div>
+        {summary.locations.map((loc) => (
+          <div
+            key={loc}
+            style={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: ttLocationColours(loc)[0] }}
+            className="p-4 rounded-xl"
+          >
+            {loc}: {summary.totals[loc]}
+          </div>
+        ))}
       </div>
-
       {/* CHART */}
       <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-2xl">
 
@@ -334,9 +284,9 @@ export default function TTGames({ data }: { data: any[] }) {
               <Tooltip content={<CustomTooltip />} />
               <Legend />
 
-              <Bar dataKey="AUS" stackId="a" fill="url(#gradAUS)" shape={<GlowBar />} />
-              <Bar dataKey="PHL" stackId="a" fill="url(#gradPHL)" shape={<GlowBar />} />
-              <Bar dataKey="Mixed" stackId="a" fill="url(#gradMixed)" shape={<GlowBar />} />
+              {summary.locations.map((loc, i) => (
+                <Bar key={loc} dataKey={loc} stackId="a" fill={`url(#gradLoc${i})`} shape={<GlowBar />} />
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </div>

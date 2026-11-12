@@ -5,6 +5,7 @@ import { THEME } from "@/lib/theme";
 import { fetchTTGamesForOps } from "@/lib/api/ttGames";
 import { fetchSoccerGamesForOps } from "@/lib/api/soccerGames";
 import {
+  OPS_MIXED_KEY,
   WEEK_BANDS,
   bandForWeekValue,
   buildOpsGamesReport,
@@ -141,13 +142,13 @@ function aussieModel(rows: TTGameRow[], season: number): GridModel {
     },
   ];
   const hasAus = report.totals.aus > 0;
-  const hasPhl = report.totals.phl > 0;
-  if (hasAus)
-    summary.push({ label: "AUS", vals: (w) => fmt(report.ausByWeek[w] ?? 0), total: fmt(report.totals.aus) });
-  if (hasPhl)
-    summary.push({ label: "PHL", vals: (w) => fmt(report.phlByWeek[w] ?? 0), total: fmt(report.totals.phl) });
-  if (report.totals.mixed > 0)
-    summary.push({ label: "Mixed", title: "Games with a mixed or unknown location", vals: (w) => fmt(report.mixedByWeek[w] ?? 0), total: fmt(report.totals.mixed) });
+  for (const l of report.locations)
+    summary.push({
+      label: l.key,
+      title: l.key === OPS_MIXED_KEY ? "Games with a combined or unrecognised location (e.g. PHL/ AUS)" : undefined,
+      vals: (w) => fmt(l.byWeek[w] ?? 0),
+      total: fmt(l.total),
+    });
   if (hasAus)
     summary.push({
       label: "% AUS",

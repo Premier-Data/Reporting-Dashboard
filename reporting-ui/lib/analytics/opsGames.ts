@@ -35,6 +35,11 @@ export type LocationBucket = "AUS" | "PHL" | "MIXED" | "OTHER";
 export type WeekBand = "blue" | "green" | "amber" | "none";
 
 export type OpsGamesWeek = { week: number; label: string; saturday: string };
+export type OpsGamesLocationRow = {
+  key: string; // clean code (AUS, PHL, IND, ...) or "Mixed"
+  byWeek: Record<number, number>;
+  total: number;
+};
 export type OpsGamesAnalystRow = {
   name: string;
   home: number;
@@ -51,11 +56,13 @@ export type OpsGamesReport = {
   phlByWeek: Record<number, number>;
   mixedByWeek: Record<number, number>;
   pctAusByWeek: Record<number, number | null>;
+  /** Clean single-code locations (AUS first, then total desc), then Mixed last (if any). */
+  locations: OpsGamesLocationRow[];
   totals: {
     all: number;
     aus: number;
     phl: number;
-    mixed: number; // location neither clearly AUS nor PHL
+    mixed: number; // combined / unrecognised location (clean codes like IND have their own row)
     mixedOrOther: number; // alias of mixed
     pctAus: number | null;
   };
@@ -105,6 +112,14 @@ export function normaliseLocation(raw: string | null | undefined): LocationBucke
   if (s === "AUS") return "AUS";
   if (s === "PHL") return "PHL";
   return "OTHER";
+}
+
+export const OPS_MIXED_KEY = "Mixed";
+
+/** A clean single location code (2-5 letters, e.g. AUS / PHL / IND), else "Mixed". */
+export function aussieLocationKey(raw: string | null | undefined): string {
+  const s = (raw ?? "").trim().toUpperCase();
+  return /^[A-Z]{2,5}$/.test(s) ? s : OPS_MIXED_KEY;
 }
 
 export function bandForWeekValue(v: number): WeekBand {
@@ -273,16 +288,15 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
   const entries: GameEntry[] = [];
   for (const r of rows) {
     if (seasonOf(r) !== season) continue;
-    const loc = normaliseLocation(r.Location);
     entries.push({
       week: weekNumber(r),
       date: r.Date,
       home: r.home_allocated,
       away: r.away_allocated,
-      loc: loc === "AUS" || loc === "PHL" ? loc : "MIXED",
+      loc: aussieLocationKey(r.Location),
     });
   }
-  const core = aggregateGames(entries, ["AUS", "PHL", "MIXED"]);
+  const core = aggregateGames(entries, ["AUS", "PHL", OPS_MIXED_KEY]);
   const { weeks, totalsByWeek } = core;
   const ausByWeek = core.locByWeek.AUS;
   const pctAusByWeek: Record<number, number | null> = {};
@@ -291,6 +305,15 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
     pctAusByWeek[w.week] = tot > 0 ? ausByWeek[w.week] / tot : null;
   }
   const aus = core.locTotals.AUS;
+  const keys = Object.keys(core.locTotals);
+  const singles = keys
+    .filter((k) => k !== OPS_MIXED_KEY && core.locTotals[k] > 0)
+    .sort((a, b) => {
+      if (a === "AUS") return -1;
+      if (b === "AUS") return 1;
+      return core.locTotals[b] - core.locTotals[a] || a.localeCompare(b);
+    });
+  const ordered = core.locTotals[OPS_MIXED_KEY] > 0 ? [...singles, OPS_MIXED_KEY] : singles;
   return {
     season,
     weeks,
@@ -298,14 +321,15 @@ export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGames
     totalsByWeek,
     ausByWeek,
     phlByWeek: core.locByWeek.PHL,
-    mixedByWeek: core.locByWeek.MIXED,
+    mixedByWeek: core.locByWeek[OPS_MIXED_KEY],
     pctAusByWeek,
+    locations: ordered.map((key) => ({ key, byWeek: core.locByWeek[key], total: core.locTotals[key] })),
     totals: {
       all: core.all,
       aus,
       phl: core.locTotals.PHL,
-      mixed: core.locTotals.MIXED,
-      mixedOrOther: core.locTotals.MIXED,
+      mixed: core.locTotals[OPS_MIXED_KEY],
+      mixedOrOther: core.locTotals[OPS_MIXED_KEY],
       pctAus: core.all > 0 ? aus / core.all : null,
     },
     excluded: core.excluded,
