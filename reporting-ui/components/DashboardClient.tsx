@@ -61,6 +61,9 @@ import {
 import { analystShifts } from "@/lib/api/deputyShifts";
 import {
   seasonsFromTT,
+  seasonsFromDates,
+  seasonWeekOfIso,
+  unionSeasons,
   dateInSeason,
 } from "@/lib/analytics/season";
 
@@ -91,6 +94,10 @@ const formatCurrency = (v: any) =>
     maximumFractionDigits: 2,
   })}`;
 
+// Deputy week from the shift date (unified rule); stored week is a fallback.
+const deputyWeek = (r: any): string =>
+  String(seasonWeekOfIso(r.shift_date)?.week ?? r.week ?? "").trim();
+
 // -------------------------
 // MAIN COMPONENT
 // -------------------------
@@ -117,10 +124,21 @@ export default function DashboardClient({
   // -------------------------
   // SEASON TOGGLE
   // -------------------------
-  // The 2027 season runs 1 Oct 2026 – 30 Sep 2027. TT_Games carry an explicit
-  // `season` column (stamped per sheet in sync-deputy.js); the Deputy API shift
-  // rows are scoped by the season's Oct→Sep date window here instead.
-  const seasonInfo = useMemo(() => seasonsFromTT(ttData ?? []), [ttData]);
+  // Season/week follow the unified Wed-Tue rule (lib/analytics/season.ts).
+  // TT_Games season/week are derived from Date by the loader; the Deputy API
+  // shift rows are scoped by the season's date window here.
+  // Season list = union of TT (derived from Date by the loader) and Deputy
+  // shift dates, so a Deputy-only season (2025) is selectable.
+  const seasonInfo = useMemo(
+    () => ({
+      years: unionSeasons(
+        seasonsFromDates(ttData ?? [], "Date"),
+        seasonsFromDates(deputyData ?? [], "shift_date")
+      ),
+      hasUnknown: seasonsFromTT(ttData ?? []).hasUnknown,
+    }),
+    [ttData, deputyData]
+  );
   const [season, setSeason] = useState<string>("all");
   const [ttSport, setTtSport] = useState<"aussie" | "soccer">("aussie");
 
@@ -167,7 +185,7 @@ export default function DashboardClient({
   const weekOptions = useMemo(() => {
     const set = new Set<string>();
     for (const r of seasonDeputy) {
-      const w = String(r.week ?? "").trim();
+      const w = deputyWeek(r);
       if (w) set.add(w);
     }
     for (const r of seasonTT) {
@@ -182,7 +200,7 @@ export default function DashboardClient({
   const weekRanges = useMemo(
     () =>
       buildWeekRanges([
-        ...seasonDeputy.map((r) => ({ week: r.week, date: r.shift_date })),
+        ...seasonDeputy.map((r) => ({ week: deputyWeek(r), date: r.shift_date })),
         ...seasonTT.map((r) => ({ week: r.week ?? r.Week, date: r.Date, season: r.season })),
       ]),
     [seasonDeputy, seasonTT]
@@ -199,7 +217,7 @@ export default function DashboardClient({
   // tables, performance) reads these, so the one week dropdown drives the lot.
   const weekDeputy = useMemo(() => {
     if (week === "all") return seasonDeputy;
-    return seasonDeputy.filter((r) => String(r.week ?? "").trim() === week);
+    return seasonDeputy.filter((r) => deputyWeek(r) === week);
   }, [seasonDeputy, week]);
 
   const weekTT = useMemo(() => {
@@ -390,6 +408,9 @@ export default function DashboardClient({
             )}
 
             {/* ONE week filter — drives KPI cards, charts and every table. */}
+            {/* Hidden in "all seasons" mode: bare week numbers would merge
+                across seasons. */}
+            {season !== "all" && (
             <label
               style={{
                 display: "inline-flex",
@@ -423,6 +444,7 @@ export default function DashboardClient({
                 ))}
               </select>
             </label>
+            )}
 
             {/* Actual date range covered by the current season/week selection. */}
             {dateRangeLabel && (

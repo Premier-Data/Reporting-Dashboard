@@ -4,7 +4,10 @@
 // Source: soccer_games (SoccerData sheet). Kept entirely separate from the
 // Aussie Rules TT_Games view.
 //
-// Weeks are bucketed by game DATE using the unified Wed->Tue season rule\n// (lib/analytics/season.ts): season N Week 1 starts on the Wednesday on/before\n// 1 Oct of year N-1. The stored soccer_games season/week are only a fallback.\nimport { useEffect, useMemo, useState } from "react";
+// Weeks are bucketed by game DATE using the unified Wed->Tue season rule
+// (lib/analytics/season.ts): season N Week 1 starts on the Wednesday on/before
+// 1 Oct of year N-1. The stored soccer_games season/week are only a fallback.
+import { useEffect, useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   BarChart,

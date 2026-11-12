@@ -47,10 +47,10 @@ const formatMoney = (v: any) =>
 // -------------------------
 // WEEK HELPERS
 // -------------------------
-// Use the AUTHORITATIVE week + season columns from the data (set by the sync),
-// NOT a synthetic "weeks since a base date" count. The old approach counted
-// weeks from a hardcoded 18 Mar 2026, which is why 30 Sep showed as W28 instead
-// of the sheet's W1. Weeks restart each season, so (season, week) is the key.
+// Use the season + week columns of the rows, which follow the unified Wed-Tue
+// rule (lib/analytics/season.ts, derived from the row date), NOT a synthetic
+// "weeks since a base date" count. Weeks restart each season (a season can have
+// 53 weeks), so (season, week) is the key.
 const dmy = (d: Date) =>
   d.toLocaleDateString("en-AU", { day: "2-digit", month: "short" });
 

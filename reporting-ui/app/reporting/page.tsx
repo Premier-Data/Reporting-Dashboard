@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import DashboardClient from "@/components/DashboardClient";
 import DeputyLoadError from "@/components/DeputyLoadError";
+import { mapFixtureWeekTT } from "@/lib/analytics/season";
 import { DeputyShiftsError, getDeputyShifts } from "@/lib/api/deputyShifts";
 
 /**
@@ -72,7 +73,7 @@ export default function Home() {
         console.log("TT ROW COUNT:", ttRows.length);
 
         setDeputyData(deputyRows);
-        setTtData(ttRows);
+        setTtData(mapFixtureWeekTT(ttRows));
       } catch (err) {
         console.error("Failed loading dashboard data:", err);
         if (!cancelled) {
