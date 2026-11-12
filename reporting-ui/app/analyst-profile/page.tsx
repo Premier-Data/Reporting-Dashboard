@@ -37,11 +37,16 @@ import { supabase } from "@/lib/supabase";
 import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
 import DeputyLoadError from "@/components/DeputyLoadError";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
-import { mapFixtureWeekTT } from "@/lib/analytics/season";
-import { rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
+import { mapFixtureWeekTT, seasonsFromDates, unionSeasons } from "@/lib/analytics/season";
+import { filterRowsBySeason, rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
+import { analystGameStats, type TTGameRow } from "@/lib/analytics/opsGames";
 import { getCompAllocationGames } from "@/lib/api/compFixtures";
 import type { AnalystMetrics } from "@/types/analyst";
 import { useAuth } from "@/components/auth/AuthContext";
+
+const sameName = (a: unknown, b: unknown): boolean =>
+  String(a ?? "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase() ===
+  String(b ?? "").replace(/\u00A0/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
 
 export default function AnalystProfilePage() {
   return (
@@ -73,7 +78,30 @@ function AnalystProfileContent() {
       setSelectedAnalyst(user.analyst_name.trim());
     }
   }, [isAnalystRole, user?.analyst_name]);
-  const [analysts, setAnalysts] = useState<AnalystMetrics[]>([]);
+  // Season filter: null = Total (all seasons). Mirrored in the URL (?season=).
+  const seasonParam = searchParams.get("season");
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(() => {
+    const n = Number(seasonParam);
+    return seasonParam && Number.isInteger(n) ? n : null;
+  });
+
+  const syncUrl = (analyst: string, season: number | null) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (analyst && analyst !== "All") url.searchParams.set("analyst", analyst);
+    else url.searchParams.delete("analyst");
+    if (season !== null) url.searchParams.set("season", String(season));
+    else url.searchParams.delete("season");
+    window.history.replaceState(null, "", url.toString());
+  };
+  const changeAnalyst = (name: string) => {
+    setSelectedAnalyst(name);
+    syncUrl(name, selectedSeason);
+  };
+  const changeSeason = (season: number | null) => {
+    setSelectedSeason(season);
+    syncUrl(selectedAnalyst, season);
+  };
   const [shifts, setShifts] = useState<DeputyShift[]>([]);
   const [games, setGames] = useState<TTGame[]>([]);
   const [teamLogoMap, setTeamLogoMap] = useState<Record<string, string>>({});
@@ -90,19 +118,21 @@ function AnalystProfileContent() {
   // -------------------------
   // FETCH ALL ROWS
   // -------------------------
-async function fetchAll<T>(table: string): Promise<T[]> {
+async function fetchAll<T>(table: string, orderKey: string): Promise<T[]> {
   let from = 0;
   let all: T[] = [];
 
   while (true) {
+    // Paging needs a stable, unique order key or pages can overlap/skip rows.
     const { data, error } = await supabase
       .from(table)
       .select("*")
+      .order(orderKey, { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
 
     if (error) {
-      console.error(`Error fetching ${table}:`, error);
-      break;
+      // Never return a silently truncated set: totals would be wrong.
+      throw new Error(`Error fetching ${table}: ${error.message}`);
     }
 
     if (!data || data.length === 0) break;
@@ -136,7 +166,16 @@ let shiftsData: DeputyShift[];
         }
         return;
       }
-const gamesData = await fetchAll<TTGame>("TT_Games");
+let gamesData: TTGame[];
+      try {
+        gamesData = await fetchAll<TTGame>("TT_Games", "game_key");
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(e instanceof Error ? e.message : String(e));
+          setLoading(false);
+        }
+        return;
+      }
 
       // Merge comp-fixture allocations (home/away team-side analyst) so a
       // fixture shows in an analyst's profile when they're allocated to either
@@ -248,15 +287,6 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
       setShifts(shiftsData);
       setGames(derivedGames);
 
-      const analystData =
-        buildAnalystBenchmark(
-          buildAnalystMetrics(
-            shiftsData,
-            derivedGames
-          )
-        );
-      setAnalysts(analystData);
-
       setLoading(false);
     }
 
@@ -267,16 +297,61 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
   }, [reloadKey]);
 
   // -------------------------
+  // SEASON-SCOPED DATA
+  // Season/week come from each row's date (shared rule). Everything below
+  // (metrics, charts, lists) is computed from these season-scoped rows.
+  // -------------------------
+  const seasonShifts = useMemo(
+    () => filterRowsBySeason(shifts, selectedSeason),
+    [shifts, selectedSeason]
+  );
+  const seasonGames = useMemo(
+    () => filterRowsBySeason(games, selectedSeason),
+    [games, selectedSeason]
+  );
+
+  // Analyst list uses ALL seasons so switching season never drops a name.
+  const allAnalysts = useMemo(
+    () => buildAnalystMetrics(shifts, games),
+    [shifts, games]
+  );
+  const analysts = useMemo(
+    () =>
+      selectedSeason === null
+        ? buildAnalystBenchmark(allAnalysts)
+        : buildAnalystBenchmark(buildAnalystMetrics(seasonShifts, seasonGames)),
+    [allAnalysts, selectedSeason, seasonShifts, seasonGames]
+  );
+
+  // -------------------------
   // DROPDOWN LIST
   // -------------------------
   const analystList = useMemo(() => {
     return [
       "All",
-      ...analysts
+      ...allAnalysts
         .map((a) => a.name)
         .sort((a, b) => a.localeCompare(b)),
     ];
-  }, [analysts]);
+  }, [allAnalysts]);
+
+  // -------------------------
+  // SEASON OPTIONS (seasons with data for the selected analyst)
+  // -------------------------
+  const seasonOptions = useMemo(() => {
+    const mine = (name: string | null) =>
+      selectedAnalyst === "All" || sameName(name, selectedAnalyst);
+    return unionSeasons(
+      seasonsFromDates(
+        games.filter((g) => mine(g.home_allocated) || mine(g.away_allocated)) as unknown as Record<string, unknown>[],
+        "Date"
+      ),
+      seasonsFromDates(
+        shifts.filter((s) => mine(s.employee_name)) as unknown as Record<string, unknown>[],
+        "shift_date"
+      )
+    );
+  }, [games, shifts, selectedAnalyst]);
 
   // -------------------------
   // ACTIVE ANALYST
@@ -300,26 +375,34 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
 
 
   // -------------------------
-  // FILTERING (CRITICAL FIX)
+  // FILTERING
   // -------------------------
-const filteredShifts = useMemo(() => {
-  if (selectedAnalyst === "All") return shifts;
+  const filteredShifts = useMemo(() => {
+    if (selectedAnalyst === "All") return seasonShifts;
+    return seasonShifts.filter((shift) =>
+      sameName(shift.employee_name, selectedAnalyst)
+    );
+  }, [seasonShifts, selectedAnalyst]);
 
-  return shifts.filter(
-    (shift) => shift.employee_name === selectedAnalyst
+  const filteredGames = useMemo(() => {
+    if (selectedAnalyst === "All") return seasonGames;
+    return seasonGames.filter(
+      (game) =>
+        sameName(game.home_allocated, selectedAnalyst) ||
+        sameName(game.away_allocated, selectedAnalyst)
+    );
+  }, [seasonGames, selectedAnalyst]);
+
+  // Single shared definition of the analyst's game numbers (Operations Games
+  // tab rule: each side = 0.5 game).
+  const gameStats = useMemo(
+    () =>
+      analystGameStats(
+        seasonGames as unknown as TTGameRow[],
+        activeData?.name ?? selectedAnalyst
+      ),
+    [seasonGames, activeData, selectedAnalyst]
   );
-}, [shifts, selectedAnalyst]);
-
-const filteredGames = useMemo(() => {
-  if (selectedAnalyst === "All") return games;
-
-  return games.filter(
-    (game) =>
-      game.home_allocated === selectedAnalyst ||
-      game.away_allocated === selectedAnalyst
-  );
-}, [games, selectedAnalyst]);
-
   // -------------------------
   // LOADING STATE
   // -------------------------
@@ -400,7 +483,7 @@ const filteredGames = useMemo(() => {
         {/* ANALYST FILTER */}
         <select
           value={selectedAnalyst}
-          onChange={(e) => setSelectedAnalyst(e.target.value)}
+          onChange={(e) => changeAnalyst(e.target.value)}
           className="
     relative
     z-[9999]
@@ -426,8 +509,30 @@ const filteredGames = useMemo(() => {
       </div>
       )}
 
-      {/* CONTENT */}
-      <div className="max-w-7xl mx-auto space-y-6">
+      {/* SEASON FILTER — visible to every role */}
+      <div className="max-w-7xl mx-auto mb-4 flex flex-wrap items-center gap-2" role="group" aria-label="Season filter">
+        <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Season</span>
+        {[null, ...seasonOptions].map((s) => {
+          const active = s === selectedSeason;
+          return (
+            <button
+              key={s ?? "total"}
+              type="button"
+              aria-pressed={active}
+              onClick={() => changeSeason(s)}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition focus:outline-none focus:ring-1 focus:ring-sky-400 ${
+                active
+                  ? "border-sky-500 bg-sky-500/20 text-white"
+                  : "border-slate-700 bg-[#0f1b2d] text-slate-300 hover:border-sky-500/50 hover:bg-slate-800"
+              }`}
+            >
+              {s ?? "Total"}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* CONTENT */}      <div className="max-w-7xl mx-auto space-y-6">
 
         {activeData ? (
           <>
@@ -457,8 +562,8 @@ const filteredGames = useMemo(() => {
               <DashboardChartCard title="Ave Weekly Coding Speed">
                 <div className="h-[260px]">
                   <AverageCodingTimeTrend
-                    deputyData={shifts}
-                    ttData={games}
+                    deputyData={seasonShifts}
+                    ttData={seasonGames}
                     analystName={selectedAnalyst}
                   />
                 </div>
@@ -467,7 +572,7 @@ const filteredGames = useMemo(() => {
               <DashboardChartCard title="Games Completed Per Week">
                 <div className="h-[260px]">
                   <GamesCompletedTrend
-                    data={games}
+                    data={seasonGames}
                     analystName={selectedAnalyst}
                   />
                 </div>
@@ -507,8 +612,8 @@ const filteredGames = useMemo(() => {
                   case "away_team": return (a.away_team ?? "").localeCompare(b.away_team ?? "") * dir;
                   case "role": {
                     const name = activeData?.name ?? selectedAnalyst;
-                    const roleA = a.home_allocated === name && a.away_allocated === name ? "Both" : a.home_allocated === name ? "Home" : "Away";
-                    const roleB = b.home_allocated === name && b.away_allocated === name ? "Both" : b.home_allocated === name ? "Home" : "Away";
+                    const roleA = sameName(a.home_allocated, name) && sameName(a.away_allocated, name) ? "Both" : sameName(a.home_allocated, name) ? "Home" : "Away";
+                    const roleB = sameName(b.home_allocated, name) && sameName(b.away_allocated, name) ? "Both" : sameName(b.home_allocated, name) ? "Home" : "Away";
                     return roleA.localeCompare(roleB) * dir;
                   }
                   default: return 0;
@@ -532,8 +637,11 @@ const filteredGames = useMemo(() => {
               return (
                 <div className="rounded-xl border border-slate-700 bg-[#0f1b2d] p-5">
                   <h3 className="mb-4 text-lg font-bold text-white">
-                    Games Coded ({filteredGames.length})
+                    Games Coded ({selectedAnalyst === "All" ? filteredGames.length : gameStats.involved})
                   </h3>
+                  {selectedAnalyst !== "All" && (<p className="mb-4 text-xs text-slate-400">
+                    {selectedSeason ?? "All seasons"}: home sides {gameStats.home} + away sides {gameStats.away} = {gameStats.total} games (each side counts 0.5; both sides of one game = 1). {gameStats.both} game{gameStats.both === 1 ? "" : "s"} coded on both sides.
+                  </p>)}
 
                   <div className="overflow-hidden rounded-lg border border-slate-700">
                     <table className="w-full table-fixed text-left text-xs">
@@ -581,8 +689,8 @@ const filteredGames = useMemo(() => {
                         <tbody>
                           {sortedGames.map((game, i) => {
                             const name = activeData?.name ?? selectedAnalyst;
-                            const isHome = game.home_allocated === name;
-                            const isAway = game.away_allocated === name;
+                            const isHome = sameName(game.home_allocated, name);
+                            const isAway = sameName(game.away_allocated, name);
                             const role = isHome && isAway ? "Both" : isHome ? "Home" : "Away";
 
                             return (

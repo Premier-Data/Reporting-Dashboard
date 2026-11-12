@@ -284,6 +284,65 @@ export function aggregateGames(entries: GameEntry[], locKeys: readonly string[] 
   };
 }
 
+export type AnalystGameStats = {
+  /** Sides coded as the home team. */
+  home: number;
+  /** Sides coded as the away team. */
+  away: number;
+  /** Games where the analyst coded BOTH sides (counted in home and away). */
+  both: number;
+  /** Distinct games where the analyst coded at least one side. */
+  involved: number;
+  /** (home + away) / 2: the same definition as the Operations Games tab. */
+  total: number;
+};
+
+const nameKey = (v: unknown): string =>
+  String(v ?? "")
+    .replace(/\u00A0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+/**
+ * Per-analyst game totals for the analyst profile. Built on aggregateGames so
+ * the definition (each side = 0.5 game, same analyst on both sides = 1) is the
+ * Operations Games tab's. `season` null = all seasons. Season comes from the
+ * row's Date (unified rule), not the stored column.
+ */
+export function analystGameStats(
+  rows: ReadonlyArray<TTGameRow>,
+  analystName: string,
+  season: number | null = null
+): AnalystGameStats {
+  const target = nameKey(analystName);
+  const out: AnalystGameStats = { home: 0, away: 0, both: 0, involved: 0, total: 0 };
+  if (!target || isPlaceholder(target)) return out;
+  const entries: GameEntry[] = [];
+  for (const r of rows) {
+    if (season !== null && seasonOf(r) !== season) continue;
+    const h = nameKey(r.home_allocated) === target;
+    const a = nameKey(r.away_allocated) === target;
+    if (!h && !a) continue;
+    out.involved += 1;
+    if (h && a) out.both += 1;
+    entries.push({
+      week: weekNumber(r) ?? 0, // week is irrelevant to the totals; keep undated rows
+      date: r.Date ?? "1970-01-01",
+      home: h ? analystName : null,
+      away: a ? analystName : null,
+      loc: "",
+    });
+  }
+  const row = aggregateGames(entries).analysts[0];
+  if (row) {
+    out.home = row.home;
+    out.away = row.away;
+    out.total = row.total;
+  }
+  return out;
+}
+
 export function buildOpsGamesReport(rows: TTGameRow[], season: number): OpsGamesReport {
   const entries: GameEntry[] = [];
   for (const r of rows) {

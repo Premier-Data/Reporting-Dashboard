@@ -30,6 +30,15 @@ export function rowAbsoluteWeek(r: WeekLike): number {
   return sw ? absoluteWeekIndex(sw.season, sw.week) : NaN;
 }
 
+/** Rows of the given season (derived from the row date); `null` = all rows. */
+export function filterRowsBySeason<T extends WeekLike>(
+  rows: readonly T[],
+  season: number | null
+): T[] {
+  if (season === null) return [...rows];
+  return rows.filter((r) => seasonWeekOfRow(r)?.season === season);
+}
+
 /** `${season}-${week}` key, or null when the row cannot be placed. */
 export function seasonWeekKey(r: WeekLike): string | null {
   const sw = seasonWeekOfRow(r);

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   type TTGameRow,
+  analystGameStats,
   bandForWeekValue,
   buildOpsGamesReport,
   latestSeason,
@@ -213,5 +214,38 @@ describe("week boundary end to end", () => {
     expect(a.weekly[36]).toBe(2);
     expect(a.weekly[37]).toBe(1);
     expect(r.weeks.find((w) => w.week === 36)!.saturday).toBe("2026-06-06");
+  });
+});
+describe("analystGameStats", () => {
+  const W = "William Purssey";
+  it("home only, away only and both sides of one game", () => {
+    const rows = [
+      g({ home_allocated: W, away_allocated: "X" }),
+      g({ home_allocated: "Y", away_allocated: " william  purssey " }),
+      g({ home_allocated: W, away_allocated: W }),
+      g({ home_allocated: "Y", away_allocated: "X" }),
+    ];
+    expect(analystGameStats(rows, W)).toEqual({ home: 2, away: 2, both: 1, involved: 3, total: 2 });
+  });
+  it("splits by season from the date and Total equals the sum", () => {
+    const rows = [
+      g({ Date: "2025-04-05", season: 2025, home_allocated: W, away_allocated: W }),
+      g({ Date: "2025-04-12", season: 2025, home_allocated: W, away_allocated: "X" }),
+      g({ Date: "2026-03-28", season: 2026, home_allocated: "X", away_allocated: W }),
+      g({ Date: "2026-10-03", season: 2026, home_allocated: W, away_allocated: "X" }), // stored season stale: date => 2027
+    ];
+    const s25 = analystGameStats(rows, W, 2025);
+    const s26 = analystGameStats(rows, W, 2026);
+    const s27 = analystGameStats(rows, W, 2027);
+    const all = analystGameStats(rows, W);
+    expect([s25.total, s26.total, s27.total]).toEqual([1.5, 0.5, 0.5]);
+    expect(all.total).toBe(s25.total + s26.total + s27.total);
+    expect(all.involved).toBe(s25.involved + s26.involved + s27.involved);
+    expect(all.home + all.away).toBe(all.total * 2);
+  });
+  it("is not limited to 1000 rows and ignores placeholders", () => {
+    const rows = Array.from({ length: 2500 }, () => g({ home_allocated: W, away_allocated: "X" }));
+    expect(analystGameStats(rows, W).total).toBe(1250);
+    expect(analystGameStats(rows, "ZZ")).toEqual({ home: 0, away: 0, both: 0, involved: 0, total: 0 });
   });
 });
