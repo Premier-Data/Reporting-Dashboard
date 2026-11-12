@@ -357,7 +357,7 @@ function parseDeputyData(buffer, sheetName, season) {
 // ----------------------
 // Builds the TT_Games game_key. Default (every existing sheet) is the legacy
 // `${date}_${home}_${away}`, byte-for-byte unchanged. With `disambiguate`
-// (2025 sheet only) a LATER row whose key is already in `used` is made unique
+// (2024 and 2025 sheets only) a LATER row whose key is already in `used` is made unique
 // deterministically: append the cleaned Competition, then Round, then "#2",
 // "#3"... The first occurrence (sheet order) keeps the plain legacy key.
 // `used` is a per-parse Set; keys stay stable across syncs while the sheet
@@ -1056,9 +1056,11 @@ async function sync() {
     // Each season has its OWN Deputy + TT sheets. Season is stamped from the
     // sheet (not the date). To add a new season, append a pair here. `deputy`
     // / `tt` may be null when a season has no such sheet (2025 is TT-only: its
-    // Deputy data comes from the Deputy API). `uniqueKeys` makes colliding
-    // game_keys unique (2025 sheet only; see makeTTGameKey).
+    // Deputy data comes from the Deputy API; 2024 is TT-only too and predates
+    // the Deputy API history). `uniqueKeys` makes colliding game_keys unique
+    // (2024 and 2025 sheets only; see makeTTGameKey).
     const SEASON_SHEETS = [
+      { season: 2024, deputy: null, tt: "2024_TTRawData", uniqueKeys: true },
       { season: 2025, deputy: null, tt: "2025_TTRawData", uniqueKeys: true },
       { season: 2026, deputy: "DeputyRawData", tt: "TTRawData" },
       { season: 2027, deputy: "2027_DeputyRawData", tt: "2027_TTRawData" },
