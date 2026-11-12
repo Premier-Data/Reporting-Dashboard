@@ -70,6 +70,7 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/UI/tabs";
 import DashboardLayout from "./DashboardLayout";
 import Header from "./Header";
+import ErrorBoundary from "./ErrorBoundary";
 
 // -------------------------
 // NORMALISATION
@@ -339,12 +340,9 @@ export default function DashboardClient({
     filteredTT,
     analystMetrics
   ]);
-  if (!analystMetrics?.length) {
-    console.log("❌ No analyst metrics generated");
-    return null;
-  }
-  console.log("👤 SELECTED EMPLOYEE:", employee);
-  console.log("👤 SELECTED ANALYST:", selectedAnalyst?.name);
+  // NOTE: do not bail out when analystMetrics is empty. Metrics only include
+  // analysts with coded games, so a Deputy-only season (e.g. 2025, no TT games)
+  // legitimately has none; returning null here blanked the whole page.
   // -------------------------
   // RENDER
   // -------------------------
@@ -507,6 +505,14 @@ export default function DashboardClient({
           </div>
         </div>
 
+        <ErrorBoundary
+          resetKey={`${season}|${week}`}
+          resetLabel="Try another season"
+          onReset={() => {
+            setSeason(String(seasonInfo.years[0] ?? "all"));
+            setWeek("all");
+          }}
+        >
         <Tabs defaultValue="overview">
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -614,6 +620,7 @@ export default function DashboardClient({
           </TabsContent>
 
         </Tabs>
+        </ErrorBoundary>
 
         {selectedAnalyst && (
           <div style={{ marginTop: 20 }}>
