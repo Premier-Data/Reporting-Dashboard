@@ -947,9 +947,18 @@ async function uploadSoccer(records) {
 async function uploadOSTeam(records) {
   if (records.length === 0) return 0;
 
-  const { error } = await supabase
+  let { error } = await supabase
     .from("os_team")
     .upsert(records, { onConflict: "name,location" });
+  // start_date is added by migration 009. Until it has run, retry without it
+  // so the code can deploy ahead of the migration.
+  if (error && /start_date/.test(JSON.stringify(error))) {
+    console.log("⚠️ os_team.start_date missing (run migration 009); upserting without it");
+    const legacy = records.map(({ start_date, ...rest }) => rest);
+    ({ error } = await supabase
+      .from("os_team")
+      .upsert(legacy, { onConflict: "name,location" }));
+  }
   if (error) throw new Error(JSON.stringify(error));
 
   const keep = new Set(records.map(r => `${r.name}|${r.location}`));
