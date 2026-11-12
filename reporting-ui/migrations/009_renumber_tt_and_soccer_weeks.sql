@@ -86,10 +86,16 @@ where g.completed_date is not null
 -- 3) os_team: add the date the location starts counting, convert legacy sheet weeks.
 alter table public.os_team add column if not exists start_date date;
 
--- Legacy 2026 sheet numbering: W1 = 2026-03-25 (2 -> 2026-04-01, 17 -> 2026-07-15).
+-- start_date is set BY LOCATION, never computed from start_week: the deployed sync
+-- may already have written converted start_season/start_week values, and deriving
+-- the date from those would corrupt it. Same dates as OS_START in sync-deputy.js
+-- (legacy sheet W2 / W17).
 update public.os_team
-set start_date = date '2026-03-25' + (start_week - 1) * 7
-where start_date is null and start_season = 2026 and start_week is not null;
+set start_date = case location
+                   when 'Philippines' then date '2026-04-01'
+                   when 'Vietnam' then date '2026-07-15'
+                 end
+where start_date is null and location in ('Philippines', 'Vietnam');
 
 update public.os_team
 set start_season = public.deputy_season_of(start_date),
@@ -131,3 +137,8 @@ notify pgrst, 'reload schema';
 -- 4) os_team. Expect Philippines 2026 / 27 / 2026-04-01 and Vietnam 2026 / 42 / 2026-07-15.
 -- select name, location, start_season, start_week, start_date from public.os_team
 -- where start_date is not null order by location, name;
+
+-- 5) os_team wrong start_date. Expect 0 rows.
+-- select name, location, start_date from public.os_team
+-- where (location = 'Philippines' and start_date is distinct from date '2026-04-01')
+--    or (location = 'Vietnam' and start_date is distinct from date '2026-07-15');

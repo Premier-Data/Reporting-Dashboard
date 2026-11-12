@@ -429,7 +429,7 @@ function parseTTData(buffer, sheetName, season) {
 
         // Season + Week are DERIVED from Date (unified Wed->Tue rule); the
         // sheet Week column (r[9]) is no longer read.
-        Week: weekFromDate != null ? String(weekFromDate) : "0",
+        Week: weekFromDate != null ? String(weekFromDate) : null,
 
         Column11: clean(r[10]),      // Month
 
