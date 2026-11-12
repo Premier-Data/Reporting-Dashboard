@@ -28,6 +28,11 @@ import {
 import { supabase } from "@/lib/supabase";
 import { getDeputyShifts } from "@/lib/api/deputyShifts";
 import {
+  mapFixtureWeekTT,
+  seasonsFromDates,
+  unionSeasons,
+} from "@/lib/analytics/season";
+import {
   buildBoardReport,
   buildWeekReport,
   compareReports,
@@ -37,6 +42,8 @@ import {
   type BoardReport,
   type BoardComparison,
   type MetricDelta,
+  previousWeekWithData,
+  withShiftSeasonWeek,
   type ShiftRow,
   type GameRow,
 } from "@/lib/analytics/boardReport";
@@ -456,8 +463,10 @@ export default function BoardReportPage() {
           loadAll("TT_Games"),
         ]);
         if (cancelled) return;
-        setShiftRows(shifts as unknown as ShiftRow[]);
-        setGameRows(games as GameRow[]);
+        setShiftRows(
+          withShiftSeasonWeek(shifts as unknown as ShiftRow[])
+        );
+        setGameRows(mapFixtureWeekTT(games as GameRow[]) as GameRow[]);
         setDataReady(true);
       } catch (err) {
         if (cancelled) return;
@@ -474,14 +483,14 @@ export default function BoardReportPage() {
 
   // Seasons present in the shift data (descending). Week numbers restart each
   // season, so the week picker is scoped to the chosen season.
-  const seasonOptions = useMemo(() => {
-    const set = new Set<number>();
-    for (const r of shiftRows) {
-      const s = Number(r.season);
-      if (Number.isFinite(s)) set.add(s);
-    }
-    return [...set].sort((a, b) => b - a);
-  }, [shiftRows]);
+  const seasonOptions = useMemo(
+    () =>
+      unionSeasons(
+        seasonsFromDates(shiftRows, "shift_date"),
+        seasonsFromDates(gameRows, "Date")
+      ),
+    [shiftRows, gameRows]
+  );
 
   // Default to the latest season once data loads.
   useEffect(() => {
@@ -489,8 +498,7 @@ export default function BoardReportPage() {
   }, [seasonOptions, season]);
 
   // The data weeks present IN THE SELECTED SEASON (Wed→Tue week numbers),
-  // descending, each with the actual date span it covers. Week 0 is the
-  // pre-season catch-all; keep it but label it clearly.
+  // descending, each with the actual date span it covers.
   const weekOptions = useMemo(() => {
     const bounds = new Map<number, { min: string; max: string }>();
     for (const r of shiftRows) {
@@ -580,9 +588,20 @@ export default function BoardReportPage() {
           return;
         }
         current = buildWeekReport(shiftRows, gameRows, week, season);
-        if (compare && week - 1 >= 0 && weekNumbers.includes(week - 1)) {
-          previous = buildWeekReport(shiftRows, gameRows, week - 1, season);
-          prevLbl = `Week ${week - 1}`;
+        if (compare && season != null) {
+          // Week 1 compares against the previous season's last week.
+          const pw = previousWeekWithData(season, week, (s, w) =>
+            shiftRows.some(
+              (r) => Number(r.season) === s && Number(r.week) === w
+            )
+          );
+          if (pw) {
+            previous = buildWeekReport(shiftRows, gameRows, pw.week, pw.season);
+            prevLbl =
+              pw.season === season
+                ? `Week ${pw.week}`
+                : `${pw.season} Week ${pw.week}`;
+          }
         }
       } else {
         if (!customFrom || !customTo) {
@@ -616,7 +635,6 @@ export default function BoardReportPage() {
     month,
     season,
     week,
-    weekNumbers,
     customFrom,
     customTo,
     compare,
@@ -737,9 +755,7 @@ export default function BoardReportPage() {
                   {weekOptions.length === 0 && <option value="">—</option>}
                   {weekOptions.map((w) => (
                     <option key={w.week} value={w.week}>
-                      {w.week === 0
-                        ? `Week 0 (pre-season)${w.range ? ` — ${w.range}` : ""}`
-                        : `Week ${w.week}${w.range ? ` — ${w.range}` : ""}`}
+                      {`Week ${w.week}${w.range ? ` — ${w.range}` : ""}`}
                     </option>
                   ))}
                 </select>

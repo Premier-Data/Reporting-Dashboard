@@ -2,6 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { TTGame } from "@/types/ttgame";
+import {
+    defaultSeasonWeek,
+    fixtureSeasons,
+    matchesSeasonWeek,
+    weeksForSeason,
+} from "@/lib/analytics/fixtureSeasonWeeks";
+import { seasonWeekOfRow } from "@/lib/analytics/gameWeekIndex";
 
 type AllocationSlot = {
     analystId: number;
@@ -42,6 +49,9 @@ export default function AllocationModal({
     const [search, setSearch] = useState("");
 
     const [selectedWeek, setSelectedWeek] = useState<string>("All");
+
+    const [selectedSeason, setSelectedSeason] =
+        useState<number | null>(null);
 
     const dateLabel =
         new Date(
@@ -86,29 +96,38 @@ export default function AllocationModal({
         return map;
     }, [fixtures]);
 
-    const availableWeeks = useMemo(() => {
-        const weeks = [...new Set(
-            games
-                .map(g => g.Week)
-                .filter(w => w != null && w !== "")
-        )].sort((a, b) => Number(a) - Number(b));
-        return weeks;
-    }, [games]);
+    const seasons = useMemo(() => fixtureSeasons(games), [games]);
 
-    // Default to latest week
+    const availableWeeks = useMemo(() => {
+        if (selectedSeason == null) return [] as string[];
+        return weeksForSeason(games, selectedSeason).map(String);
+    }, [games, selectedSeason]);
+
+    // Default to the newest season's last week
     useEffect(() => {
-        if (availableWeeks.length > 0 && selectedWeek === "All") {
-            setSelectedWeek(availableWeeks[availableWeeks.length - 1]);
+        if (selectedSeason == null) {
+            const def = defaultSeasonWeek(games);
+            if (def) {
+                setSelectedSeason(def.season);
+                setSelectedWeek(String(def.week));
+            }
         }
-    }, [availableWeeks]);
+    }, [games, selectedSeason]);
 
     const filteredGames = useMemo(() => {
         let result = games;
 
-        // Week filter
-        if (selectedWeek !== "All") {
+        // Season + week filter
+        if (selectedSeason != null) {
             result = result.filter(
-                g => g.Week === selectedWeek
+                g =>
+                    selectedWeek === "All"
+                        ? seasonWeekOfRow(g)?.season === selectedSeason
+                        : matchesSeasonWeek(
+                              g,
+                              selectedSeason,
+                              Number(selectedWeek)
+                          )
             );
         }
 
@@ -130,7 +149,7 @@ export default function AllocationModal({
         }
 
         return result;
-    }, [games, search, selectedWeek]);
+    }, [games, search, selectedWeek, selectedSeason]);
 
     return (
 
@@ -343,6 +362,58 @@ export default function AllocationModal({
                             "
                         />
                     </div>
+
+                    {/* Season Selector (only when more than one season) */}
+                    {seasons.length > 1 && (
+                        <div>
+                            <label className="
+                                mb-1
+                                block
+                                text-xs
+                                font-semibold
+                                uppercase
+                                tracking-wide
+                                text-slate-500
+                            ">
+                                Season
+                            </label>
+
+                            <select
+                                value={selectedSeason ?? ""}
+                                onChange={e => {
+                                    const s = Number(e.target.value);
+                                    const wks = weeksForSeason(games, s);
+                                    setSelectedSeason(s);
+                                    setSelectedWeek(
+                                        wks.length
+                                            ? String(wks[wks.length - 1])
+                                            : "All"
+                                    );
+                                }}
+                                className="
+                                    w-full
+                                    rounded-lg
+                                    border
+                                    border-slate-300
+                                    bg-white
+                                    px-3
+                                    py-2
+                                    text-sm
+                                    text-slate-900
+                                    focus:border-blue-500
+                                    focus:outline-none
+                                    focus:ring-1
+                                    focus:ring-blue-500
+                                "
+                            >
+                                {seasons.map(s => (
+                                    <option key={s} value={s}>
+                                        {s}
+                                    </option>
+                                ))}
+                            </select>
+                        </div>
+                    )}
 
                     {/* Week Selector */}
                     <div>

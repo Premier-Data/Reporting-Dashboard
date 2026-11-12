@@ -1,4 +1,5 @@
 import { RecommendationContext } from "./types";
+import { rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
 
 // ------------------------------------------------
 // LEAGUE EXPERIENCE (20)
@@ -78,13 +79,13 @@ export function scoreRecentExperience(
 ): number {
 
     const currentWeek =
-        Number(context.fixture.Week);
+        rowAbsoluteWeek(context.fixture);
 
     const games =
         context.historicalGames.filter((game) => {
 
             const gameWeek =
-                Number(game.Week);
+                rowAbsoluteWeek(game);
 
             return (
                 game.Competition === context.fixture.Competition &&

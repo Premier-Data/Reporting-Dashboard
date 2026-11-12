@@ -14,7 +14,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { seasonsFromTT } from "@/lib/analytics/season";
+import { mapFixtureWeekSoccer, seasonsFromTT } from "@/lib/analytics/season";
 
 const PAGE_SIZE = 1000;
 
@@ -90,7 +90,7 @@ export default function VnSoccerPage() {
         fetchAll<SoccerGame>("soccer_games"),
         fetchAll<VnMember>("vn_team"),
       ]);
-      setGames(g);
+      setGames(mapFixtureWeekSoccer(g));
       setVn(v);
       setLoading(false);
     })();

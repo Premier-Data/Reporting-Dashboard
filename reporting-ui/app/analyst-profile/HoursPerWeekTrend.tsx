@@ -56,6 +56,7 @@ const CustomTooltip = ({ active, payload, label }: any) => {
   );
 };
 
+import { weekBucket, withWeekLabels } from "@/lib/analytics/gameWeekIndex";
 import type { DeputyShift } from "@/types/deputy";
 
 type Props = {
@@ -69,39 +70,32 @@ export default function HoursPerWeekTrend({
   // GROUP BY WEEK (TOTAL HOURS)
   // -------------------------
   const data = useMemo(() => {
-    const weeks: Record<string, number> = {};
+    // Keyed by (season, week): week numbers repeat across seasons.
+    const weeks = new Map<
+      string,
+      { idx: number; season: number; week: number; hours: number }
+    >();
 
     deputyData.forEach((shift) => {
-const week =
-    shift.week ||
-    shift.week_name ||
-    shift.week_start ||
-    shift.pay_week;
+      const b = weekBucket(shift as any);
 
-      if (!week) return;
+      if (!b) return;
 
-      if (!weeks[week]) {
-        weeks[week] = 0;
-      }
+      const row =
+        weeks.get(b.key) ??
+        { idx: b.idx, season: b.season, week: b.week, hours: 0 };
 
-      weeks[week] += Number(
+      row.hours += Number(
         shift.total_hours ||
-          shift.total_hours ||
           shift.shift_hours ||
           0
       );
+      weeks.set(b.key, row);
     });
 
-    return Object.entries(weeks)
-      .map(([week, hours]) => ({
-        week,
-        hours,
-      }))
-      .sort(
-        (a, b) =>
-          new Date(a.week).getTime() -
-          new Date(b.week).getTime()
-      );
+    return withWeekLabels(
+      [...weeks.values()].sort((a, b) => a.idx - b.idx)
+    );
   }, [deputyData]);
 
   // -------------------------
@@ -154,7 +148,7 @@ const week =
           <LineChart data={data}>
             <CartesianGrid stroke={THEME.grid} />
 
-            <XAxis dataKey="week" stroke={THEME.text} />
+            <XAxis dataKey="label" stroke={THEME.text} />
             <YAxis stroke={THEME.text} />
 
             <Tooltip content={<CustomTooltip />} />

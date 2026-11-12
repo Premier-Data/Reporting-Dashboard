@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
 import { supabase } from "@/lib/supabase";
+import { mapFixtureWeekTT } from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
 import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
 import {
@@ -84,7 +85,8 @@ export default function CompetitionsPage() {
 
             const data = await fetchAll<TTGame>("TT_Games");
 
-            setGames(data);
+            // Season/week derived from each fixture's Date (unified rule).
+            setGames(mapFixtureWeekTT(data));
             setLoading(false);
         }
 
@@ -166,10 +168,11 @@ export default function CompetitionsPage() {
                     selectedCompetition
             )
             .sort((a, b) => {
-                const weekA = Number(a.Week) || 0;
-                const weekB = Number(b.Week) || 0;
+                // Chronological by fixture date (season-aware), then round.
+                const dateA = String(a.Date ?? "");
+                const dateB = String(b.Date ?? "");
 
-                if (weekA !== weekB) return weekA - weekB;
+                if (dateA !== dateB) return dateA < dateB ? -1 : 1;
 
                 return Number(a.Round || 0) - Number(b.Round || 0);
             });

@@ -36,6 +36,7 @@ const norm = (v: any) =>
     .trim()
     .toLowerCase();
 
+import { weekBucket, withWeekLabels } from "@/lib/analytics/gameWeekIndex";
 import type { DeputyShift } from "@/types/deputy";
 import type { TTGame } from "@/types/ttgame";
 
@@ -60,7 +61,7 @@ export default function AverageCodingTimeTrend({
   const chartData = useMemo(() => {
     const weeks = new Map<
       string,
-      { week: string; hours: number; games: number }
+      { idx: number; season: number; week: number; hours: number; games: number }
     >();
 
     // -------------------------
@@ -77,24 +78,26 @@ export default function AverageCodingTimeTrend({
       if (!isValidArea) continue;
       if (selected !== "all" && employee !== selected) continue;
 
-      const week = String(r.week ?? "").trim();
-      if (!week) continue;
+      const b = weekBucket(r);
+      if (!b) continue;
 
-      const existing = weeks.get(week) ?? {
-        week,
+      const existing = weeks.get(b.key) ?? {
+        idx: b.idx,
+        season: b.season,
+        week: b.week,
         hours: 0,
         games: 0,
       };
       existing.hours += Number(r.total_hours ?? 0);
-      weeks.set(week, existing);
+      weeks.set(b.key, existing);
     }
 
     // -------------------------
     // GAMES (ONLY TT DATA)
     // -------------------------
     for (const r of ttData ?? []) {
-      const week = String(r.Week ?? "").trim();
-      if (!week) continue;
+      const b = weekBucket(r);
+      if (!b) continue;
 
       const home = norm(r.home_allocated);
       const away = norm(r.away_allocated);
@@ -105,24 +108,26 @@ export default function AverageCodingTimeTrend({
 
       if (games === 0) continue;
 
-      const existing = weeks.get(week) ?? {
-        week,
+      const existing = weeks.get(b.key) ?? {
+        idx: b.idx,
+        season: b.season,
+        week: b.week,
         hours: 0,
         games: 0,
       };
 
       existing.games += games;
-      weeks.set(week, existing);
+      weeks.set(b.key, existing);
     }
 
-    return Array.from(weeks.values())
-      .sort((a, b) => Number(a.week) - Number(b.week))
-      .map((w) => ({
-        week: w.week,
-        hours: Number(w.hours.toFixed(2)),
-        games: Number(w.games.toFixed(2)),
-        avg: w.games ? w.hours / w.games : 0,
-      }));
+    return withWeekLabels(
+      Array.from(weeks.values()).sort((a, b) => a.idx - b.idx)
+    ).map((w) => ({
+      week: w.label,
+      hours: Number(w.hours.toFixed(2)),
+      games: Number(w.games.toFixed(2)),
+      avg: w.games ? w.hours / w.games : 0,
+    }));
   }, [deputyData, ttData, selected]);
 
   // -------------------------
@@ -157,7 +162,7 @@ export default function AverageCodingTimeTrend({
         }}
       >
         <div style={{ fontWeight: 700, marginBottom: 6 }}>
-          Week {label}
+          {label}
         </div>
 
         <div>

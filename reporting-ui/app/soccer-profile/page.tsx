@@ -19,6 +19,8 @@ import LeagueBreakdown from "../analyst-profile/LeagueBreakdown";
 import TeamBreakdown from "../analyst-profile/TeamBreakdown";
 import { getAnalystImage, getAnalystInitials } from "../analyst-profile/analystImages";
 import { supabase } from "@/lib/supabase";
+import { mapFixtureWeekSoccer } from "@/lib/analytics/season";
+import { rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
 import { useAuth } from "@/components/auth/AuthContext";
 import type { TeamMetric } from "@/types/analyst";
 
@@ -94,7 +96,7 @@ function SoccerProfileContent() {
     async function load() {
       setLoading(true);
       const g = await fetchAll<SoccerGame>("soccer_games");
-      setGames(g);
+      setGames(mapFixtureWeekSoccer(g));
       // Club logos (same teams table the AFL profile uses).
       try {
         const { data: teamsData } = await supabase
@@ -189,7 +191,7 @@ function SoccerProfileContent() {
     };
     return [...analystGames].sort((a, b) => {
       switch (gameSort) {
-        case "Week": return ((Number(a.week) || 0) - (Number(b.week) || 0)) * dir;
+        case "Week": return ((rowAbsoluteWeek(a) || 0) - (rowAbsoluteWeek(b) || 0)) * dir;
         case "Competition": return (a.Competition ?? "").localeCompare(b.Competition ?? "") * dir;
         case "Round": return ((Number(a.Round) || 0) - (Number(b.Round) || 0)) * dir;
         case "home_team": return (a.home_team ?? "").localeCompare(b.home_team ?? "") * dir;

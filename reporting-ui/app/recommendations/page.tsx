@@ -14,6 +14,8 @@ import {
   type DeputyRosterWithSeason,
 } from "@/lib/api/deputyShifts";
 import { deputySeasonOf } from "@/lib/deputy/reportWeeks";
+import { absoluteWeekIndex, mapFixtureWeekTT } from "@/lib/analytics/season";
+import { rowAbsoluteWeek, seasonWeekOfRow } from "@/lib/analytics/gameWeekIndex";
 import { filterRosterForFixture } from "@/lib/recommendations/rosterSeason";
 import DeputyLoadError from "@/components/DeputyLoadError";
 import { leagueLogos } from "@/app/analyst-profile/leagueLogos";
@@ -112,6 +114,7 @@ export default function RecommendationPage() {
   const [selectedFixture, setSelectedFixture] = useState<TTGame | null>(null);
 
   const [selectedWeek, setSelectedWeek] = useState(1);
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
 
   const [fixtureSearch, setFixtureSearch] = useState("");
 
@@ -245,7 +248,7 @@ export default function RecommendationPage() {
         const { data, error } = await supabase
           .from("TT_Games")
           .select("*")
-          .order("Week")
+          .order("Date")
           .order("Competition")
           .range(from, from + pageSize - 1);
 
@@ -253,7 +256,7 @@ export default function RecommendationPage() {
 
         if (!data?.length) break;
 
-        allGames.push(...(data as TTGame[]));
+        allGames.push(...mapFixtureWeekTT(data as TTGame[]));
 
         if (data.length < pageSize) break;
 
@@ -262,19 +265,22 @@ export default function RecommendationPage() {
 
       setHistoricalGames(allGames);
 
-      // Default to the latest week
-      const allWeekNumbers = [...new Set(
-        allGames.map(g => Number(g.Week))
-      )].sort((a, b) => a - b);
+      // Default to the latest fixture's (season, week), not max(Week)
+      // across all seasons.
+      const latestIdx = Math.max(
+        ...allGames.map(g => rowAbsoluteWeek(g)).filter(Number.isFinite)
+      );
+      const latestGame = allGames.find(
+        g => rowAbsoluteWeek(g) === latestIdx
+      );
+      const latestSw = latestGame ? seasonWeekOfRow(latestGame) : null;
+      const latestWeek = latestSw?.week ?? 1;
 
-      const latestWeek = allWeekNumbers.length > 0
-        ? allWeekNumbers[allWeekNumbers.length - 1]
-        : 1;
-
+      setSelectedSeason(latestSw?.season ?? null);
       setSelectedWeek(latestWeek);
 
       const latestWeekFixtures = allGames.filter(
-        g => Number(g.Week) === latestWeek
+        g => rowAbsoluteWeek(g) === latestIdx
       );
 
       setFixtures(latestWeekFixtures);
@@ -300,8 +306,11 @@ export default function RecommendationPage() {
   useEffect(() => {
     if (historicalGames.length === 0) return;
 
+    if (selectedSeason == null) return;
+
+    const targetIdx = absoluteWeekIndex(selectedSeason, selectedWeek);
     const weekFixtures = historicalGames.filter(
-      g => Number(g.Week) === selectedWeek
+      g => rowAbsoluteWeek(g) === targetIdx
     );
 
     setFixtures(weekFixtures);
@@ -312,7 +321,7 @@ export default function RecommendationPage() {
       setSelectedFixture(null);
     }
 
-  }, [selectedWeek, historicalGames]);
+  }, [selectedWeek, selectedSeason, historicalGames]);
 
   useEffect(() => {
     console.log("RecommendationPage MOUNTED");
@@ -415,7 +424,7 @@ export default function RecommendationPage() {
       switch (sortField) {
         case "Week":
           return (
-            (Number(a.Week) - Number(b.Week)) *
+            (rowAbsoluteWeek(a) - rowAbsoluteWeek(b)) *
             direction
           );
 
@@ -770,13 +779,13 @@ export default function RecommendationPage() {
 
     if (!targetDay) return set;
 
-    const targetWeek = Number(selectedFixture.Week);
+    const targetWeek = rowAbsoluteWeek(selectedFixture);
 
     // Find all TT_Games in the same week with the same expected_day
     // that already have an analyst assigned (via the API).
     for (const game of historicalGames) {
       if (game.game_key === selectedFixture.game_key) continue;
-      if (Number(game.Week) !== targetWeek) continue;
+      if (rowAbsoluteWeek(game) !== targetWeek) continue;
 
       const gameDay = (game.expected_day ?? "").trim().toLowerCase();
       if (gameDay !== targetDay) continue;
@@ -1103,18 +1112,18 @@ export default function RecommendationPage() {
   // KEEP SELECTION VALID
   // --------------------------------------------------
 
+  // Season-qualified weeks in chronological order (week numbers repeat
+  // across seasons).
   const availableWeeks = useMemo(() => {
-    return [...new Set(
-      historicalGames.map(g => Number(g.Week))
-    )].sort((a, b) => a - b);
-  }, [historicalGames]);
-
-  // Default to latest week once data loads
-  useEffect(() => {
-    if (availableWeeks.length > 0 && selectedWeek === 1) {
-      setSelectedWeek(availableWeeks[availableWeeks.length - 1]);
+    const seen = new Map<number, { season: number; week: number }>();
+    for (const g of historicalGames) {
+      const sw = seasonWeekOfRow(g);
+      if (sw) seen.set(absoluteWeekIndex(sw.season, sw.week), sw);
     }
-  }, [availableWeeks]);
+    return [...seen.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, sw]) => sw);
+  }, [historicalGames]);
 
   function handleSort(
     field:
@@ -1233,15 +1242,19 @@ export default function RecommendationPage() {
             </h2>
 
             <select
-              value={selectedWeek}
-              onChange={(e) =>
-                setSelectedWeek(Number(e.target.value))
-              }
+              value={`${selectedSeason}-${selectedWeek}`}
+              onChange={(e) => {
+                const [s, w] = e.target.value.split("-").map(Number);
+                setSelectedSeason(s);
+                setSelectedWeek(w);
+              }}
               className="mb-3 w-full rounded border border-slate-700 bg-slate-900 p-2 shrink-0"
             >
-              {availableWeeks.map((week) => (
-                <option key={week} value={week}>
-                  Week {week}
+              {availableWeeks.map(({ season: s, week: w }) => (
+                <option key={`${s}-${w}`} value={`${s}-${w}`}>
+                  {new Set(availableWeeks.map(x => x.season)).size > 1
+                    ? `${s} Week ${w}`
+                    : `Week ${w}`}
                 </option>
               ))}
             </select>
@@ -1945,7 +1958,7 @@ export default function RecommendationPage() {
             g.home_team?.trim().toLowerCase() === teamName.trim().toLowerCase() ||
             g.away_team?.trim().toLowerCase() === teamName.trim().toLowerCase()
           )
-          .sort((a, b) => Number(b.Week) - Number(a.Week))
+          .sort((a, b) => rowAbsoluteWeek(b) - rowAbsoluteWeek(a))
           .slice(0, 10);
 
         // Get unique analysts who coded this team

@@ -6,7 +6,13 @@ import { supabase } from "@/lib/supabase";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
 import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
 import DeputyLoadError from "@/components/DeputyLoadError";
-import { seasonsFromTT, dateInSeason } from "@/lib/analytics/season";
+import {
+  seasonsFromTT,
+  dateInSeason,
+  mapFixtureWeekTT,
+  seasonsFromDates,
+  unionSeasons,
+} from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
 import type { AnalystMetrics } from "@/types/analyst";
 import type { DeputyShift } from "@/types/deputy";
@@ -77,7 +83,7 @@ export default function LeaderboardPage() {
         ]);
         if (cancelled) return;
         setShiftRows(analystShifts(shifts));
-        setGameRows(games);
+        setGameRows(mapFixtureWeekTT(games as any[]) as TTGame[]);
       } catch (e) {
         if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -91,7 +97,18 @@ export default function LeaderboardPage() {
     };
   }, [reloadKey]);
 
-  const seasonInfo = useMemo(() => seasonsFromTT(gameRows), [gameRows]);
+  // Union of seasons from fixtures and Deputy shifts, so a Deputy-only season
+  // (e.g. 2025) is still offered.
+  const seasonInfo = useMemo(
+    () => ({
+      years: unionSeasons(
+        seasonsFromDates(gameRows as any[], "Date"),
+        seasonsFromDates(shiftRows as any[], "shift_date")
+      ),
+      hasUnknown: seasonsFromTT(gameRows).hasUnknown,
+    }),
+    [gameRows, shiftRows]
+  );
 
   // Default to the latest season once data loads.
   useEffect(() => {

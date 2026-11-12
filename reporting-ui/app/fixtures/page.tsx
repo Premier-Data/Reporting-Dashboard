@@ -36,6 +36,12 @@ import {
 import { syncGamesToApi } from "@/lib/api/fixtures";
 
 import { supabase } from "@/lib/supabase";
+import { mapFixtureWeekTT } from "@/lib/analytics/season";
+import {
+    defaultSeasonWeek,
+    fixtureSeasons,
+    weeksForSeason,
+} from "@/lib/analytics/fixtureSeasonWeeks";
 
 import type { TTGame } from "@/types/ttgame";
 
@@ -164,6 +170,9 @@ export default function FixturesPage() {
         setSelectedWeek,
     ] = useState<string>("All");
 
+    const [selectedSeason, setSelectedSeason] =
+        useState<number | null>(null);
+
 
     const [
         lastRefresh,
@@ -190,7 +199,7 @@ export default function FixturesPage() {
                     await supabase
                         .from("TT_Games")
                         .select("*")
-                        .order("Week")
+                        .order("Date")
                         .order("Competition")
                         .range(from, from + pageSize - 1);
 
@@ -201,7 +210,7 @@ export default function FixturesPage() {
 
                 if (!data?.length) break;
 
-                gamesList.push(...(data as TTGame[]));
+                gamesList.push(...mapFixtureWeekTT(data as TTGame[]));
 
                 if (data.length < pageSize) break;
 
@@ -601,20 +610,23 @@ export default function FixturesPage() {
      * AVAILABLE WEEKS (from TT_Games)
      */
 
-    const availableWeeks = useMemo(() => {
-        return [...new Set(
-            allGames
-                .map(g => g.Week)
-                .filter(w => w != null && w !== "")
-        )].sort((a, b) => Number(a) - Number(b));
-    }, [allGames]);
+    const seasons = useMemo(() => fixtureSeasons(allGames), [allGames]);
 
-    // Default to latest week once data loads
+    const availableWeeks = useMemo(() => {
+        if (selectedSeason == null) return [] as string[];
+        return weeksForSeason(allGames, selectedSeason).map(String);
+    }, [allGames, selectedSeason]);
+
+    // Default to the newest season's last week once data loads
     useEffect(() => {
-        if (availableWeeks.length > 0 && selectedWeek === "All") {
-            setSelectedWeek(availableWeeks[availableWeeks.length - 1]);
+        if (selectedSeason == null) {
+            const def = defaultSeasonWeek(allGames);
+            if (def) {
+                setSelectedSeason(def.season);
+                setSelectedWeek(String(def.week));
+            }
         }
-    }, [availableWeeks]);
+    }, [allGames, selectedSeason]);
 
     // Sync TT_Games that have videoURLs but aren't in the API yet.
     // Once synced, the API's FileMetadataService will check their sizes
@@ -806,8 +818,10 @@ export default function FixturesPage() {
                             );
 
                         const matchesWeek =
-                            selectedWeek === "All" ||
-                            fixture.Week === selectedWeek;
+                            (selectedSeason == null ||
+                                Number(fixture.season) === selectedSeason) &&
+                            (selectedWeek === "All" ||
+                                fixture.Week === selectedWeek);
 
                         return (
                             matchesSearch &&
@@ -1513,6 +1527,56 @@ export default function FixturesPage() {
                     />
 
                 </div>
+
+
+                {/* SEASON */}
+
+                {seasons.length > 1 && (
+                    <div>
+                        <label
+                            className="
+                            mb-1
+                            block
+                            text-sm
+                            text-gray-600
+                            "
+                        >
+                            Season
+                        </label>
+
+                        <select
+                            value={selectedSeason ?? ""}
+                            onChange={e => {
+                                const s = Number(e.target.value);
+                                const wks = weeksForSeason(allGames, s);
+                                setSelectedSeason(s);
+                                setSelectedWeek(
+                                    wks.length ? String(wks[wks.length - 1]) : "All"
+                                );
+                            }}
+                            className="
+                            min-w-[120px]
+                            rounded-xl
+                            border
+                            border-slate-300
+                            bg-white
+                            px-4
+                            py-3
+                            text-sm
+                            outline-none
+                            focus:border-blue-500
+                            focus:ring-4
+                            focus:ring-blue-100
+                            "
+                        >
+                            {seasons.map(s => (
+                                <option key={s} value={s}>
+                                    {s}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                )}
 
 
                 {/* WEEK */}

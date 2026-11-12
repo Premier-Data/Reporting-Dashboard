@@ -62,6 +62,7 @@ import type {
 
 import type { TTGame } from "@/types/ttgame";
 import { supabase } from "@/lib/supabase";
+import { mapFixtureWeekTT } from "@/lib/analytics/season";
 
 import AllocationModal from "./AllocationModal";
 
@@ -742,7 +743,7 @@ export default function SchedulePage() {
                     await supabase
                         .from("TT_Games")
                         .select("*")
-                        .order("Week")
+                        .order("Date")
                         .order("Competition")
                         .range(from, from + pageSize - 1);
 
@@ -753,7 +754,7 @@ export default function SchedulePage() {
 
                 if (!data?.length) break;
 
-                gamesList.push(...(data as TTGame[]));
+                gamesList.push(...mapFixtureWeekTT(data as TTGame[]));
 
                 if (data.length < pageSize) break;
 

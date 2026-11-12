@@ -10,6 +10,7 @@ import {
 } from "./scoring";
 
 import type { RecommendationContext } from "./types";
+import { rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
 
 // ------------------------------------------------
 // EVIDENCE
@@ -107,7 +108,8 @@ function countRecentTeamGames(
     const analyst = normaliseTeamName(analystName);
 
     return historicalGames.filter((game) => {
-        const gameWeek = Number(game.Week);
+        // Continuous index so the window works across season boundaries.
+        const gameWeek = rowAbsoluteWeek(game);
 
         const inWindow =
             gameWeek >= fixtureWeek - RECENT_WEEKS_WINDOW &&
@@ -366,7 +368,7 @@ const score =
                         historicalGames,
                         analyst.name,
                         fixture.home_team,
-                        Number(fixture.Week)
+                        rowAbsoluteWeek(fixture)
                     ),
 
                 awayTeamGames:
@@ -374,7 +376,7 @@ const score =
                         historicalGames,
                         analyst.name,
                         fixture.away_team,
-                        Number(fixture.Week)
+                        rowAbsoluteWeek(fixture)
                     ),
 
                 recentGames:
@@ -382,23 +384,19 @@ const score =
                         (game) => {
 
                             const gameWeek =
-                                Number(
-                                    game.Week
-                                );
+                                rowAbsoluteWeek(game);
+                            const fixtureIdx =
+                                rowAbsoluteWeek(fixture);
 
                             return (
                                 game.Competition ===
                                     fixture.Competition &&
 
                                 gameWeek >=
-                                    Number(
-                                        fixture.Week
-                                    ) - 5 &&
+                                    fixtureIdx - 5 &&
 
                                 gameWeek <
-                                    Number(
-                                        fixture.Week
-                                    ) &&
+                                    fixtureIdx &&
 
                                 (
                                     game.home_allocated ===

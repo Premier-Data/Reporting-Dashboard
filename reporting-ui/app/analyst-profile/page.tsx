@@ -37,6 +37,8 @@ import { supabase } from "@/lib/supabase";
 import { analystShifts, getDeputyShifts } from "@/lib/api/deputyShifts";
 import DeputyLoadError from "@/components/DeputyLoadError";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
+import { mapFixtureWeekTT } from "@/lib/analytics/season";
+import { rowAbsoluteWeek } from "@/lib/analytics/gameWeekIndex";
 import { getCompAllocationGames } from "@/lib/api/compFixtures";
 import type { AnalystMetrics } from "@/types/analyst";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -240,14 +242,17 @@ const gamesData = await fetchAll<TTGame>("TT_Games");
       }
 
       if (cancelled) return;
+      // Derive season/week from each fixture's Date (also re-weeks the
+      // merged comp-fixture rows, whose own Week is a JADE week).
+      const derivedGames = mapFixtureWeekTT(gamesData);
       setShifts(shiftsData);
-      setGames(gamesData);
+      setGames(derivedGames);
 
       const analystData =
         buildAnalystBenchmark(
           buildAnalystMetrics(
             shiftsData,
-            gamesData
+            derivedGames
           )
         );
       setAnalysts(analystData);
@@ -495,7 +500,7 @@ const filteredGames = useMemo(() => {
               const sortedGames = [...filteredGames].sort((a, b) => {
                 const dir = gameDir === "asc" ? 1 : -1;
                 switch (gameSort) {
-                  case "Week": return (Number(a.Week) - Number(b.Week)) * dir;
+                  case "Week": return (rowAbsoluteWeek(a) - rowAbsoluteWeek(b)) * dir;
                   case "Competition": return (a.Competition ?? "").localeCompare(b.Competition ?? "") * dir;
                   case "Round": return (Number(a.Round) - Number(b.Round)) * dir;
                   case "home_team": return (a.home_team ?? "").localeCompare(b.home_team ?? "") * dir;

@@ -1,5 +1,6 @@
 "use client";
 
+import { weekBucket, withWeekLabels } from "@/lib/analytics/gameWeekIndex";
 import { useMemo } from "react";
 import {
   ResponsiveContainer,
@@ -28,35 +29,39 @@ export default function TimeTrendCodingPerGame({
   ttData: any[];
 }) {
   const chartData = useMemo(() => {
-    const map = new Map<string, { week: string; hours: number; games: number }>();
+    type Row = { idx: number; season: number; week: number; hours: number; games: number };
+    const map = new Map<string, Row>();
+    const rowFor = (b: { key: string; idx: number; season: number; week: number }) =>
+      map.get(b.key) ||
+      { idx: b.idx, season: b.season, week: b.week, hours: 0, games: 0 };
 
     // HOURS
     for (const r of deputyData || []) {
-      const week = String(r.week ?? "").trim();
-      if (!week) continue;
+      const b = weekBucket(r);
+      if (!b) continue;
 
-      const row = map.get(week) || { week, hours: 0, games: 0 };
+      const row = rowFor(b);
       row.hours += Number(r.total_hours || 0);
-      map.set(week, row);
+      map.set(b.key, row);
     }
 
     // GAMES
     for (const r of ttData || []) {
-      const week = String(r.Week ?? r.week ?? "").trim();
-      if (!week) continue;
+      const b = weekBucket(r);
+      if (!b) continue;
 
-      const row = map.get(week) || { week, hours: 0, games: 0 };
+      const row = rowFor(b);
       row.games += 1;
-      map.set(week, row);
+      map.set(b.key, row);
     }
 
-    return Array.from(map.values())
-      .sort((a, b) => Number(a.week) - Number(b.week))
-      .map(w => ({
-        week: w.week,
-        avgCodingTimePerGame:
-          w.games > 0 ? w.hours / w.games : 0,
-      }));
+    return withWeekLabels(
+      Array.from(map.values()).sort((a, b) => a.idx - b.idx)
+    ).map(w => ({
+      week: w.label,
+      avgCodingTimePerGame:
+        w.games > 0 ? w.hours / w.games : 0,
+    }));
   }, [deputyData, ttData]);
 
   return (

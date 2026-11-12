@@ -148,28 +148,30 @@ export function seasonsFromDates(rows: ReadonlyArray<Record<string, unknown>>, d
 }
 
 /** Returns a COPY of a TT_Games row with season, Week (string) and week (number) derived from `Date`. */
-export function withFixtureWeekTT<T extends Record<string, unknown>>(
-  row: T
+export function withFixtureWeekTT<T extends object>(
+  input: T
 ): T & { season: number | null; Week: string | null; week: number | null } {
+  const row = input as unknown as Record<string, unknown>;
   const sw = seasonWeekOfIso(row?.Date);
-  if (sw) return { ...row, season: sw.season, Week: String(sw.week), week: sw.week };
+  if (sw) return { ...input, season: sw.season, Week: String(sw.week), week: sw.week };
   const season = finiteOrNull(row?.season);
   const week = finiteOrNull(row?.Week ?? row?.week);
-  return { ...row, season, Week: week == null ? null : String(week), week };
+  return { ...input, season, Week: week == null ? null : String(week), week };
 }
 
 /** Same for soccer_games rows: season and week from `Date`; completed_* are left as stored. */
-export function withFixtureWeekSoccer<T extends Record<string, unknown>>(
-  row: T
+export function withFixtureWeekSoccer<T extends object>(
+  input: T
 ): T & { season: number | null; week: number | null } {
+  const row = input as unknown as Record<string, unknown>;
   const sw = seasonWeekOfIso(row?.Date);
-  if (sw) return { ...row, season: sw.season, week: sw.week };
-  return { ...row, season: finiteOrNull(row?.season), week: finiteOrNull(row?.week) };
+  if (sw) return { ...input, season: sw.season, week: sw.week };
+  return { ...input, season: finiteOrNull(row?.season), week: finiteOrNull(row?.week) };
 }
 
-export const mapFixtureWeekTT = <T extends Record<string, unknown>>(rows: readonly T[]) =>
+export const mapFixtureWeekTT = <T extends object>(rows: readonly T[]) =>
   rows.map(withFixtureWeekTT);
-export const mapFixtureWeekSoccer = <T extends Record<string, unknown>>(rows: readonly T[]) =>
+export const mapFixtureWeekSoccer = <T extends object>(rows: readonly T[]) =>
   rows.map(withFixtureWeekSoccer);
 
 /**

@@ -322,7 +322,8 @@ these blobs are large:
   colours, excluded-analyst rules.
 - `lib/recommendations/` — analyst-to-fixture scoring engine (league
   experience, availability, weights).
-- `lib/api/deputyShifts.ts` — the single data layer for Deputy shifts and rosters. All Deputy data comes from the Deputy API (the `deputy` schema): the name-free view `weekly_report_shifts` for the Weekly Report, and the `deputy-read` edge function for employee-level pages. Nothing reads the Excel-loaded Deputy tables; `lib/deputy/noExcelDeputyReads.test.ts` enforces that.
+- `lib/api/deputyShifts.ts` — the single data layer for Deputy shifts and rosters. All Deputy data comes from the Deputy API (the `deputy` schema): the name-free view `weekly_report_shifts` for the Weekly Report, and the `deputy-read` edge function for employee-level pages. Nothing reads the Excel-loaded Deputy tables; `lib/deputy/noExcelDeputyReads.test.ts` enforces that. Deputy history is loaded in full (all history since 2025-03).
+- `lib/analytics/season.ts` — the single week rule: weeks run Wed to Tue, season N starts on the Wednesday on or before 1 Oct of year N-1 (Week 1), there is no Week 0 and a season can have 53 weeks (2025). Deputy shifts, `TT_Games` and `soccer_games` all derive season/week from their date with it (stored `Week`/`season` columns are only a last fallback). SQL twin: migration 005 functions; JS twin: `sync-deputy.js`. Cross-season maths uses `absoluteWeekIndex`.
 
 ---
 

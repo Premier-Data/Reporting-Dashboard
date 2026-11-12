@@ -37,6 +37,7 @@ const norm = (v: any) =>
 // -------------------------
 // TYPES
 // -------------------------
+import { weekBucket, withWeekLabels } from "@/lib/analytics/gameWeekIndex";
 import type { TTGame } from "@/types/ttgame";
 
 type Props = {
@@ -58,11 +59,14 @@ export default function GamesCompletedTrend({
   // BUILD DATA
   // -------------------------
   const chartData = useMemo(() => {
-    const weeks = new Map<string, { week: string; Games: number }>();
+    const weeks = new Map<
+      string,
+      { idx: number; season: number; week: number; Games: number }
+    >();
 
     (data ?? []).forEach((r) => {
-      const week = String(r.Week ?? "").trim();
-      if (!week) return;
+      const b = weekBucket(r);
+      if (!b) return;
 
       const match = isAll
         ? true
@@ -71,7 +75,9 @@ export default function GamesCompletedTrend({
 
       if (!match) return;
 
-      const existing = weeks.get(week) ?? { week, Games: 0 };
+      const existing =
+        weeks.get(b.key) ??
+        { idx: b.idx, season: b.season, week: b.week, Games: 0 };
 
       let credit = 0;
 
@@ -84,15 +90,15 @@ export default function GamesCompletedTrend({
       }
 
       existing.Games += credit;
-      weeks.set(week, existing);
+      weeks.set(b.key, existing);
     });
 
-    return Array.from(weeks.values())
-      .sort((a, b) => Number(a.week) - Number(b.week))
-      .map((w) => ({
-        week: w.week,
-        Games: Number(w.Games.toFixed(2)),
-      }));
+    return withWeekLabels(
+      Array.from(weeks.values()).sort((a, b) => a.idx - b.idx)
+    ).map((w) => ({
+      week: w.label,
+      Games: Number(w.Games.toFixed(2)),
+    }));
   }, [data, selected, isAll]);
 
   // -------------------------
@@ -119,7 +125,7 @@ export default function GamesCompletedTrend({
         }}
       >
         <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 4 }}>
-          Week {label}
+          {label}
         </div>
 
         <div

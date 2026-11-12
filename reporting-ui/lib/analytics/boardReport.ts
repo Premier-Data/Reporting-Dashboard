@@ -10,6 +10,7 @@
 
 import { calculateKPIs } from "@/lib/analytics";
 import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
+import { prevSeasonWeek, seasonWeekOfIso, type SeasonWeek } from "@/lib/analytics/season";
 
 // Name given to Deputy timesheets whose employee could not be resolved (see
 // normaliseEmployeeName in lib/api/deputyShifts.ts). Their cost and hours still
@@ -471,4 +472,31 @@ export function compareReports(
     phlGames: delta(current.phlGames, previous.phlGames),
     phlCostPerGame: delta(current.phlCostPerGame, previous.phlCostPerGame),
   };
+}
+
+/**
+ * The week before (season, week) for "compare to previous week". Week 1 rolls
+ * back into the previous season's last week (e.g. 2027 W1 -> 2026 W52). Returns
+ * null when there is no data for that week (no "prior week" is shown).
+ */
+export function previousWeekWithData(
+  season: number,
+  week: number,
+  hasData: (s: number, w: number) => boolean
+): SeasonWeek | null {
+  const p = prevSeasonWeek(season, week);
+  return p.week >= 1 && hasData(p.season, p.week) ? p : null;
+}
+
+/**
+ * Returns copies of Deputy shift rows with season/week derived from shift_date
+ * (the unified Wed-Tue rule). Rows with an unusable date keep stored values.
+ */
+export function withShiftSeasonWeek<T extends Record<string, unknown>>(
+  rows: readonly T[]
+): T[] {
+  return rows.map((r) => {
+    const sw = seasonWeekOfIso(r.shift_date);
+    return sw ? { ...r, season: sw.season, week: sw.week } : r;
+  });
 }

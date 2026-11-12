@@ -12,7 +12,13 @@ import AnalystHero from "../analyst-profile/AnalystHero";
 import AttributeRatings from "../analyst-profile/AttributeRatings";
 import { buildAnalystMetrics } from "@/lib/analytics/buildAnalystMetrics";
 import { buildAnalystBenchmark } from "@/lib/analytics/buildAnalystBenchmark";
-import { seasonsFromTT, dateInSeason } from "@/lib/analytics/season";
+import {
+    seasonsFromTT,
+    dateInSeason,
+    mapFixtureWeekTT,
+    seasonsFromDates,
+    unionSeasons,
+} from "@/lib/analytics/season";
 import ComparisonSummary from "./ComparisonSummary";
 import ComparisonKPIs from "./ComparisonKPIs";
 // recharts-based comparison charts — load lazily (they live in tabs) so
@@ -104,7 +110,7 @@ export default function AnalystComparePage() {
 
                 if (cancelled) return;
                 setShiftRows(analystShifts(shifts));
-                setTTRows(tt);
+                setTTRows(mapFixtureWeekTT(tt as any[]) as TTGameRow[]);
             } catch (e) {
                 if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
             } finally {
@@ -120,7 +126,18 @@ export default function AnalystComparePage() {
 
     }, [reloadKey]);
 
-    const seasonInfo = useMemo(() => seasonsFromTT(ttRows), [ttRows]);
+    // Union of seasons from fixtures and Deputy shifts, so a Deputy-only season
+    // (e.g. 2025) is still offered.
+    const seasonInfo = useMemo(
+        () => ({
+            years: unionSeasons(
+                seasonsFromDates(ttRows as any[], "Date"),
+                seasonsFromDates(shiftRows as any[], "shift_date")
+            ),
+            hasUnknown: seasonsFromTT(ttRows).hasUnknown,
+        }),
+        [ttRows, shiftRows]
+    );
 
     // Default to the latest season once data loads.
     useEffect(() => {

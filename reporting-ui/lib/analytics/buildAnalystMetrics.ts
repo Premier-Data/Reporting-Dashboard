@@ -1,6 +1,7 @@
 import { buildRatings } from "./ratings/buildRatings";
 import { buildOverall } from "./ratings/buildOverall";
 import { isExcludedAnalystName } from "./excludedAnalysts";
+import { seasonWeekKey } from "./gameWeekIndex";
 
 import type { AnalystMetrics } from "@/types/analyst";
 import type { DeputyShift } from "@/types/deputy";
@@ -106,7 +107,14 @@ export function buildAnalystMetrics(
     const hours = Number(shift.total_hours || 0);
     const cost = Number(shift.total_cost || 0);
 
+    // Season-qualified key: bare week numbers repeat across seasons.
+    const derivedKey = seasonWeekKey({
+      shift_date: (shift as { shift_date?: unknown }).shift_date,
+      season: (shift as { season?: unknown }).season,
+      week: shift.week,
+    });
     const week =
+      derivedKey ??
       shift.week ??
       shift.week_name ??
       shift.week_start ??
@@ -142,6 +150,8 @@ export function buildAnalystMetrics(
     const competition =
       game?.Competition ?? "Unknown";
 
+    const gameWeekKey = seasonWeekKey(game);
+
     // ===================================================
     // HOME ANALYST
     // ===================================================
@@ -152,8 +162,8 @@ export function buildAnalystMetrics(
 
       const analyst = getOrCreate(game.home_allocated);
 
-      if (game.Week) {
-        gameWeeks.get(analyst.key)?.add(String(game.Week));
+      if (gameWeekKey) {
+        gameWeeks.get(analyst.key)?.add(gameWeekKey);
       }
 
       // One side of a game = 0.5 game
@@ -188,8 +198,8 @@ export function buildAnalystMetrics(
 
       const analyst = getOrCreate(game.away_allocated);
 
-      if (game.Week) {
-        gameWeeks.get(analyst.key)?.add(String(game.Week));
+      if (gameWeekKey) {
+        gameWeeks.get(analyst.key)?.add(gameWeekKey);
       }
 
       // One side of a game = 0.5 game
