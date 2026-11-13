@@ -147,10 +147,11 @@ export async function queryCompFixtures(
       );
     }
     // fixture_date desc (nulls last), newest first.
-    return q.order("fixture_date", { ascending: false, nullsFirst: false });
+    return q.order("fixture_date", { ascending: false, nullsFirst: false }).order("id", { ascending: true });
   };
 
   while (true) {
+    // paged-order-ok: build() ends with .order("id")
     const { data, error } = await build().range(from, from + PAGE_SIZE - 1);
     if (error) {
       console.error("queryCompFixtures failed:", error);
@@ -203,6 +204,7 @@ async function fetchCompFacets(key: string): Promise<CompFacets> {
     const { data, error } = await supabase
       .from("comp_fixtures")
       .select("sport,season,competition")
+      .order("id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error) break;
     if (!data || data.length === 0) break;
@@ -687,6 +689,7 @@ export async function linkTeamUids(): Promise<TeamLinkResult> {
     const { data, error } = await supabase
       .from("comp_fixtures")
       .select("home_team,home_team_uid,away_team,away_team_uid")
+      .order("id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error || !data || data.length === 0) break;
     for (const r of data as {
@@ -717,6 +720,7 @@ export async function linkTeamUids(): Promise<TeamLinkResult> {
     const { data, error } = await supabase
       .from("teams")
       .select("id,team_name,team_uid")
+      .order("id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error || !data || data.length === 0) break;
     for (const t of data as {
@@ -784,6 +788,7 @@ export async function purgeExcludedCompetitions(): Promise<number> {
     const { data, error } = await supabase
       .from("comp_fixtures")
       .select("competition")
+      .order("id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
     if (error || !data || data.length === 0) break;
     for (const r of data as { competition: string }[]) {
@@ -932,6 +937,7 @@ export async function incrementalSync(opts?: {
       const { data, error } = await supabase
         .from("comp_sources")
         .select("competition_uid,last_modified,status")
+        .order("competition_uid", { ascending: true })
         .range(from, from + PAGE_SIZE - 1);
       if (error || !data || data.length === 0) break;
       for (const r of data as {

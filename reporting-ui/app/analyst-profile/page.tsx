@@ -127,6 +127,7 @@ async function fetchAll<T>(table: string, orderKey: string): Promise<T[]> {
     const { data, error } = await supabase
       .from(table)
       .select("*")
+      // paged-order-ok: callers pass "game_key"
       .order(orderKey, { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
 

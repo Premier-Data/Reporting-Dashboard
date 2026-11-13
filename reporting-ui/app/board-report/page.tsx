@@ -95,6 +95,7 @@ async function loadAll(table: string): Promise<Record<string, unknown>[]> {
     const { data, error } = await supabase
       .from(table)
       .select("*")
+      .order("game_key", { ascending: true })
       .range(from, from + pageSize - 1);
     if (error) throw error;
     if (!data || data.length === 0) break;

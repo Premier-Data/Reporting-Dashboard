@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import DashboardClient from "@/components/DashboardClient";
 import DeputyLoadError from "@/components/DeputyLoadError";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
@@ -24,26 +24,7 @@ import { DeputyShiftsError, getDeputyShifts } from "@/lib/api/deputyShifts";
  * from the Deputy API through lib/api/deputyShifts.ts.
  */
 async function loadAll(table: string): Promise<any[]> {
-  const pageSize = 1000;
-  let rows: any[] = [];
-  let from = 0;
-
-  while (true) {
-    const { data, error } = await supabase
-      .from(table)
-      .select("*")
-      .range(from, from + pageSize - 1);
-
-    if (error) throw error;
-    if (!data || data.length === 0) break;
-
-    rows = rows.concat(data);
-    from += pageSize;
-
-    if (data.length < pageSize) break;
-  }
-
-  return rows;
+  return fetchAllPaged<any>(table, { unique: "game_key" });
 }
 
 export default function Home() {

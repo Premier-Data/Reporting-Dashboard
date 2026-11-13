@@ -48,7 +48,7 @@ async function fetchAll<T>(table: string): Promise<T[]> {
   let from = 0;
   let all: T[] = [];
   while (true) {
-    const { data, error } = await supabase.from(table).select("*").range(from, from + PAGE_SIZE - 1);
+    const { data, error } = await supabase.from(table).select("*").order("game_key", { ascending: true }).range(from, from + PAGE_SIZE - 1);
     if (error) {
       console.error(`Error fetching ${table}:`, error);
       break;

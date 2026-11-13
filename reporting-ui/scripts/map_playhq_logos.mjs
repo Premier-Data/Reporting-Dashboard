@@ -115,6 +115,7 @@ async function loadTeamNames() {
         const { data, error } = await supabase
             .from("TT_Games")
             .select("home_team, away_team")
+            .order("game_key", { ascending: true })
             .range(from, from + pageSize - 1);
         if (error) {
             console.error("Failed loading TT_Games:", error.message);

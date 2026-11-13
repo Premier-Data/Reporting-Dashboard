@@ -53,6 +53,7 @@ export default function SoccerGames({
         const { data, error } = await supabase
           .from("soccer_games")
           .select("season,week,Date,Location,Competition")
+          .order("game_key", { ascending: true })
           .range(from, from + 999);
         if (error || !data || data.length === 0) break;
         all = all.concat(data as Row[]);

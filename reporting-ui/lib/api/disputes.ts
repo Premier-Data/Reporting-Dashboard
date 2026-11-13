@@ -205,6 +205,7 @@ async function fetchAllDisputes(): Promise<Dispute[]> {
             .is("deleted_at", null)
             .is("accuracy_checks.deleted_at", null)
             .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
             .range(from, from + pageSize - 1);
 
         if (error) {
@@ -253,6 +254,7 @@ async function fetchOpenDisputeCounts(): Promise<Record<number, number>> {
             .eq("status", "open")
             .is("deleted_at", null)
             .is("accuracy_checks.deleted_at", null)
+            .order("id", { ascending: true })
             .range(from, from + pageSize - 1);
 
         if (error) {

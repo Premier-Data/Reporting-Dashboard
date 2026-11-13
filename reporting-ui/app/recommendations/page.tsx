@@ -250,6 +250,7 @@ export default function RecommendationPage() {
           .select("*")
           .order("Date")
           .order("Competition")
+          .order("game_key")
           .range(from, from + pageSize - 1);
 
         if (error) throw error;

@@ -1468,6 +1468,7 @@ export async function getAllAccuracyChecks(): Promise<AccuracyCheckMeta[]> {
             .select(ACCURACY_CHECK_META_COLUMNS)
             .is("deleted_at", null)
             .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
             .range(from, from + pageSize - 1);
 
         if (error) {
@@ -1525,6 +1526,7 @@ async function fetchAccuracyChecksMeta(): Promise<AccuracyCheckMeta[]> {
             .select(ACCURACY_CHECK_META_COLUMNS)
             .is("deleted_at", null)
             .order("created_at", { ascending: false })
+            .order("id", { ascending: false })
             .range(from, from + pageSize - 1);
 
         if (error) {
