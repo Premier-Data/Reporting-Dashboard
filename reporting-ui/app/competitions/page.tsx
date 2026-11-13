@@ -1,19 +1,19 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 
-import { supabase } from "@/lib/supabase";
+import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
+import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/UI/tabs";
 import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
 import {
     getAnalystImage,
     getAnalystInitials,
 } from "@/app/analyst-profile/analystImages";
 import type { TTGame } from "@/types/ttgame";
-
-const PAGE_SIZE = 1000;
 
 /**
  * Normalises a competition name so that entries differing only by
@@ -26,35 +26,6 @@ function normaliseCompetition(name: string | null | undefined): string {
         .replace(/\u00A0/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-}
-
-async function fetchAll<T>(table: string): Promise<T[]> {
-    let from = 0;
-    let all: T[] = [];
-
-    while (true) {
-
-        const { data, error } = await supabase
-            .from(table)
-            .select("*")
-            .order("game_key", { ascending: true })
-      .range(from, from + PAGE_SIZE - 1);
-
-        if (error) {
-            console.error(`Error fetching ${table}:`, error);
-            break;
-        }
-
-        if (!data || data.length === 0) break;
-
-        all = all.concat(data as T[]);
-
-        if (data.length < PAGE_SIZE) break;
-
-        from += PAGE_SIZE;
-    }
-
-    return all;
 }
 
 type AnalystTally = {
@@ -73,6 +44,7 @@ export default function CompetitionsPage() {
 
     const [loading, setLoading] = useState(true);
     const [games, setGames] = useState<TTGame[]>([]);
+    const [loadError, setLoadError] = useState<string | null>(null);
     const [selectedCompetition, setSelectedCompetition] = useState("");
     // Season filter ("all" = every season). The season is stamped per sheet in
     // sync-deputy.js, so a 1 Oct 2026 fixture in the 2027 sheet reads 2027.
@@ -83,11 +55,19 @@ export default function CompetitionsPage() {
         async function load() {
 
             setLoading(true);
+            setLoadError(null);
 
-            const data = await fetchAll<TTGame>("TT_Games");
+            try {
+                const data = await fetchAllPaged<TTGame>("TT_Games", {
+                    unique: "game_key",
+                });
 
-            // Season/week derived from each fixture's Date (unified rule).
-            setGames(mapFixtureWeekTT(data));
+                // Season/week derived from each fixture's Date (unified rule).
+                setGames(mapFixtureWeekTT(data));
+            } catch (e) {
+                console.error("Error fetching TT_Games:", e);
+                setLoadError(e instanceof Error ? e.message : String(e));
+            }
             setLoading(false);
         }
 
@@ -346,6 +326,35 @@ export default function CompetitionsPage() {
                     </Link>
 
                 </div>
+
+                <Tabs defaultValue="dashboard">
+
+                <TabsList className="mb-6 flex gap-2 border-b border-slate-700">
+                    <TabsTrigger
+                        value="dashboard"
+                        activeClassName="px-4 py-2 text-sm border-b-2 transition border-sky-400 text-sky-400"
+                        inactiveClassName="px-4 py-2 text-sm border-b-2 transition border-transparent text-slate-400 hover:text-slate-200"
+                    >
+                        Dashboard
+                    </TabsTrigger>
+                    <TabsTrigger
+                        value="explorer"
+                        activeClassName="px-4 py-2 text-sm border-b-2 transition border-sky-400 text-sky-400"
+                        inactiveClassName="px-4 py-2 text-sm border-b-2 transition border-transparent text-slate-400 hover:text-slate-200"
+                    >
+                        Competition details
+                    </TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="dashboard">
+                    <CompetitionDashboard
+                        games={games}
+                        loading={false}
+                        error={loadError}
+                    />
+                </TabsContent>
+
+                <TabsContent value="explorer">
 
                 {/* SEASON + COMPETITION SELECT */}
                 <div className="mb-6 flex flex-wrap gap-4">
@@ -638,6 +647,10 @@ export default function CompetitionsPage() {
                     </>
 
                 )}
+
+                </TabsContent>
+
+                </Tabs>
 
             </div>
 
