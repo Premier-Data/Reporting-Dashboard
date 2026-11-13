@@ -899,7 +899,25 @@ async function uploadToSupabase(records) {
 // ----------------------
 // UPLOAD TT
 // ----------------------
-async function uploadTT(records) {
+// Keys in TT_Games that are not in `keep` (rows no current TT sheet produces).
+// Paged with a unique order so no key is skipped or read twice.
+async function findTTOrphans(keep) {
+  const existing = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await supabase
+      .from("TT_Games")
+      .select("game_key")
+      .order("game_key", { ascending: true })
+      .range(from, from + 999);
+    if (error) throw new Error(JSON.stringify(error));
+    if (!data || data.length === 0) break;
+    existing.push(...data.map((d) => d.game_key));
+    if (data.length < 1000) break;
+  }
+  return existing.filter((k) => !keep.has(k));
+}
+
+async function uploadTT(records, { purge = false, problems = [] } = {}) {
   let uploaded = 0;
 
   for (let i = 0; i < records.length; i += CHUNK_SIZE) {
@@ -921,6 +939,28 @@ async function uploadTT(records) {
   }
 
   console.log("TT rows uploaded:", uploaded);
+
+  // ── Orphan purge ──
+  // The TT sheets are the source of truth. Upsert alone never removes rows that
+  // were edited (key changed) or deleted in a sheet, so stale copies linger and
+  // double-count games. Delete any TT_Games row whose game_key is NOT in the
+  // current sync set. Guarded: only when EVERY configured TT sheet parsed and
+  // yielded rows (a missing/renamed sheet would otherwise wipe its season).
+  if (!purge || records.length === 0) {
+    console.log(
+      `⚠️ TT orphan purge skipped (${problems.length ? problems.join("; ") : "no TT rows"})`
+    );
+  } else {
+    const keep = new Set(records.map((r) => r.game_key));
+    const orphans = await findTTOrphans(keep);
+    for (let i = 0; i < orphans.length; i += CHUNK_SIZE) {
+      const chunk = orphans.slice(i, i + CHUNK_SIZE);
+      const { error } = await supabase.from("TT_Games").delete().in("game_key", chunk);
+      if (error) throw new Error(JSON.stringify(error));
+    }
+    console.log(`TT orphans purged: ${orphans.length}`);
+    if (orphans.length) console.log("  purged keys:", orphans.slice(0, 50).join(" | "));
+  }
 
   return uploaded;
 }
@@ -956,6 +996,7 @@ async function uploadSoccer(records) {
       const { data, error } = await supabase
         .from("soccer_games")
         .select("game_key")
+        .order("game_key", { ascending: true })
         .range(from, from + 999);
       if (error) throw new Error(JSON.stringify(error));
       if (!data || data.length === 0) break;
@@ -1087,11 +1128,17 @@ async function sync() {
     // TT (all seasons)
     // ----------------------
     let tt = [];
+    // Every configured TT sheet must parse (and yield rows) before stale rows may
+    // be purged from TT_Games: a missing/renamed sheet must never wipe a season.
+    const ttSheetProblems = [];
     for (const { season, tt: sheet, uniqueKeys } of SEASON_SHEETS) {
       if (!sheet) continue;
       try {
-        tt = tt.concat(parseTTData(buffer, sheet, season, { uniqueKeys }));
+        const rows = parseTTData(buffer, sheet, season, { uniqueKeys });
+        if (rows.length === 0) ttSheetProblems.push(`${sheet}: 0 rows`);
+        tt = tt.concat(rows);
       } catch (e) {
+        ttSheetProblems.push(`${sheet}: ${e.message}`);
         console.log(`⚠️ TT sheet "${sheet}" skipped: ${e.message}`);
       }
     }
@@ -1123,7 +1170,7 @@ async function sync() {
     // UPLOAD
     // ----------------------
     const deputyUploaded = await uploadToSupabase(deputy);
-    const ttUploaded = await uploadTT(tt);
+    const ttUploaded = await uploadTT(tt, { purge: ttSheetProblems.length === 0, problems: ttSheetProblems });
     const soccerUploaded = await uploadSoccer(soccer);
     const vnUploaded = await uploadVNTeam(vnTeam);
 
