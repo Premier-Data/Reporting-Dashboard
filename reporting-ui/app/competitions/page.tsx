@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -7,6 +7,8 @@ import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
 import { THEME } from "@/lib/theme";
 import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
+import SortableTh from "@/components/UI/SortableTh";
+import { roundSortValue, useTableSort, type SortColumn } from "@/lib/tableSort";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/UI/tabs";
 import { isExcludedAnalystName } from "@/lib/analytics/excludedAnalysts";
 import {
@@ -27,6 +29,36 @@ function normaliseCompetition(name: string | null | undefined): string {
         .replace(/\s+/g, " ")
         .trim();
 }
+
+type FixtureSortKey = "wk" | "rnd" | "home" | "homeAnalyst" | "away" | "awayAnalyst";
+
+// Wk sorts chronologically by fixture date (season-aware) then round, which is
+// the page's default order.
+const FIXTURE_COLUMNS: Record<FixtureSortKey, SortColumn<TTGame>> = {
+    wk: {
+        value: (g) => [String(g.Date ?? ""), roundSortValue(g.Round)],
+        defaultDir: "desc",
+        raw: true,
+    },
+    rnd: {
+        value: (g) => [roundSortValue(g.Round), String(g.Date ?? "")],
+        defaultDir: "desc",
+    },
+    home: { value: (g) => g.home_team },
+    homeAnalyst: { value: (g) => g.home_allocated },
+    away: { value: (g) => g.away_team },
+    awayAnalyst: { value: (g) => g.away_allocated },
+};
+
+type TeamSortKey = "team" | "topAnalyst" | "timesCoded";
+
+const TEAM_COLUMNS: Record<TeamSortKey, SortColumn<TeamCoder>> = {
+    team: { value: (t) => t.team },
+    topAnalyst: { value: (t) => t.topAnalyst },
+    timesCoded: { value: (t) => [t.topGames, t.totalGames], defaultDir: "desc" },
+};
+
+const compareTeam = (a: TeamCoder, b: TeamCoder) => a.team.localeCompare(b.team);
 
 type AnalystTally = {
     name: string;
@@ -268,6 +300,21 @@ export default function CompetitionsPage() {
 
     }, [fixtures]);
 
+    const { rows: sortedFixtures, sort: fixtureSort } = useTableSort<TTGame, FixtureSortKey>(
+        fixtures,
+        { columns: FIXTURE_COLUMNS, initialKey: "wk", initialDir: "asc" }
+    );
+
+    const { rows: sortedTeamCoders, sort: teamSort } = useTableSort<TeamCoder, TeamSortKey>(
+        teamCoders,
+        {
+            columns: TEAM_COLUMNS,
+            initialKey: "team",
+            initialDir: "asc",
+            tiebreak: compareTeam,
+        }
+    );
+
     if (loading) {
 
         return (
@@ -459,12 +506,12 @@ export default function CompetitionsPage() {
 
                                     <thead className="sticky top-0 bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
                                         <tr>
-                                            <th className="px-4 py-3 font-semibold">Wk</th>
-                                            <th className="px-4 py-3 font-semibold">Rnd</th>
-                                            <th className="px-4 py-3 font-semibold">Home</th>
-                                            <th className="px-4 py-3 font-semibold">Home Analyst</th>
-                                            <th className="px-4 py-3 font-semibold">Away</th>
-                                            <th className="px-4 py-3 font-semibold">Away Analyst</th>
+                                            <SortableTh sort={fixtureSort} sortKey="wk" className="px-4 py-3 font-semibold">Wk</SortableTh>
+                                            <SortableTh sort={fixtureSort} sortKey="rnd" className="px-4 py-3 font-semibold">Rnd</SortableTh>
+                                            <SortableTh sort={fixtureSort} sortKey="home" className="px-4 py-3 font-semibold">Home</SortableTh>
+                                            <SortableTh sort={fixtureSort} sortKey="homeAnalyst" className="px-4 py-3 font-semibold">Home Analyst</SortableTh>
+                                            <SortableTh sort={fixtureSort} sortKey="away" className="px-4 py-3 font-semibold">Away</SortableTh>
+                                            <SortableTh sort={fixtureSort} sortKey="awayAnalyst" className="px-4 py-3 font-semibold">Away Analyst</SortableTh>
                                         </tr>
                                     </thead>
 
@@ -480,7 +527,7 @@ export default function CompetitionsPage() {
                                                 </td>
                                             </tr>
                                         ) : (
-                                            fixtures.map((game, i) => (
+                                            sortedFixtures.map((game, i) => (
                                                 <tr
                                                     key={`${game.game_key}-${i}`}
                                                     className="transition hover:bg-slate-800/50"
@@ -600,15 +647,15 @@ export default function CompetitionsPage() {
 
                                     <thead className="bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
                                         <tr>
-                                            <th className="px-5 py-3 font-semibold">Team</th>
-                                            <th className="px-4 py-3 font-semibold">Top Analyst</th>
-                                            <th className="w-40 px-4 py-3 text-right font-semibold">Times Coded</th>
+                                            <SortableTh sort={teamSort} sortKey="team" className="px-5 py-3 font-semibold">Team</SortableTh>
+                                            <SortableTh sort={teamSort} sortKey="topAnalyst" className="px-4 py-3 font-semibold">Top Analyst</SortableTh>
+                                            <SortableTh sort={teamSort} sortKey="timesCoded" className="w-40 px-4 py-3 text-right font-semibold">Times Coded</SortableTh>
                                         </tr>
                                     </thead>
 
                                     <tbody className="divide-y divide-slate-800">
 
-                                        {teamCoders.map((tc) => (
+                                        {sortedTeamCoders.map((tc) => (
                                             <tr
                                                 key={tc.team}
                                                 className="transition hover:bg-slate-800/50"

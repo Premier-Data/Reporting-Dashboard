@@ -5,8 +5,11 @@ import { useMemo, useState } from "react";
 import {
   buildCompetitionSummary,
   type CompetitionEntry,
+  type SeasonSummary,
   type SummaryRow,
 } from "@/lib/analytics/competitionSummary";
+import SortableTh from "@/components/UI/SortableTh";
+import { useTableSort, type SortColumn } from "@/lib/tableSort";
 
 type SortKey = "label" | "seasons" | "games" | "teams" | "firstDate" | "lastDate";
 
@@ -22,23 +25,27 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
   );
 }
 
-function compare(a: CompetitionEntry, b: CompetitionEntry, key: SortKey): number {
-  switch (key) {
-    case "label":
-      return a.label.localeCompare(b.label);
-    case "seasons":
-      return a.seasons.length - b.seasons.length;
-    case "games":
-      return a.games - b.games;
-    case "teams":
-      return a.teams - b.teams;
-    case "firstDate":
-      return (a.firstDate ?? "").localeCompare(b.firstDate ?? "");
-    case "lastDate":
-      return (a.lastDate ?? "").localeCompare(b.lastDate ?? "");
-  }
-}
+const COMPETITION_COLUMNS: Record<SortKey, SortColumn<CompetitionEntry>> = {
+  label: { value: (c) => c.label },
+  seasons: { value: (c) => c.seasons.length, defaultDir: "desc" },
+  games: { value: (c) => c.games, defaultDir: "desc" },
+  teams: { value: (c) => c.teams, defaultDir: "desc" },
+  firstDate: { value: (c) => c.firstDate, defaultDir: "desc", raw: true },
+  lastDate: { value: (c) => c.lastDate, defaultDir: "desc", raw: true },
+};
 
+const compareLabel = (a: CompetitionEntry, b: CompetitionEntry) => a.label.localeCompare(b.label);
+
+type SeasonKey = "season" | "competitions" | "newCompetitions" | "teams" | "newTeams" | "games";
+
+const SEASON_COLUMNS: Record<SeasonKey, SortColumn<SeasonSummary>> = {
+  season: { value: (s) => s.season, defaultDir: "desc" },
+  competitions: { value: (s) => s.competitions, defaultDir: "desc" },
+  newCompetitions: { value: (s) => s.newCompetitions, defaultDir: "desc" },
+  teams: { value: (s) => s.teams, defaultDir: "desc" },
+  newTeams: { value: (s) => s.newTeams, defaultDir: "desc" },
+  games: { value: (s) => s.games, defaultDir: "desc" },
+};
 export default function CompetitionDashboard({
   games,
   loading,
@@ -50,27 +57,33 @@ export default function CompetitionDashboard({
 }) {
   const [onlyAllocated, setOnlyAllocated] = useState(false);
   const [query, setQuery] = useState("");
-  const [sortKey, setSortKey] = useState<SortKey>("games");
-  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const summary = useMemo(
     () => buildCompetitionSummary(games, { onlyAllocated }),
     [games, onlyAllocated]
   );
 
-  const rows = useMemo(() => {
+  const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const filtered = summary.competitions.filter(
+    return summary.competitions.filter(
       (c) =>
         q === "" ||
         c.label.toLowerCase().includes(q) ||
         c.rawNames.some((n) => n.toLowerCase().includes(q))
     );
-    const dir = sortDir === "asc" ? 1 : -1;
-    return [...filtered].sort(
-      (a, b) => dir * compare(a, b, sortKey) || a.label.localeCompare(b.label)
-    );
-  }, [summary, query, sortKey, sortDir]);
+  }, [summary, query]);
+
+  const { rows, sort } = useTableSort<CompetitionEntry, SortKey>(filtered, {
+    columns: COMPETITION_COLUMNS,
+    initialKey: "games",
+    initialDir: "desc",
+    tiebreak: compareLabel,
+  });
+
+  const { rows: seasonRows, sort: seasonSort } = useTableSort<SeasonSummary, SeasonKey>(
+    summary.seasons,
+    { columns: SEASON_COLUMNS, initialKey: "season", initialDir: "desc" }
+  );
 
   if (loading) {
     return (
@@ -105,33 +118,6 @@ export default function CompetitionDashboard({
       ? String(years[0])
       : `${Math.min(...years)}-${Math.max(...years)}`;
 
-  function sortBy(key: SortKey) {
-    if (key === sortKey) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortKey(key);
-      setSortDir(key === "label" ? "asc" : "desc");
-    }
-  }
-
-  const th = (key: SortKey, text: string, right = false) => (
-    <th
-      scope="col"
-      aria-sort={
-        sortKey === key ? (sortDir === "asc" ? "ascending" : "descending") : "none"
-      }
-      className={`px-4 py-3 font-semibold ${right ? "text-right" : ""}`}
-    >
-      <button
-        type="button"
-        onClick={() => sortBy(key)}
-        className="uppercase tracking-wide hover:text-white focus:outline-none focus:ring-1 focus:ring-sky-400"
-      >
-        {text}
-        {sortKey === key ? (sortDir === "asc" ? " \u25B2" : " \u25BC") : ""}
-      </button>
-    </th>
-  );
-
   return (
     <div className="space-y-6">
       <Toggle checked={onlyAllocated} onChange={setOnlyAllocated} />
@@ -155,16 +141,16 @@ export default function CompetitionDashboard({
           <caption className="sr-only">Unique competitions and teams per season</caption>
           <thead className="bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
             <tr>
-              <th scope="col" className="px-4 py-3 font-semibold">Season</th>
-              <th scope="col" className="px-4 py-3 text-right font-semibold">Competitions</th>
-              <th scope="col" className="px-4 py-3 text-right font-semibold">New competitions</th>
-              <th scope="col" className="px-4 py-3 text-right font-semibold">Teams</th>
-              <th scope="col" className="px-4 py-3 text-right font-semibold">New teams</th>
-              <th scope="col" className="px-4 py-3 text-right font-semibold">Games</th>
+              <SortableTh sort={seasonSort} sortKey="season" className="px-4 py-3 font-semibold">Season</SortableTh>
+              <SortableTh sort={seasonSort} sortKey="competitions" className="px-4 py-3 text-right font-semibold">Competitions</SortableTh>
+              <SortableTh sort={seasonSort} sortKey="newCompetitions" className="px-4 py-3 text-right font-semibold">New competitions</SortableTh>
+              <SortableTh sort={seasonSort} sortKey="teams" className="px-4 py-3 text-right font-semibold">Teams</SortableTh>
+              <SortableTh sort={seasonSort} sortKey="newTeams" className="px-4 py-3 text-right font-semibold">New teams</SortableTh>
+              <SortableTh sort={seasonSort} sortKey="games" className="px-4 py-3 text-right font-semibold">Games</SortableTh>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {summary.seasons.map((s) => (
+            {seasonRows.map((s) => (
               <tr key={s.season} className="hover:bg-slate-800/50">
                 <th scope="row" className="px-4 py-2.5 font-semibold text-sky-400">{s.season}</th>
                 <td className="px-4 py-2.5 text-right text-slate-200">{nf.format(s.competitions)}</td>
@@ -203,14 +189,14 @@ export default function CompetitionDashboard({
         <div className="max-h-[560px] overflow-auto">
           <table className="w-full text-left text-sm">
             <caption className="sr-only">Unique competitions across all years</caption>
-            <thead className="sticky top-0 bg-slate-800 text-xs text-slate-400">
+            <thead className="sticky top-0 bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
               <tr>
-                {th("label", "Competition")}
-                {th("seasons", "Seasons")}
-                {th("games", "Games", true)}
-                {th("teams", "Teams", true)}
-                {th("firstDate", "First game")}
-                {th("lastDate", "Last game")}
+                <SortableTh sort={sort} sortKey="label" className="px-4 py-3 font-semibold">Competition</SortableTh>
+                <SortableTh sort={sort} sortKey="seasons" className="px-4 py-3 font-semibold">Seasons</SortableTh>
+                <SortableTh sort={sort} sortKey="games" className="px-4 py-3 text-right font-semibold">Games</SortableTh>
+                <SortableTh sort={sort} sortKey="teams" className="px-4 py-3 text-right font-semibold">Teams</SortableTh>
+                <SortableTh sort={sort} sortKey="firstDate" className="px-4 py-3 font-semibold">First game</SortableTh>
+                <SortableTh sort={sort} sortKey="lastDate" className="px-4 py-3 font-semibold">Last game</SortableTh>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
