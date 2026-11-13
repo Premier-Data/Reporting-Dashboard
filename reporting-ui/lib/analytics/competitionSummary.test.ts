@@ -157,3 +157,47 @@ describe("buildCompetitionSummary returning / dropped / running", () => {
     expect(s.seasons[0]).toMatchObject({ season: 2024, droppedCompetitions: 1, newCompetitions: 1, runningCompetitions: 2 });
   });
 });
+describe("buildCompetitionSummary teams", () => {
+  const row = (Date: string, Competition: string, h: string, a: string, alloc = "X") => ({
+    Date,
+    Competition,
+    home_team: h,
+    away_team: a,
+    home_allocated: alloc,
+  });
+  const rows = [
+    row("2022-05-01", "PSA 2022", "Doncaster", "Box Hill"),
+    row("2023-05-01", "PSA", "doncaster  2023", "Box Hill"),
+    row("2023-05-08", "Other League", "Box Hill", "Doncaster", ""),
+    row("2023-05-15", "Other League", "Solo", "SOLO"),
+  ];
+  const s = buildCompetitionSummary(rows);
+  const team = (k: string) => s.teams.find((t) => t.key === k)!;
+
+  it("merges spelling, case and trailing-year variants", () => {
+    expect(s.teams.map((t) => t.key)).toEqual(["box hill", "doncaster", "solo"]);
+    const d = team("doncaster");
+    expect(d.label).toBe("Doncaster");
+    expect(d.rawNames).toEqual(["Doncaster", "doncaster 2023"]);
+    expect(s.totalTeams).toBe(s.teams.length);
+  });
+
+  it("counts games, home/away, competitions and seasons", () => {
+    const d = team("doncaster");
+    expect(d).toMatchObject({ games: 3, homeGames: 2, awayGames: 1, competitions: 2, seasons: [2022, 2023] });
+    expect(d.competitionLabels).toEqual(["Other League", "PSA"]);
+    expect(d.firstDate).toBe("2022-05-01");
+    expect(d.lastDate).toBe("2023-05-08");
+  });
+
+  it("counts a team playing both sides of one game once", () => {
+    expect(team("solo")).toMatchObject({ games: 1, homeGames: 1, awayGames: 1, competitions: 1 });
+  });
+
+  it("respects onlyAllocated", () => {
+    const a = buildCompetitionSummary(rows, { onlyAllocated: true });
+    expect(a.teams.find((t) => t.key === "doncaster")!.games).toBe(2);
+    expect(a.teams.find((t) => t.key === "box hill")!.games).toBe(2);
+    expect(a.totalTeams).toBe(a.teams.length);
+  });
+});

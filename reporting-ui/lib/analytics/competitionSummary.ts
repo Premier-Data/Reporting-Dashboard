@@ -4,6 +4,7 @@ import {
   canonicalTeam,
   collapseSpaces,
   stripCompetitionYear,
+  stripTeamYear,
 } from "@/lib/analytics/competitionNames";
 
 export type SummaryRow = {
@@ -48,12 +49,31 @@ export type CompetitionEntry = {
   teams: number;
 };
 
+export type TeamEntry = {
+  key: string;
+  /** Most frequent original spelling, year stripped. */
+  label: string;
+  /** Every original spelling merged into this team. */
+  rawNames: string[];
+  seasons: number[];
+  /** Games where the team played home or away (a game counts once). */
+  games: number;
+  homeGames: number;
+  awayGames: number;
+  /** Distinct canonical competitions the team played in. */
+  competitions: number;
+  competitionLabels: string[];
+  firstDate: string | null;
+  lastDate: string | null;
+};
+
 export type CompetitionSummary = {
   totalCompetitions: number;
   totalTeams: number;
   totalGames: number;
   seasons: SeasonSummary[]; // latest season first
   competitions: CompetitionEntry[]; // label A-Z
+  teams: TeamEntry[]; // label A-Z
 };
 
 export type SummaryOptions = { onlyAllocated?: boolean };
@@ -83,6 +103,18 @@ type Acc = {
   teams: Set<string>;
 };
 
+type TeamAcc = {
+  labels: Map<string, number>;
+  raws: Set<string>;
+  seasons: Set<number>;
+  comps: Set<string>;
+  first: string | null;
+  last: string | null;
+  games: number;
+  home: number;
+  away: number;
+};
+
 export function buildCompetitionSummary(
   rows: readonly SummaryRow[],
   opts: SummaryOptions = {}
@@ -90,6 +122,7 @@ export function buildCompetitionSummary(
   const onlyAllocated = opts.onlyAllocated ?? false;
   const allTeams = new Set<string>();
   const comps = new Map<string, Acc>();
+  const teamAccs = new Map<string, TeamAcc>();
   const perSeason = new Map<
     number,
     { comps: Set<string>; teams: Set<string>; games: number }
@@ -107,6 +140,49 @@ export function buildCompetitionSummary(
       (t) => t !== ""
     );
     teamKeys.forEach((t) => allTeams.add(t));
+
+    const date = dateOf(r);
+    const sides: [string | null | undefined, "home" | "away"][] = [
+      [r.home_team, "home"],
+      [r.away_team, "away"],
+    ];
+    const countedThisGame = new Set<string>();
+    for (const [raw, side] of sides) {
+      const tk = canonicalTeam(raw);
+      if (tk === "") continue;
+      let ta = teamAccs.get(tk);
+      if (!ta) {
+        teamAccs.set(
+          tk,
+          (ta = {
+            labels: new Map(),
+            raws: new Set(),
+            seasons: new Set(),
+            comps: new Set(),
+            first: null,
+            last: null,
+            games: 0,
+            home: 0,
+            away: 0,
+          })
+        );
+      }
+      const tl = stripTeamYear(raw);
+      ta.labels.set(tl, (ta.labels.get(tl) ?? 0) + 1);
+      ta.raws.add(collapseSpaces(raw));
+      if (side === "home") ta.home++;
+      else ta.away++;
+      if (!countedThisGame.has(tk)) {
+        countedThisGame.add(tk);
+        ta.games++;
+        if (season != null) ta.seasons.add(season);
+        if (key !== "") ta.comps.add(key);
+        if (date) {
+          if (ta.first == null || date < ta.first) ta.first = date;
+          if (ta.last == null || date > ta.last) ta.last = date;
+        }
+      }
+    }
 
     let ps: { comps: Set<string>; teams: Set<string>; games: number } | undefined;
     if (season != null) {
@@ -215,11 +291,36 @@ export function buildCompetitionSummary(
     })
     .sort((a, b) => a.label.localeCompare(b.label));
 
+  const compLabel = new Map<string, string>();
+  comps.forEach((c, k) => {
+    compLabel.set(
+      k,
+      [...c.labels.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0]
+    );
+  });
+
+  const teams: TeamEntry[] = [...teamAccs.entries()]
+    .map(([key, t]) => ({
+      key,
+      label: [...t.labels.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0],
+      rawNames: [...t.raws].sort((a, b) => a.localeCompare(b)),
+      seasons: [...t.seasons].sort((a, b) => a - b),
+      games: t.games,
+      homeGames: t.home,
+      awayGames: t.away,
+      competitions: t.comps.size,
+      competitionLabels: [...t.comps].map((k) => compLabel.get(k)!).sort((a, b) => a.localeCompare(b)),
+      firstDate: t.first,
+      lastDate: t.last,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
   return {
     totalCompetitions: comps.size,
     totalTeams: allTeams.size,
     totalGames,
     seasons: seasons.reverse(),
     competitions,
+    teams,
   };
 }

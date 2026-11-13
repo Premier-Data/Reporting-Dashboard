@@ -8,6 +8,7 @@ import { mapFixtureWeekTT } from "@/lib/analytics/season";
 import { isPracticeCompetition } from "@/lib/analytics/competitionNames";
 import { THEME } from "@/lib/theme";
 import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
+import TeamsDashboard from "@/components/competitions/TeamsDashboard";
 import SortableTh from "@/components/UI/SortableTh";
 import { roundSortValue, useTableSort, type SortColumn } from "@/lib/tableSort";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/UI/tabs";
@@ -392,6 +393,13 @@ export default function CompetitionsPage() {
                         Dashboard
                     </TabsTrigger>
                     <TabsTrigger
+                        value="teams"
+                        activeClassName="px-4 py-2 text-sm border-b-2 transition border-sky-400 text-sky-400"
+                        inactiveClassName="px-4 py-2 text-sm border-b-2 transition border-transparent text-slate-400 hover:text-slate-200"
+                    >
+                        Teams
+                    </TabsTrigger>
+                    <TabsTrigger
                         value="explorer"
                         activeClassName="px-4 py-2 text-sm border-b-2 transition border-sky-400 text-sky-400"
                         inactiveClassName="px-4 py-2 text-sm border-b-2 transition border-transparent text-slate-400 hover:text-slate-200"
@@ -402,6 +410,14 @@ export default function CompetitionsPage() {
 
                 <TabsContent value="dashboard">
                     <CompetitionDashboard
+                        games={games}
+                        loading={false}
+                        error={loadError}
+                    />
+                </TabsContent>
+
+                <TabsContent value="teams">
+                    <TeamsDashboard
                         games={games}
                         loading={false}
                         error={loadError}
