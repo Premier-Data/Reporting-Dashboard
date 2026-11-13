@@ -23,6 +23,18 @@ export type SeasonSummary = {
   teams: number;
   newTeams: number;
   games: number;
+  /** Active and seen in an earlier season (= competitions - newCompetitions). */
+  returningCompetitions: number;
+  /** Returning competitions that were not active in the previous season. */
+  revivedCompetitions: number;
+  /** Active in the previous season but not in this one (0 for the first season). */
+  droppedCompetitions: number;
+  /** Distinct competitions seen up to and including this season. */
+  runningCompetitions: number;
+  returningTeams: number;
+  revivedTeams: number;
+  droppedTeams: number;
+  runningTeams: number;
 };
 
 export type CompetitionEntry = {
@@ -139,18 +151,34 @@ export function buildCompetitionSummary(
   const asc = [...perSeason.keys()].sort((a, b) => a - b);
   const seenC = new Set<string>();
   const seenT = new Set<string>();
+  let prevC = new Set<string>();
+  let prevT = new Set<string>();
   const seasons: SeasonSummary[] = asc.map((s) => {
     const p = perSeason.get(s)!;
     let nc = 0;
     let nt = 0;
+    let revC = 0;
+    let revT = 0;
+    let dropC = 0;
+    let dropT = 0;
     p.comps.forEach((k) => {
       if (!seenC.has(k)) nc++;
+      else if (!prevC.has(k)) revC++;
     });
     p.teams.forEach((k) => {
       if (!seenT.has(k)) nt++;
+      else if (!prevT.has(k)) revT++;
+    });
+    prevC.forEach((k) => {
+      if (!p.comps.has(k)) dropC++;
+    });
+    prevT.forEach((k) => {
+      if (!p.teams.has(k)) dropT++;
     });
     p.comps.forEach((k) => seenC.add(k));
     p.teams.forEach((k) => seenT.add(k));
+    prevC = p.comps;
+    prevT = p.teams;
     return {
       season: s,
       competitions: p.comps.size,
@@ -158,6 +186,14 @@ export function buildCompetitionSummary(
       teams: p.teams.size,
       newTeams: nt,
       games: p.games,
+      returningCompetitions: p.comps.size - nc,
+      revivedCompetitions: revC,
+      droppedCompetitions: dropC,
+      runningCompetitions: seenC.size,
+      returningTeams: p.teams.size - nt,
+      revivedTeams: revT,
+      droppedTeams: dropT,
+      runningTeams: seenT.size,
     };
   });
 

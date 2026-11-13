@@ -36,16 +36,111 @@ const COMPETITION_COLUMNS: Record<SortKey, SortColumn<CompetitionEntry>> = {
 
 const compareLabel = (a: CompetitionEntry, b: CompetitionEntry) => a.label.localeCompare(b.label);
 
-type SeasonKey = "season" | "competitions" | "newCompetitions" | "teams" | "newTeams" | "games";
+type SeasonKey =
+  | "season"
+  | "competitions"
+  | "newCompetitions"
+  | "returningCompetitions"
+  | "droppedCompetitions"
+  | "runningCompetitions"
+  | "teams"
+  | "newTeams"
+  | "returningTeams"
+  | "droppedTeams"
+  | "runningTeams"
+  | "games";
+
+const seasonCol = (k: Exclude<SeasonKey, "season">): SortColumn<SeasonSummary> => ({
+  value: (s) => s[k],
+  defaultDir: "desc",
+});
 
 const SEASON_COLUMNS: Record<SeasonKey, SortColumn<SeasonSummary>> = {
   season: { value: (s) => s.season, defaultDir: "desc" },
-  competitions: { value: (s) => s.competitions, defaultDir: "desc" },
-  newCompetitions: { value: (s) => s.newCompetitions, defaultDir: "desc" },
-  teams: { value: (s) => s.teams, defaultDir: "desc" },
-  newTeams: { value: (s) => s.newTeams, defaultDir: "desc" },
-  games: { value: (s) => s.games, defaultDir: "desc" },
+  competitions: seasonCol("competitions"),
+  newCompetitions: seasonCol("newCompetitions"),
+  returningCompetitions: seasonCol("returningCompetitions"),
+  droppedCompetitions: seasonCol("droppedCompetitions"),
+  runningCompetitions: seasonCol("runningCompetitions"),
+  teams: seasonCol("teams"),
+  newTeams: seasonCol("newTeams"),
+  returningTeams: seasonCol("returningTeams"),
+  droppedTeams: seasonCol("droppedTeams"),
+  runningTeams: seasonCol("runningTeams"),
+  games: seasonCol("games"),
 };
+
+const HEAD = "px-3 py-2 text-right font-semibold";
+
+function SeasonGroupHeads({
+  sort,
+  unit,
+  keys,
+}: {
+  sort: ReturnType<typeof useTableSort<SeasonSummary, SeasonKey>>["sort"];
+  unit: "competitions" | "teams";
+  keys: [SeasonKey, SeasonKey, SeasonKey, SeasonKey, SeasonKey];
+}) {
+  return (
+    <>
+      <SortableTh sort={sort} sortKey={keys[0]} className={HEAD}>
+        <span title={`Active: ${unit} with at least one game this season`}>Active</span>
+      </SortableTh>
+      <SortableTh sort={sort} sortKey={keys[1]} className={HEAD}>
+        <span title={`New: ${unit} not seen in any earlier season`}>New</span>
+      </SortableTh>
+      <SortableTh sort={sort} sortKey={keys[2]} className={HEAD}>
+        <span title={`Returning: active this season and seen in an earlier season (Active = New + Returning)`}>Returning</span>
+      </SortableTh>
+      <SortableTh sort={sort} sortKey={keys[3]} className={HEAD}>
+        <span title={`Dropped: covered last season but not this season`}>Dropped</span>
+      </SortableTh>
+      <SortableTh sort={sort} sortKey={keys[4]} className={HEAD}>
+        <span title={`Running total: distinct ${unit} seen in any season up to and including this one`}>Running total</span>
+      </SortableTh>
+    </>
+  );
+}
+
+function SeasonGroupCells({
+  active,
+  fresh,
+  returning,
+  revived,
+  dropped,
+  running,
+  first,
+}: {
+  active: number;
+  fresh: number;
+  returning: number;
+  revived: number;
+  dropped: number;
+  running: number;
+  first: boolean;
+}) {
+  return (
+    <>
+      <td className="border-l border-slate-700 px-3 py-2.5 text-right text-slate-200">{nf.format(active)}</td>
+      <td className="px-3 py-2.5 text-right text-emerald-400" title="New">{nf.format(fresh)}</td>
+      <td
+        className="px-3 py-2.5 text-right text-slate-200"
+        title={revived > 0 ? `incl. ${nf.format(revived)} back after a gap` : undefined}
+      >
+        {nf.format(returning)}
+        {revived > 0 && <span aria-hidden="true" className="text-slate-500">*</span>}
+        {revived > 0 && <span className="sr-only"> (incl. {nf.format(revived)} back after a gap)</span>}
+      </td>
+      <td
+        className={`px-3 py-2.5 text-right ${first || dropped === 0 ? "text-slate-500" : "text-amber-400"}`}
+        title={first ? "No earlier season" : undefined}
+      >
+        {first ? "\u2014" : dropped > 0 ? `\u2212${nf.format(dropped)}` : "0"}
+      </td>
+      <td className="px-3 py-2.5 text-right font-bold text-sky-300">{nf.format(running)}</td>
+    </>
+  );
+}
 export default function CompetitionDashboard({
   games,
   loading,
@@ -111,6 +206,7 @@ export default function CompetitionDashboard({
   }
 
   const years = summary.seasons.map((s) => s.season);
+  const firstSeason = years.length ? Math.min(...years) : null;
   const range =
     years.length === 0
       ? "-"
@@ -137,33 +233,52 @@ export default function CompetitionDashboard({
         <div className="border-b border-slate-700 px-5 py-4 text-sm font-semibold text-white">
           By season
         </div>
-        <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-max text-left text-sm">
           <caption className="sr-only">Unique competitions and teams per season</caption>
           <thead className="bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
             <tr>
-              <SortableTh sort={seasonSort} sortKey="season" className="px-4 py-3 font-semibold">Season</SortableTh>
-              <SortableTh sort={seasonSort} sortKey="competitions" className="px-4 py-3 text-right font-semibold">Competitions</SortableTh>
-              <SortableTh sort={seasonSort} sortKey="newCompetitions" className="px-4 py-3 text-right font-semibold">New competitions</SortableTh>
-              <SortableTh sort={seasonSort} sortKey="teams" className="px-4 py-3 text-right font-semibold">Teams</SortableTh>
-              <SortableTh sort={seasonSort} sortKey="newTeams" className="px-4 py-3 text-right font-semibold">New teams</SortableTh>
-              <SortableTh sort={seasonSort} sortKey="games" className="px-4 py-3 text-right font-semibold">Games</SortableTh>
+              <td />
+              <th colSpan={5} scope="colgroup" className="border-l border-slate-700 px-3 py-1.5 text-center font-semibold text-slate-300">Competitions</th>
+              <th colSpan={5} scope="colgroup" className="border-l border-slate-700 px-3 py-1.5 text-center font-semibold text-slate-300">Teams</th>
+              <td />
+            </tr>
+            <tr>
+              <SortableTh sort={seasonSort} sortKey="season" className="px-3 py-2 font-semibold">Season</SortableTh>
+              <SeasonGroupHeads sort={seasonSort} unit="competitions" keys={["competitions", "newCompetitions", "returningCompetitions", "droppedCompetitions", "runningCompetitions"]} />
+              <SeasonGroupHeads sort={seasonSort} unit="teams" keys={["teams", "newTeams", "returningTeams", "droppedTeams", "runningTeams"]} />
+              <SortableTh sort={seasonSort} sortKey="games" className="px-3 py-2 text-right font-semibold">Games</SortableTh>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {seasonRows.map((s) => (
               <tr key={s.season} className="hover:bg-slate-800/50">
-                <th scope="row" className="px-4 py-2.5 font-semibold text-sky-400">{s.season}</th>
-                <td className="px-4 py-2.5 text-right text-slate-200">{nf.format(s.competitions)}</td>
-                <td className="px-4 py-2.5 text-right text-emerald-400">{nf.format(s.newCompetitions)}</td>
-                <td className="px-4 py-2.5 text-right text-slate-200">{nf.format(s.teams)}</td>
-                <td className="px-4 py-2.5 text-right text-emerald-400">{nf.format(s.newTeams)}</td>
-                <td className="px-4 py-2.5 text-right text-slate-200">{nf.format(s.games)}</td>
+                <th scope="row" className="px-3 py-2.5 font-semibold text-sky-400">{s.season}</th>
+                <SeasonGroupCells
+                  active={s.competitions}
+                  fresh={s.newCompetitions}
+                  returning={s.returningCompetitions}
+                  revived={s.revivedCompetitions}
+                  dropped={s.droppedCompetitions}
+                  running={s.runningCompetitions}
+                  first={s.season === firstSeason}
+                />
+                <SeasonGroupCells
+                  active={s.teams}
+                  fresh={s.newTeams}
+                  returning={s.returningTeams}
+                  revived={s.revivedTeams}
+                  dropped={s.droppedTeams}
+                  running={s.runningTeams}
+                  first={s.season === firstSeason}
+                />
+                <td className="border-l border-slate-700 px-3 py-2.5 text-right text-slate-200">{nf.format(s.games)}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        </div>
       </div>
-
       <div className="overflow-hidden rounded-2xl border border-slate-700 bg-[#0f1b2d]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700 px-5 py-4">
           <div className="text-sm font-semibold text-white">
@@ -245,7 +360,9 @@ export default function CompetitionDashboard({
         League and TIO NTFL Men Premier League count as one). Numbers that are part of a name,
         such as Under 19s or Division 1, are kept. Teams are matched ignoring case and spacing.
         Seasons run from the Wednesday on or before 1 October. Competitions with
-        &quot;Practice&quot; in the name are not counted.
+        &quot;Practice&quot; in the name are not counted. In the season table, Active = New +
+        Returning (an asterisk marks returning counts that include some back after a gap), and
+        Running total = previous running total + New.
       </p>
     </div>
   );

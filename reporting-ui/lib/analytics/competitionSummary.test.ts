@@ -99,3 +99,61 @@ describe("buildCompetitionSummary", () => {
     expect(s.totalCompetitions).toBe(1);
   });
 });
+
+describe("buildCompetitionSummary returning / dropped / running", () => {
+  // Seasons are Oct-Sep; use mid-year dates. Season 2022..2025.
+  // ALWAYS: every season. DROPS: 2022-2023 only. GAP: 2022 and 2024 (revived). N22..N25: one new each.
+  const g = (y: number, comp: string, h: string, a: string, alloc = "X") => ({
+    Date: `${y}-06-01`,
+    Competition: comp,
+    home_team: h,
+    away_team: a,
+    home_allocated: alloc,
+  });
+  const rows = [
+    g(2022, "ALWAYS", "t1", "t2"), g(2022, "DROPS", "t3", "t4"), g(2022, "GAP", "t5", "t6"), g(2022, "N22", "t7", "t8", ""),
+    g(2023, "ALWAYS", "t1", "t2"), g(2023, "DROPS", "t3", "t9"), g(2023, "N23", "t10", "t11"),
+    g(2024, "ALWAYS", "t1", "t2"), g(2024, "GAP", "t5", "t6"), g(2024, "N24", "t12", "t13"),
+    g(2025, "ALWAYS", "t1", "t2"), g(2025, "GAP", "t5", "t12"), g(2025, "N25", "t14", "t15"),
+  ];
+
+  it("computes returning, revived, dropped and running", () => {
+    const s = buildCompetitionSummary(rows);
+    const by = (y: number) => s.seasons.find((x) => x.season === y)!;
+    expect(by(2022)).toMatchObject({ competitions: 4, newCompetitions: 4, returningCompetitions: 0, droppedCompetitions: 0, runningCompetitions: 4 });
+    expect(by(2023)).toMatchObject({ competitions: 3, newCompetitions: 1, returningCompetitions: 2, revivedCompetitions: 0, droppedCompetitions: 2, runningCompetitions: 5 });
+    expect(by(2024)).toMatchObject({ competitions: 3, newCompetitions: 1, returningCompetitions: 2, revivedCompetitions: 1, droppedCompetitions: 2, runningCompetitions: 6 });
+    expect(by(2025)).toMatchObject({ competitions: 3, newCompetitions: 1, returningCompetitions: 2, revivedCompetitions: 0, droppedCompetitions: 1, runningCompetitions: 7 });
+    expect(by(2024).returningTeams).toBe(by(2024).teams - by(2024).newTeams);
+  });
+
+  it("identity holds every season and running total ends at total unique", () => {
+    const s = buildCompetitionSummary(rows);
+    const asc = [...s.seasons].reverse();
+    asc.forEach((cur, i) => {
+      expect(cur.competitions).toBe(cur.newCompetitions + cur.returningCompetitions);
+      expect(cur.teams).toBe(cur.newTeams + cur.returningTeams);
+      if (i === 0) return;
+      const p = asc[i - 1];
+      expect(cur.competitions).toBe(p.competitions - cur.droppedCompetitions + cur.newCompetitions + cur.revivedCompetitions);
+      expect(cur.teams).toBe(p.teams - cur.droppedTeams + cur.newTeams + cur.revivedTeams);
+      expect(cur.runningCompetitions).toBe(p.runningCompetitions + cur.newCompetitions);
+      expect(cur.runningTeams).toBe(p.runningTeams + cur.newTeams);
+    });
+    expect(s.seasons[0].runningCompetitions).toBe(s.totalCompetitions);
+    expect(s.seasons[0].runningTeams).toBe(s.totalTeams);
+  });
+
+  it("onlyAllocated recomputes everything", () => {
+    const s = buildCompetitionSummary(rows, { onlyAllocated: true });
+    const by = (y: number) => s.seasons.find((x) => x.season === y)!;
+    expect(by(2022)).toMatchObject({ competitions: 3, runningCompetitions: 3 });
+    expect(by(2023)).toMatchObject({ competitions: 3, newCompetitions: 1, droppedCompetitions: 1, runningCompetitions: 4 });
+    expect(s.seasons[0].runningCompetitions).toBe(s.totalCompetitions);
+  });
+
+  it("treats a missing season as skipped (prev = nearest earlier present)", () => {
+    const s = buildCompetitionSummary([g(2022, "A", "a", "b"), g(2024, "B", "c", "d")]);
+    expect(s.seasons[0]).toMatchObject({ season: 2024, droppedCompetitions: 1, newCompetitions: 1, runningCompetitions: 2 });
+  });
+});

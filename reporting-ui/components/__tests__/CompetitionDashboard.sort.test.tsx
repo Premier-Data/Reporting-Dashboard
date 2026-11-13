@@ -62,7 +62,7 @@ describe("CompetitionDashboard sorting", () => {
 
     // Per-season table headers are sortable too.
     const seasonTable = el.querySelectorAll("table")[0];
-    expect(seasonTable.querySelectorAll("th[scope=col] button").length).toBe(6);
+    expect(seasonTable.querySelectorAll("th[scope=col] button").length).toBe(12);
 
     await act(async () => root.unmount());
     el.remove();
