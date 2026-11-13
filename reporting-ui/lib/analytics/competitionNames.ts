@@ -46,6 +46,15 @@ export function stripTeamYear(name: string | null | undefined): string {
   return out === "" ? base : out;
 }
 
+/**
+ * Practice / pre-season matches are not counted on the Competitions page.
+ * Matches "Practice" (or the "Practise" spelling) as a whole word, any case,
+ * anywhere in the name: "NGA Practice", "Practice Kilsyth", "VAFA Practice 2025".
+ */
+export function isPracticeCompetition(name: string | null | undefined): boolean {
+  return /\bpracti[cs]e\b/i.test(collapseSpaces(name));
+}
+
 /** Grouping key for a team: case-insensitive, whitespace collapsed. */
 export function canonicalTeam(name: string | null | undefined): string {
   return stripTeamYear(name).toLowerCase();

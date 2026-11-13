@@ -2,9 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalCompetition,
   canonicalTeam,
+  isPracticeCompetition,
   stripCompetitionYear,
 } from "./competitionNames";
 import { buildCompetitionSummary } from "./competitionSummary";
+
+describe("isPracticeCompetition", () => {
+  it.each([
+    ["NGA Practice", true],
+    ["Practice Kilsyth", true],
+    ["VAFA Practice 2025", true],
+    ["VFL Practice Games", true],
+    ["practice  macedon", true],
+    ["AGSV Practise", true],
+    ["EFNL Premier Division", false],
+    ["Practicalities League", false],
+    ["", false],
+    [null, false],
+  ])("%s -> %s", (name, expected) => {
+    expect(isPracticeCompetition(name)).toBe(expected);
+  });
+});
 
 describe("stripCompetitionYear", () => {
   it.each([

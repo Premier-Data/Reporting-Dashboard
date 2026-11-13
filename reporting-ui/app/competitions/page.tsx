@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
+import { isPracticeCompetition } from "@/lib/analytics/competitionNames";
 import { THEME } from "@/lib/theme";
 import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
 import SortableTh from "@/components/UI/SortableTh";
@@ -95,7 +96,13 @@ export default function CompetitionsPage() {
                 });
 
                 // Season/week derived from each fixture's Date (unified rule).
-                setGames(mapFixtureWeekTT(data));
+                // Practice matches are excluded from this page entirely (both
+                // the Dashboard tallies and Competition details).
+                setGames(
+                    mapFixtureWeekTT(data).filter(
+                        (g) => !isPracticeCompetition(g.Competition)
+                    )
+                );
             } catch (e) {
                 console.error("Error fetching TT_Games:", e);
                 setLoadError(e instanceof Error ? e.message : String(e));

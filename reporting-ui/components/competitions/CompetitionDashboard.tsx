@@ -244,7 +244,8 @@ export default function CompetitionDashboard({
         start or end of the name (for example PSA and PSA 2022, or 2026-27 TIO NTFL Men Premier
         League and TIO NTFL Men Premier League count as one). Numbers that are part of a name,
         such as Under 19s or Division 1, are kept. Teams are matched ignoring case and spacing.
-        Seasons run from the Wednesday on or before 1 October.
+        Seasons run from the Wednesday on or before 1 October. Competitions with
+        &quot;Practice&quot; in the name are not counted.
       </p>
     </div>
   );
