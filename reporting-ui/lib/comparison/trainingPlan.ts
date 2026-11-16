@@ -56,24 +56,37 @@ export const TRAINING_TREND_CONSTANTS = {
   ALL_ANALYST_DAYS: 90,
   /** a check only "counts" for a stat/category with >= this many events */
   MIN_EVENTS_PER_CHECK: 5,
-  /** (i) persistent: rate >= 20% in a check = a "hit" */
-  ERROR_RATE_THRESHOLD: 0.2,
-  /** (i) needs >= 3 counted checks (current included) */
+  /**
+   * (i) persistent: error rate >= 30% in a check = a "hit". A stat is
+   * persistent only when ALL of the following hold:
+   *   - >= PERSISTENT_MIN_CHECKS counted checks (current included)
+   *   - hits / counted checks >= PERSISTENT_MIN_SHARE (70%)
+   *   - its pooled error rate over the window is >= the PERSISTENT_PERCENTILE
+   *     point (90th percentile) of the analyst's own pooled stat error rates,
+   *     so only their worst tenth of stats is flagged, even for an analyst
+   *     who is generally noisy
+   *   - >= PERSISTENT_MIN_CURRENT_ERRORS errors in this check (not worth
+   *     flagging a stat that barely occurred this time)
+   */
+  TREND_PERSISTENT_RATE: 0.3,
   PERSISTENT_MIN_CHECKS: 3,
-  /** (i) hits / counted checks must be > 0.5 */
-  PERSISTENT_MAJORITY: 0.5,
+  PERSISTENT_MIN_SHARE: 0.7,
+  PERSISTENT_PERCENTILE: 0.9,
+  PERSISTENT_MIN_CURRENT_ERRORS: 3,
   /** (ii) recent = last 3 counted points (current included) */
   WORSENING_RECENT_POINTS: 3,
   /** (ii) needs >= 2 earlier counted points */
   WORSENING_MIN_EARLIER_POINTS: 2,
   /** (ii) each side needs >= 10 pooled events */
   WORSENING_MIN_POOLED_EVENTS: 10,
-  /** (ii) recent pooled rate - earlier pooled rate >= 10 percentage points */
-  WORSENING_DELTA: 0.1,
+  /** (ii) recent pooled rate - earlier pooled rate >= 15 percentage points */
+  WORSENING_DELTA: 0.15,
+  /** (ii) and the recent pooled rate must itself be >= 20% */
+  WORSENING_MIN_RECENT_RATE: 0.2,
   /**
    * Tolerance for comparing rates (floating point): a delta of 0.0999999999
-   * from rounding counts as exactly 0.10, and the same tolerance is used for
-   * the 20% error-rate threshold. Rates are ratios of small integers, so any
+   * from rounding counts as exactly the threshold, and the same tolerance is
+   * used for the other rate thresholds. Rates are ratios of small integers, so any
    * value this close to a threshold is the threshold.
    */
   EPSILON: 1e-9,
@@ -85,9 +98,24 @@ export const TRAINING_TREND_CONSTANTS = {
   TOP_MIN_HISTORY_CHECKS: 1,
   /** error-type focus item skipped when >= 70% of its instances are already in a stat/category item */
   FOCUS_COVERAGE_SKIP: 0.7,
-  MAX_FOCUS_ITEMS: 5,
-  /** a non-trending error type becomes a focus item at >= 3 errors */
+  /** key focus areas shown (one block per stat) */
+  FOCUS_MAX: 3,
+  /** example instances shown per focus area */
+  EXAMPLES_MAX: 3,
+  /** a non-trending stat / error type becomes a focus item at >= 3 errors */
   FOCUS_TYPE_MIN_ERRORS: 3,
+  /** strengths: stat accuracy >= 95% (inclusive) ... */
+  STRENGTH_MIN_ACCURACY: 0.95,
+  /** ... with at least this many master instances in the check */
+  STRENGTH_MIN_INSTANCES: 10,
+  /** strengths shown */
+  STRENGTH_MAX: 5,
+  /** best stats listed when nothing reaches 95% */
+  STRENGTH_FALLBACK: 2,
+  /** history: "consistently" = 95%+ in at least this share of counted checks */
+  STRENGTH_CONSISTENT_SHARE: 0.7,
+  /** summary says "in line with" within this many accuracy points */
+  SUMMARY_FLAT_PTS: 0.5,
   /** focus titles listed in the default send message */
   MESSAGE_TOP_FOCUS: 3,
 } as const;
@@ -216,19 +244,55 @@ export interface FocusItem {
   rank: number;
   id: string;
   kind: "stat" | "category" | "errorType";
+  /** one line, e.g. "Touch: over-calling (61 extra)" */
   title: string;
+  /** error types of this stat, e.g. "61 extra, 5 missed" */
   why: string;
   drill: string;
+  /** dominant error type */
   errorType: ErrorType;
+  errorTypes: { type: ErrorType; count: number }[];
+  /** stat (or category) label this block is about; null for error-type items */
+  label: string | null;
+  /** this check's accuracy for the stat (master-based); null when unknown */
+  accuracy: number | null;
+  /** one short phrase, e.g. "Persistent: 30%+ errors in 4 of 5 checks" */
+  trendText: string;
+  /** error-rate series for this stat only (oldest to current); null when no history */
+  trendPoints: TrendPoint[] | null;
+  /** up to EXAMPLES_MAX representative instances */
+  examples: PlanInstance[];
   priority: number;
   trendKinds: TrendKind[];
   instanceKeys: string[];
+}
+
+export interface StrengthItem {
+  stat: string;
+  key: string;
+  accuracy: number;
+  instances: number;
+  /** e.g. "consistently 95%+ in 8 of last 10 checks"; null when no history */
+  consistency: string | null;
+  /** error-rate series for this stat (oldest to current); null when no history */
+  trendPoints: TrendPoint[] | null;
+}
+
+export interface StrengthsResult {
+  /** top STRENGTH_MAX */
+  items: StrengthItem[];
+  /** every stat that qualifies (used by the Excel Strengths sheet) */
+  all: StrengthItem[];
+  /** best stats when none qualify */
+  fallback: StrengthItem[];
 }
 
 export interface TrendsResult {
   level: "stat" | "category" | "none";
   items: TrendItem[];
   notes: string[];
+  /** error-rate series for every stat/category (used for inline sparklines) */
+  series?: Record<string, TrendPoint[]>;
 }
 
 export interface TrainingPlan {
@@ -260,6 +324,15 @@ export interface TrainingPlan {
     allAnalystAvgAccuracy: number | null;
     historyChecksUsed: number;
   };
+  /** 2-3 line summary: headline, accuracy vs the analyst's recent average */
+  summary: {
+    headline: string;
+    accuracyLine: string;
+    direction: "up" | "down" | "flat" | null;
+    /** accuracy points vs analyst average (positive = better) */
+    deltaPts: number | null;
+  };
+  strengths: StrengthsResult;
   instances: PlanInstance[];
   trends: TrendsResult;
   focus: FocusItem[];
@@ -556,23 +629,46 @@ function pooled(points: TrendPoint[]): { events: number; rate: number } {
   return { events, rate: events > 0 ? errors / events : 0 };
 }
 
+/** Pooled error rate over a stat's counted points; null when it has none. */
+function pooledCountedRate(points: TrendPoint[]): number | null {
+  const counted = points.filter((p) => p.counted);
+  return counted.length > 0 ? pooled(counted).rate : null;
+}
+
+/** Nearest-rank percentile (p in 0..1); 0 for an empty list. */
+function percentile(xs: number[], p: number): number {
+  if (xs.length === 0) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.max(0, Math.ceil(p * s.length) - 1))];
+}
+
 function flagPoints(
   points: TrendPoint[],
   scopeRank: number | null,
-  scopeErrors: number
+  scopeErrors: number,
+  analystBarRate: number
 ): TrendReason[] {
   const reasons: TrendReason[] = [];
   const counted = points.filter((p) => p.counted);
 
-  // (i) persistent
+  // (i) persistent: high rate in >= 70% of counted checks AND the pooled rate
+  // is at or above the analyst's own 90th-percentile stat error rate, with
+  // enough errors in this check.
   if (counted.length >= C.PERSISTENT_MIN_CHECKS) {
     const hits = counted.filter(
-      (p) => (p.rate ?? 0) >= C.ERROR_RATE_THRESHOLD - C.EPSILON
+      (p) => (p.rate ?? 0) >= C.TREND_PERSISTENT_RATE - C.EPSILON
     ).length;
-    if (hits / counted.length > C.PERSISTENT_MAJORITY) {
+    const own = pooled(counted).rate;
+    if (
+      hits / counted.length >= C.PERSISTENT_MIN_SHARE - C.EPSILON &&
+      own >= analystBarRate - C.EPSILON &&
+      // this check's errors over ALL rows (not the scope filter), so the
+      // persistent flag does not change with the filters
+      (points[points.length - 1]?.errors ?? 0) >= C.PERSISTENT_MIN_CURRENT_ERRORS
+    ) {
       reasons.push({
         kind: "persistent",
-        text: `Error rate ${pct0(C.ERROR_RATE_THRESHOLD)} or higher in ${hits} of the last ${counted.length} checks`,
+        text: `Persistent: ${pct0(C.TREND_PERSISTENT_RATE)}+ errors in ${hits} of last ${counted.length} checks`,
       });
     }
   }
@@ -586,11 +682,12 @@ function flagPoints(
     if (
       r.events >= C.WORSENING_MIN_POOLED_EVENTS &&
       e.events >= C.WORSENING_MIN_POOLED_EVENTS &&
+      r.rate >= C.WORSENING_MIN_RECENT_RATE - C.EPSILON &&
       r.rate - e.rate >= C.WORSENING_DELTA - C.EPSILON
     ) {
       reasons.push({
         kind: "worsening",
-        text: `Error rate rose from ${pct0(e.rate)} (earlier ${earlier.length} checks) to ${pct0(r.rate)} (last ${recent.length} checks)`,
+        text: `Worsening: ${pct0(e.rate)} to ${pct0(r.rate)} errors (last ${recent.length} checks vs earlier)`,
       });
     }
   }
@@ -606,7 +703,7 @@ function flagPoints(
     if (seen >= C.TOP_MIN_HISTORY_CHECKS) {
       reasons.push({
         kind: "top_this_check",
-        text: `${ordinal(scopeRank)} most errors in this check (${scopeErrors}) and also had errors in ${seen} of the last ${hist.length} checks`,
+        text: `${ordinal(scopeRank)} most errors this check (${scopeErrors}); also had errors in ${seen} of last ${hist.length} checks`,
       });
     }
   }
@@ -732,10 +829,26 @@ export function detectTrends(
   const rankOf = new Map<string, number>();
   ranked.forEach((r, i) => rankOf.set(r.key, i + 1));
 
+  // The analyst's own 75th-percentile stat error rate (pooled over the window)
+  // is the bar a stat must reach to count as persistent.
+  const analystBarRate = percentile(
+    entries
+      .map((e) => pooledCountedRate(e.points))
+      .filter((r): r is number => r != null),
+    C.PERSISTENT_PERCENTILE
+  );
+  const series: Record<string, TrendPoint[]> = {};
+  for (const e of entries) series[e.key] = e.points;
+
   const items: TrendItem[] = [];
   for (const e of entries) {
     const scopeErrors = e.scope?.errors ?? 0;
-    const reasons = flagPoints(e.points, rankOf.get(e.key) ?? null, scopeErrors);
+    const reasons = flagPoints(
+      e.points,
+      rankOf.get(e.key) ?? null,
+      scopeErrors,
+      analystBarRate
+    );
     if (reasons.length === 0) continue;
     items.push({
       key: e.key,
@@ -753,7 +866,7 @@ export function detectTrends(
       b.currentErrors - a.currentErrors ||
       a.label.localeCompare(b.label)
   );
-  return { level, items, notes };
+  return { level, items, notes, series };
 }
 
 // --------------------------------------------------------------------------
@@ -781,49 +894,91 @@ function dominantType(counts: Record<ErrorType, number>): ErrorType {
   return best;
 }
 
+/** Up to EXAMPLES_MAX instances, spread across the game (by time). */
+function spreadPick(xs: PlanInstance[], n: number): PlanInstance[] {
+  const s = [...xs].sort((a, b) => a.timeSeconds - b.timeSeconds);
+  if (s.length <= n) return s;
+  return Array.from({ length: n }, (_, j) => s[Math.floor(((j + 0.5) * s.length) / n)]);
+}
+
+/**
+ * Representative examples: the most frequent error type first (spread across
+ * the game); other types only fill the remaining slots.
+ */
+export function pickExamples(mine: PlanInstance[], dom: ErrorType): PlanInstance[] {
+  const picked = spreadPick(
+    mine.filter((i) => i.type === dom),
+    C.EXAMPLES_MAX
+  );
+  if (picked.length < C.EXAMPLES_MAX) {
+    picked.push(
+      ...spreadPick(
+        mine.filter((i) => i.type !== dom),
+        C.EXAMPLES_MAX - picked.length
+      )
+    );
+  }
+  return picked.sort((a, b) => a.timeSeconds - b.timeSeconds);
+}
+
+const TREND_TEXT_ORDER: TrendKind[] = ["persistent", "worsening", "top_this_check"];
+
 export function buildFocus(args: {
   instances: PlanInstance[];
   trends: TrendsResult;
   options: PlanOptions;
   history: HistoryCheck[];
+  /** this check's per-stat accuracy keyed by lower-cased stat (page definition) */
+  statAccuracy?: Map<string, number>;
 }): FocusItem[] {
   const { instances, trends } = args;
   type Cand = Omit<FocusItem, "rank">;
   const cands: Cand[] = [];
   const covered = new Set<string>();
   const level = trends.level;
+  const hasHistory = level !== "none";
 
   const keyOfInstance = (i: PlanInstance) =>
     statKey(level === "category" ? i.category : i.stat);
 
-  for (const item of trends.items) {
-    const mine = instances.filter((i) => keyOfInstance(i) === item.key);
-    if (mine.length === 0) continue;
+  const statCand = (
+    key: string,
+    label: string,
+    mine: PlanInstance[],
+    reasons: TrendReason[],
+    points: TrendPoint[] | null
+  ): Cand => {
     const counts = emptyByType();
     for (const i of mine) counts[i.type] += 1;
     const dom = dominantType(counts);
-    const flags = new Set(item.reasons.map((r) => r.kind));
-    const histPts = item.points.filter((p) => !p.isCurrent && p.events > 0);
-    const histErr = histPts.filter((p) => p.errors > 0).length;
-    const clause = histErr > 0 ? `, ${histErr} of last ${histPts.length} checks` : "";
-    const title = `Review ${item.label} ${TYPE_PHRASE[dom]}: ${counts[dom]} ${TYPE_NOUN[dom]} errors in this game${clause}`;
-    let why = `${mine.length} error${mine.length === 1 ? "" : "s"} in this scope. ${item.reasons.map((r) => r.text).join("; ")}.`;
-    if (dom === "wrong_player") {
-      const also = mine.filter((i) => i.type === "wrong_stat" && i.alsoWrongPlayer).length;
-      if (also > 0) why += ` (+${also} wrong-stat rows also had the wrong player)`;
-    }
+    const errorTypes = DOMINANT_TIE_ORDER.map((type) => ({ type, count: counts[type] }))
+      .filter((x) => x.count > 0)
+      .sort((a, b) => b.count - a.count);
+    const flags = new Set(reasons.map((r) => r.kind));
+    const topReason = TREND_TEXT_ORDER.map((k) => reasons.find((r) => r.kind === k)).find(Boolean);
+    const isCategory = level === "category";
     mine.forEach((i) => covered.add(i.key));
-    cands.push({
-      id: `${level}:${item.key}`,
-      kind: level === "category" ? "category" : "stat",
-      title,
-      why,
+    return {
+      id: `${isCategory ? "category" : "stat"}:${key}`,
+      kind: isCategory ? "category" : "stat",
+      title: `${label}: ${TYPE_PHRASE[dom]} (${counts[dom]} ${TYPE_NOUN[dom]})`,
+      why: errorTypes.map((x) => `${x.count} ${TYPE_NOUN[x.type]}`).join(", "),
       drill: drillFor(
-        level === "stat" ? item.label : null,
-        level === "category" ? item.label : null,
+        isCategory ? null : label,
+        isCategory ? label : null,
         dom
       ),
       errorType: dom,
+      errorTypes,
+      label,
+      accuracy: isCategory ? null : (args.statAccuracy?.get(key) ?? null),
+      trendText: topReason
+        ? topReason.text
+        : hasHistory
+          ? "No trend flagged"
+          : "No history to compare",
+      trendPoints: points,
+      examples: pickExamples(mine, dom),
       priority:
         mine.length +
         5 * (flags.has("persistent") ? 1 : 0) +
@@ -831,7 +986,32 @@ export function buildFocus(args: {
         2 * (flags.has("top_this_check") ? 1 : 0),
       trendKinds: Array.from(flags),
       instanceKeys: mine.map((i) => i.key),
-    });
+    };
+  };
+
+  const trending = new Set<string>();
+  for (const item of trends.items) {
+    const mine = instances.filter((i) => keyOfInstance(i) === item.key);
+    if (mine.length === 0) continue;
+    trending.add(item.key);
+    cands.push(statCand(item.key, item.label, mine, item.reasons, item.points));
+  }
+
+  // Stats with enough errors but no trend flag still make a focus block
+  // (one block per stat); category-level history has no per-stat series.
+  if (level !== "category") {
+    const byKey = new Map<string, PlanInstance[]>();
+    for (const i of instances) {
+      const k = keyOfInstance(i);
+      if (trending.has(k)) continue;
+      const list = byKey.get(k);
+      if (list) list.push(i);
+      else byKey.set(k, [i]);
+    }
+    for (const [k, mine] of byKey) {
+      if (mine.length < C.FOCUS_TYPE_MIN_ERRORS) continue;
+      cands.push(statCand(k, mine[0].stat, mine, [], trends.series?.[k] ?? null));
+    }
   }
 
   for (const t of ERROR_TYPE_ORDER) {
@@ -839,18 +1019,19 @@ export function buildFocus(args: {
     if (mine.length < C.FOCUS_TYPE_MIN_ERRORS) continue;
     const inCovered = mine.filter((i) => covered.has(i.key)).length;
     if (inCovered / mine.length >= C.FOCUS_COVERAGE_SKIP - C.EPSILON) continue;
-    let why = `${mine.length} ${TYPE_NOUN[t]} errors in this scope across several stats.`;
-    if (t === "wrong_player") {
-      const also = instances.filter((i) => i.type === "wrong_stat" && i.alsoWrongPlayer).length;
-      if (also > 0) why += ` (+${also} wrong-stat rows also had the wrong player)`;
-    }
     cands.push({
       id: `type:${t}`,
       kind: "errorType",
-      title: `Reduce ${TYPE_NOUN[t]} errors: ${mine.length} in this game`,
-      why,
+      title: `Reduce ${TYPE_NOUN[t]} errors (${mine.length} across several stats)`,
+      why: `${mine.length} ${TYPE_NOUN[t]}`,
       drill: drillFor(null, null, t),
       errorType: t,
+      errorTypes: [{ type: t, count: mine.length }],
+      label: null,
+      accuracy: null,
+      trendText: "",
+      trendPoints: null,
+      examples: pickExamples(mine, t),
       priority: 0.8 * mine.length,
       trendKinds: [],
       instanceKeys: mine.map((i) => i.key),
@@ -863,11 +1044,8 @@ export function buildFocus(args: {
       b.instanceKeys.length - a.instanceKeys.length ||
       a.title.localeCompare(b.title)
   );
-  return cands
-    .slice(0, C.MAX_FOCUS_ITEMS)
-    .map((c, i) => ({ rank: i + 1, ...c }));
+  return cands.slice(0, C.FOCUS_MAX).map((c, i) => ({ rank: i + 1, ...c }));
 }
-
 // --------------------------------------------------------------------------
 // Plan
 // --------------------------------------------------------------------------
@@ -979,7 +1157,18 @@ export function buildTrainingPlan(
     },
     hist
   );
-  const focus = buildFocus({ instances, trends, options, history: hist });
+  // Per-stat accuracy: the comparison page's own definition (result.byStat:
+  // exact / master instances), so these figures match the page.
+  const statAccuracy = new Map<string, number>();
+  for (const s of result.byStat ?? []) statAccuracy.set(statKey(s.stat), s.accuracy);
+  const focus = buildFocus({
+    instances,
+    trends,
+    options,
+    history: hist,
+    statAccuracy,
+  });
+  const strengths = buildStrengths(result.byStat ?? [], hist, trends.series);
 
   // Header averages
   const analystAvgAccuracy = mean(
@@ -1066,11 +1255,142 @@ export function buildTrainingPlan(
       allAnalystAvgAccuracy: history?.allAnalystAverage?.accuracy ?? null,
       historyChecksUsed: hist.length,
     },
+    summary: buildSummary({
+      analystName,
+      fixture: `${ctx.teamLabel("Home")} v ${ctx.teamLabel("Away")}`,
+      sport: ctx.sport,
+      checkDate: ctx.checkCreatedAt,
+      accuracy: result.summary.accuracy,
+      analystAvg: analystAvgAccuracy,
+      checksUsed: hist.length,
+      allAnalystAvg: history?.allAnalystAverage?.accuracy ?? null,
+    }),
+    strengths,
     instances,
     trends,
     focus,
     notes,
   };
+}
+
+/**
+ * Summary lines: who/what/when, then overall accuracy against the analyst's
+ * recent average (and the all-analyst average when known).
+ */
+export function buildSummary(a: {
+  analystName: string | null;
+  fixture: string;
+  sport: string | null;
+  checkDate: string | null;
+  accuracy: number;
+  analystAvg: number | null;
+  checksUsed: number;
+  allAnalystAvg: number | null;
+}): TrainingPlan["summary"] {
+  const headline = [
+    a.analystName ?? "No analyst",
+    a.fixture,
+    [a.sport, a.checkDate ? a.checkDate.slice(0, 10) : null].filter(Boolean).join(", "),
+  ]
+    .filter(Boolean)
+    .join(" - ");
+  let direction: "up" | "down" | "flat" | null = null;
+  let deltaPts: number | null = null;
+  let sentence = "No earlier checks to compare.";
+  if (a.analystAvg != null && a.checksUsed > 0) {
+    deltaPts = (a.accuracy - a.analystAvg) * 100;
+    const abs = Math.abs(deltaPts);
+    const window = `your last ${a.checksUsed} check${a.checksUsed === 1 ? "" : "s"}`;
+    if (abs < C.SUMMARY_FLAT_PTS - C.EPSILON) {
+      direction = "flat";
+      sentence = `In line with ${window}.`;
+    } else if (deltaPts > 0) {
+      direction = "up";
+      sentence = `Up ${abs.toFixed(1)} pts on ${window}.`;
+    } else {
+      direction = "down";
+      sentence = `Down ${abs.toFixed(1)} pts on ${window}.`;
+    }
+  }
+  let accuracyLine = `Accuracy ${pct1(a.accuracy)}. ${sentence}`;
+  if (a.allAnalystAvg != null) accuracyLine += ` All analysts average ${pct1(a.allAnalystAvg)}.`;
+  return { headline, accuracyLine, direction, deltaPts };
+}
+
+/**
+ * Strengths: stats in THIS check with accuracy >= 95% (inclusive) and at least
+ * STRENGTH_MIN_INSTANCES master instances. Accuracy is the page's per-stat
+ * figure (result.byStat). Sorted by instances desc, then accuracy desc.
+ */
+export function buildStrengths(
+  byStat: { stat: string; total: number; exact: number; accuracy: number }[],
+  history: HistoryCheck[],
+  series?: Record<string, TrendPoint[]>
+): StrengthsResult {
+  const eligible = byStat.filter((s) => s.total >= C.STRENGTH_MIN_INSTANCES);
+  const toItem = (s: (typeof byStat)[number]): StrengthItem => ({
+    stat: s.stat,
+    key: statKey(s.stat),
+    accuracy: s.accuracy,
+    instances: s.total,
+    consistency: strengthConsistency(statKey(s.stat), history),
+    trendPoints: series?.[statKey(s.stat)] ?? null,
+  });
+  const byCount = (a: { instances: number; accuracy: number; stat: string }, b: typeof a) =>
+    b.instances - a.instances || b.accuracy - a.accuracy || a.stat.localeCompare(b.stat);
+  const all = eligible
+    .filter((s) => s.accuracy >= C.STRENGTH_MIN_ACCURACY - C.EPSILON)
+    .map(toItem)
+    .sort(byCount);
+  const fallback =
+    all.length > 0
+      ? []
+      : eligible
+          .map(toItem)
+          .sort(
+            (a, b) =>
+              b.accuracy - a.accuracy ||
+              b.instances - a.instances ||
+              a.stat.localeCompare(b.stat)
+          )
+          .slice(0, C.STRENGTH_FALLBACK);
+  return { items: all.slice(0, C.STRENGTH_MAX), all, fallback };
+}
+
+/**
+ * History note for a strength. A history check "counts" when the stat had at
+ * least MIN_EVENTS_PER_CHECK master instances; its accuracy is
+ * (events - errors) / (events - extras), the same exact / master ratio.
+ */
+function strengthConsistency(key: string, history: HistoryCheck[]): string | null {
+  const withStats = history.filter((h) => h.stats !== null);
+  if (withStats.length === 0) return null;
+  let counted = 0;
+  let hits = 0;
+  for (const h of withStats) {
+    const c = h.stats![key];
+    if (!c) continue;
+    const master = c.events - c.byType.extra;
+    if (master < C.MIN_EVENTS_PER_CHECK) continue;
+    counted += 1;
+    if ((c.events - c.errors) / master >= C.STRENGTH_MIN_ACCURACY - C.EPSILON) hits += 1;
+  }
+  if (hits === 0) return "new strength this check";
+  const pct = `${Math.round(C.STRENGTH_MIN_ACCURACY * 100)}%+`;
+  const text = `${pct} in ${hits} of last ${counted} checks`;
+  return hits / counted >= C.STRENGTH_CONSISTENT_SHARE - C.EPSILON
+    ? `consistently ${text}`
+    : text;
+}
+
+/** Single short line for the degrade notes (empty -> null). */
+export function conciseNote(plan: TrainingPlan, maxChars = 160): string | null {
+  const notes = [...plan.notes, ...plan.trends.notes].filter(
+    (n) => !n.includes("can differ from AI insights")
+  );
+  if (notes.length === 0) return null;
+  const text = notes.join(" | ");
+  return text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
 }
 
 // --------------------------------------------------------------------------
@@ -1086,27 +1406,23 @@ export function buildDefaultMessage(
   lines.push(`Hi ${h.analystName ?? "there"},`);
   lines.push("");
   lines.push(
-    `Here is your recommended training plan for ${h.fixture}${h.matchLabel ? ` (${h.matchLabel})` : ""}.`
+    `Training plan for ${h.fixture}${h.matchLabel ? ` (${h.matchLabel})` : ""}. ${plan.summary.accuracyLine}`
   );
-  lines.push(`Overall accuracy: ${pct1(h.overallAccuracy)}`);
-  const breakdown = ERROR_TYPE_ORDER.map(
-    (t) => `${ERROR_TYPE_LABEL[t]} ${h.counts[t]}`
-  ).join(", ");
-  lines.push(`Errors in scope (${h.scopeLabel}): ${h.totalErrors} (${breakdown})`);
+  const strengths = plan.strengths.items
+    .slice(0, C.STRENGTH_MAX)
+    .map((s) => `${s.stat} ${Math.round(s.accuracy * 100)}%`);
+  if (strengths.length > 0) lines.push(`Strengths: ${strengths.join(", ")}`);
   const top = plan.focus.slice(0, C.MESSAGE_TOP_FOCUS);
   if (top.length > 0) {
-    lines.push("");
-    lines.push("Top focus areas:");
-    top.forEach((f, i) => lines.push(`${i + 1}. ${f.title}`));
+    lines.push(`Focus: ${top.map((f, i) => `${i + 1}) ${f.title}`).join(" ")}`);
   }
   lines.push("");
-  lines.push("Full plan attached as Excel.");
+  lines.push("Full details in the attached workbook.");
   if (opts.reviewLink) lines.push(`Review the check: ${opts.reviewLink}`);
   if (opts.senderName) {
     lines.push("");
     lines.push(`Regards, ${opts.senderName}`);
-  }
-  const text = lines.join("\n");
+  }  const text = lines.join("\n");
   return text.length > MESSAGE_MAX_CHARS
     ? `${text.slice(0, MESSAGE_MAX_CHARS - 1)}…`
     : text;

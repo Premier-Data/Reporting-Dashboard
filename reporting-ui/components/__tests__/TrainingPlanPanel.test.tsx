@@ -129,7 +129,7 @@ describe("TrainingPlanPanel", () => {
     asUser("admin");
     await render();
     await click(btnIncludes("Send to analyst"));
-    expect(document.body.textContent).toContain("Full plan attached as Excel");
+    expect(document.body.textContent).toContain("Full details in the attached workbook.");
     await click(btn("Send"));
     expect(findUserByAnalystName).toHaveBeenCalledWith("Sam");
     expect(getOrCreateDirectConversation).toHaveBeenCalledWith(1, 2, { checkId: 5 });
@@ -151,6 +151,20 @@ describe("TrainingPlanPanel", () => {
     expect(uploadAttachment).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect((btnIncludes("Export Excel") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("shows summary, strengths and key focus, with the full list in a collapsed appendix", async () => {
+    asUser("analyst");
+    await render();
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("Strengths (95-100% accuracy)");
+    expect(text).toContain("No stats at 95%+ this check (min 10 instances)");
+    expect(text).toContain("Key focus areas");
+    expect(text).not.toContain("Trending stats");
+    const details = document.body.querySelector("details")!;
+    expect(details.open).toBe(false);
+    expect(details.querySelector("summary")!.textContent).toContain("All instances (1)");
+    expect(details.querySelector("summary")!.textContent).toContain("Missed 1");
   });
 
   it("closes on Escape", async () => {

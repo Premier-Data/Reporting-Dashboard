@@ -1,9 +1,11 @@
-// Excel export of a training plan (sheets: Summary, Focus, Instances, Trends).
+// Excel export of a training plan (sheets: Summary, Strengths, Focus, Instances, Trends).
 // trainingPlanSheets() is a pure sheet model that drives both the workbook
 // writer and the tests. exceljs is loaded on demand.
 
 import {
   ERROR_TYPE_LABEL,
+  TRAINING_TREND_CONSTANTS as C,
+  type PlanInstance,
   type TrainingPlan,
 } from "@/lib/comparison/trainingPlan";
 
@@ -28,7 +30,7 @@ export function trainingPlanSheets(plan: TrainingPlan): SheetModel[] {
   const w = plan.options.window;
   const windowLabel = w.mode === "checks" ? `Last ${w.n} checks` : `Last ${w.days} days`;
 
-  // Summary
+  // Summary: concise, incl. strengths and focus
   const kv: [string, SheetCell][] = [
     ["Analyst", h.analystName ?? ""],
     ["Fixture", h.fixture],
@@ -44,21 +46,39 @@ export function trainingPlanSheets(plan: TrainingPlan): SheetModel[] {
     ["Overall accuracy", pct1(h.overallAccuracy)],
     ["Analyst average", pct1(h.analystAvgAccuracy)],
     ["All-analyst average", pct1(h.allAnalystAvgAccuracy)],
+    ["Summary", plan.summary.accuracyLine],
     ...(Object.keys(ERROR_TYPE_LABEL) as (keyof typeof ERROR_TYPE_LABEL)[]).map(
       (t): [string, SheetCell] => [ERROR_TYPE_LABEL[t], h.counts[t]]
     ),
     ["Excluded by dispute (analyst correct)", h.excludedByDispute],
     ["Under dispute", h.underDispute],
   ];
+  const blank = (): Record<string, SheetCell> => ({ a: null, b: null, c: null, d: null, e: null });
   const summaryRows: Record<string, SheetCell>[] = kv.map(([a, b]) => ({
+    ...blank(),
     a,
     b,
-    c: null,
-    d: null,
-    e: null,
   }));
-  summaryRows.push({ a: null, b: null, c: null, d: null, e: null });
+  summaryRows.push(blank());
+  summaryRows.push({ ...blank(), a: "Strengths (95%+ accuracy)", b: "Accuracy", c: "Instances", d: "History" });
+  if (plan.strengths.items.length === 0) {
+    summaryRows.push({
+      ...blank(),
+      a: `No stats at 95%+ this check (min ${C.STRENGTH_MIN_INSTANCES} instances)`,
+    });
+    for (const s of plan.strengths.fallback)
+      summaryRows.push({ ...blank(), a: `Best: ${s.stat}`, b: pct1(s.accuracy), c: s.instances, d: s.consistency ?? "" });
+  }
+  for (const s of plan.strengths.items)
+    summaryRows.push({ ...blank(), a: s.stat, b: pct1(s.accuracy), c: s.instances, d: s.consistency ?? "" });
+  summaryRows.push(blank());
+  summaryRows.push({ ...blank(), a: "Key focus areas", b: "Accuracy", c: "Trend", d: "Practice" });
+  if (plan.focus.length === 0) summaryRows.push({ ...blank(), a: "No focus areas for this scope." });
+  for (const f of plan.focus)
+    summaryRows.push({ ...blank(), a: `${f.rank}. ${f.title}`, b: pct1(f.accuracy), c: f.trendText, d: f.drill });
+  summaryRows.push(blank());
   summaryRows.push({
+    ...blank(),
     a: "Category",
     b: "This check",
     c: "Analyst average",
@@ -76,45 +96,78 @@ export function trainingPlanSheets(plan: TrainingPlan): SheetModel[] {
   }
   const noteList = [...plan.notes, ...plan.trends.notes];
   if (noteList.length > 0) {
-    summaryRows.push({ a: null, b: null, c: null, d: null, e: null });
-    summaryRows.push({ a: "Notes", b: null, c: null, d: null, e: null });
-    for (const n of noteList) summaryRows.push({ a: n, b: null, c: null, d: null, e: null });
+    summaryRows.push(blank());
+    summaryRows.push({ ...blank(), a: "Notes" });
+    for (const n of noteList) summaryRows.push({ ...blank(), a: n });
   }
   const summary: SheetModel = {
     name: "Summary",
     columns: [
-      { header: "Training plan", key: "a", width: 38 },
+      { header: "Training plan", key: "a", width: 44 },
       { header: "Value", key: "b", width: 30 },
-      { header: "", key: "c", width: 18 },
-      { header: "", key: "d", width: 20 },
+      { header: "", key: "c", width: 30 },
+      { header: "", key: "d", width: 50 },
       { header: "", key: "e", width: 18 },
     ],
     rows: summaryRows,
   };
 
-  // Focus
+  // Strengths: every stat at 95%+ (min instances), not just the top 5
+  const strengthRows = plan.strengths.all.length > 0 ? plan.strengths.all : plan.strengths.fallback;
+  const strengths: SheetModel = {
+    name: "Strengths",
+    columns: [
+      { header: "Stat", key: "stat", width: 28 },
+      { header: "Accuracy", key: "acc", width: 11 },
+      { header: "Instances", key: "n", width: 11 },
+      { header: "Qualifies (95%+)", key: "q", width: 16 },
+      { header: "History", key: "hist", width: 44 },
+    ],
+    rows: strengthRows.map((s) => ({
+      stat: s.stat,
+      acc: pct1(s.accuracy),
+      n: s.instances,
+      q: plan.strengths.all.length > 0 ? "Yes" : "No (best available)",
+      hist: s.consistency ?? "",
+    })),
+  };
+
+  // Focus (max FOCUS_MAX) with example instances
+  const exampleText = (i: PlanInstance): SheetCell => {
+    const text = `${i.timeLabel} ${ERROR_TYPE_LABEL[i.type]}: expected ${
+      i.expected ? `${i.expected.team} ${i.expected.player}` : "-"
+    }, coded ${i.coded ? `${i.coded.team} ${i.coded.player}` : "-"}${
+      i.codedStat && i.codedStat !== i.stat ? ` as ${i.codedStat}` : ""
+    }`;
+    return i.videoLink ? { text, hyperlink: i.videoLink } : text;
+  };
   const focus: SheetModel = {
     name: "Focus",
     columns: [
       { header: "#", key: "rank", width: 5 },
-      { header: "Focus", key: "title", width: 50 },
-      { header: "Why", key: "why", width: 60 },
+      { header: "Focus", key: "title", width: 40 },
+      { header: "Accuracy", key: "acc", width: 11 },
+      { header: "Trend", key: "trend", width: 40 },
+      { header: "Error types", key: "why", width: 26 },
       { header: "Suggested practice", key: "drill", width: 60 },
-      { header: "Error type", key: "type", width: 16 },
-      { header: "Flags", key: "flags", width: 28 },
       { header: "Instances", key: "n", width: 11 },
+      { header: "Example 1", key: "ex0", width: 46 },
+      { header: "Example 2", key: "ex1", width: 46 },
+      { header: "Example 3", key: "ex2", width: 46 },
     ],
     rows: plan.focus.map((f) => ({
       rank: f.rank,
       title: f.title,
+      acc: pct1(f.accuracy),
+      trend: f.trendText,
       why: f.why,
       drill: f.drill,
-      type: ERROR_TYPE_LABEL[f.errorType],
-      flags: f.trendKinds.join(", "),
       n: f.instanceKeys.length,
+      ex0: f.examples[0] ? exampleText(f.examples[0]) : null,
+      ex1: f.examples[1] ? exampleText(f.examples[1]) : null,
+      ex2: f.examples[2] ? exampleText(f.examples[2]) : null,
     })),
   };
-
   // Instances
   const link = (text: string, url: string | null): SheetCell =>
     url ? { text, hyperlink: url } : null;
@@ -188,7 +241,7 @@ export function trainingPlanSheets(plan: TrainingPlan): SheetModel[] {
     percentKeys: pointCols.map((c) => c.key),
   };
 
-  return [summary, focus, instances, trends];
+  return [summary, strengths, focus, instances, trends];
 }
 
 export function trainingPlanFileName(plan: TrainingPlan): string {

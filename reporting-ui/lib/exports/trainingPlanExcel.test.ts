@@ -12,7 +12,7 @@ const inst = (o: Partial<Instance> = {}): Instance => {
 const missed = (stat: string): ComparisonRow => ({ status: "missed", master: inst({ stat }), analyst: null, timeDelta: null });
 const exact = (stat: string): ComparisonRow => ({ status: "exact", master: inst({ stat }), analyst: inst({ stat }), timeDelta: 0 });
 
-function makePlan(opts: { withHistory?: boolean; videoUrl?: string | null; stat?: string } = {}): TrainingPlan {
+function makePlan(opts: { withHistory?: boolean; videoUrl?: string | null; stat?: string; byStat?: { stat: string; total: number; exact: number; accuracy: number }[] } = {}): TrainingPlan {
   const stat = opts.stat ?? "Tackles";
   const rows = [...Array.from({ length: 4 }, () => missed(stat)), ...Array.from({ length: 6 }, () => exact(stat))];
   const history: HistoryInput | null = opts.withHistory
@@ -38,7 +38,7 @@ function makePlan(opts: { withHistory?: boolean; videoUrl?: string | null; stat?
         tolerance: 3,
         summary: { masterTotal: 10, analystTotal: 6, exact: 6, wrongStat: 0, wrongPlayer: 0, wrongTeam: 0, missed: 4, extra: 0, accuracy: 0.6, avgTimeDrift: 0 },
         byCategory: [{ category: "Defence", total: 10, exact: 6, accuracy: 0.6 }],
-        byStat: [],
+        byStat: opts.byStat ?? [],
         byTeam: [],
       },
       scopeRows: rows,
@@ -63,10 +63,10 @@ function makePlan(opts: { withHistory?: boolean; videoUrl?: string | null; stat?
 }
 
 describe("trainingPlanSheets", () => {
-  it("has the four sheets in order with the documented columns", () => {
+  it("has the five sheets in order with the documented columns", () => {
     const plan = makePlan({ withHistory: true });
     const sheets = trainingPlanSheets(plan);
-    expect(sheets.map((s) => s.name)).toEqual(["Summary", "Focus", "Instances", "Trends"]);
+    expect(sheets.map((s) => s.name)).toEqual(["Summary", "Strengths", "Focus", "Instances", "Trends"]);
     const byName = Object.fromEntries(sheets.map((s) => [s.name, s]));
     expect(byName.Instances.columns.map((c) => c.header)).toEqual([
       "Type", "Time", "Stat (expected)", "Stat (coded)", "Category", "Expected team", "Expected player", "Coded team", "Coded player",
@@ -74,7 +74,11 @@ describe("trainingPlanSheets", () => {
     ]);
     expect(byName.Instances.rows).toHaveLength(plan.instances.length);
     expect(byName.Focus.rows).toHaveLength(plan.focus.length);
-    expect(byName.Focus.columns.map((c) => c.header)).toEqual(["#", "Focus", "Why", "Suggested practice", "Error type", "Flags", "Instances"]);
+    expect(plan.focus.length).toBeLessThanOrEqual(3);
+    expect(byName.Focus.columns.map((c) => c.header)).toEqual([
+      "#", "Focus", "Accuracy", "Trend", "Error types", "Suggested practice", "Instances", "Example 1", "Example 2", "Example 3",
+    ]);
+    expect(byName.Strengths.columns.map((c) => c.header)).toEqual(["Stat", "Accuracy", "Instances", "Qualifies (95%+)", "History"]);
     const pts = plan.trends.items[0].points.length;
     expect(byName.Trends.columns).toHaveLength(5 + pts);
     expect(byName.Trends.columns[byName.Trends.columns.length - 1].header).toBe("This check");
@@ -88,6 +92,28 @@ describe("trainingPlanSheets", () => {
     expect(bare.rows[0].video).toBeNull();
   });
 
+  it("puts strengths, focus and examples in the new sheets while Instances and Trends keep the full lists", () => {
+    const plan = makePlan({ withHistory: true, byStat: [{ stat: "Kick", total: 20, exact: 20, accuracy: 1 }, { stat: "Tackles", total: 10, exact: 6, accuracy: 0.6 }] });
+    const by = Object.fromEntries(trainingPlanSheets(plan).map((s) => [s.name, s]));
+    expect(by.Strengths.rows).toEqual([{ stat: "Kick", acc: "100.0%", n: 20, q: "Yes", hist: "new strength this check" }]);
+    const a = by.Summary.rows.map((r) => r.a);
+    expect(a).toContain("Strengths (95%+ accuracy)");
+    expect(a).toContain("Key focus areas");
+    expect(a).toContain("Kick");
+    expect(by.Summary.rows.find((r) => r.a === "Summary")!.b).toBe(plan.summary.accuracyLine);
+    expect(by.Focus.rows[0].ex0).toMatchObject({ hyperlink: expect.stringContaining("#t=") });
+    expect(by.Focus.rows[0].ex2).not.toBeNull(); // 4 errors, capped at 3 examples
+    expect(by.Instances.rows).toHaveLength(4);
+    expect(by.Trends.rows).toHaveLength(plan.trends.items.length);
+  });
+
+  it("lists the best stats when nothing reaches 95%", () => {
+    const plan = makePlan({ byStat: [{ stat: "Tackles", total: 10, exact: 6, accuracy: 0.6 }] });
+    const by = Object.fromEntries(trainingPlanSheets(plan).map((s) => [s.name, s]));
+    expect(by.Strengths.rows[0]).toMatchObject({ stat: "Tackles", q: "No (best available)" });
+    expect(by.Summary.rows.some((r) => String(r.a).startsWith("No stats at 95%+ this check"))).toBe(true);
+  });
+
   it("builds a safe file name", () => {
     expect(trainingPlanFileName(makePlan())).toBe("Training plan - Sam - check 9 - 2025-06-02.xlsx");
   });
@@ -99,7 +125,7 @@ describe("workbook round trip", () => {
     const buffer = await buildTrainingPlanWorkbook(plan);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buffer);
-    expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Focus", "Instances", "Trends"]);
+    expect(wb.worksheets.map((w) => w.name)).toEqual(["Summary", "Strengths", "Focus", "Instances", "Trends"]);
     const inst = wb.getWorksheet("Instances")!;
     expect(inst.rowCount).toBe(plan.instances.length + 1); // header + rows
     const statCell = inst.getRow(2).getCell(3).value;

@@ -19,6 +19,7 @@ import {
   ERROR_TYPE_ORDER,
   TRAINING_TREND_CONSTANTS as C,
   buildDefaultMessage,
+  conciseNote,
   type HistoryWindow,
   type PlanContext,
   type PlanScope,
@@ -72,7 +73,6 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
   const [scope, setScope] = useState<PlanScope>("filters");
   const [windowKey, setWindowKey] = useState(`checks:${C.DEFAULT_HISTORY_CHECKS}`);
   const [includeStats, setIncludeStats] = useState(true);
-  const [focusId, setFocusId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState<Record<string, boolean>>({});
   const [printing, setPrinting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
@@ -127,11 +127,6 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
 
   const canSend = canSendTrainingPlan(user?.role);
   const analystName = plan.header.analystName;
-  const focusKeys = useMemo(() => {
-    const f = plan.focus.find((x) => x.id === focusId);
-    return f ? new Set(f.instanceKeys) : null;
-  }, [plan, focusId]);
-
   const onExport = async () => {
     setExportError(null);
     try {
@@ -273,84 +268,70 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
               History could not be loaded: {error}. The plan below uses this check only.
             </div>
           )}
-          {(warnings.length > 0 || plan.notes.length > 0 || plan.trends.notes.length > 0) && (
-            <ul className="list-disc space-y-0.5 pl-5 text-xs text-slate-500">
-              {[...plan.notes, ...plan.trends.notes].map((n, i) => (
-                <li key={`n${i}`}>{n}</li>
-              ))}
-            </ul>
+          {conciseNote(plan) && (
+            <div className="text-xs text-slate-500">{conciseNote(plan)}</div>
           )}
 
-          {/* Header card */}
+          {/* Summary */}
           <section className="rounded-xl border border-slate-200 p-4">
-            <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1">
-              <div>
-                <div className="text-2xl font-bold text-slate-900">{pct(h.overallAccuracy)}</div>
-                <div className="text-xs text-slate-500">Overall accuracy</div>
+            <div className="text-xs text-slate-500">{plan.summary.headline}</div>
+            <div className="mt-1 flex flex-wrap items-baseline gap-x-3">
+              <span className="text-2xl font-bold text-slate-900">{pct(h.overallAccuracy)}</span>
+              <span
+                className={`text-sm font-medium ${
+                  plan.summary.direction === "up"
+                    ? "text-emerald-700"
+                    : plan.summary.direction === "down"
+                      ? "text-red-600"
+                      : "text-slate-700"
+                }`}
+              >
+                {plan.summary.accuracyLine.replace(/^Accuracy [\d.]+%\.\s*/, "")}
+              </span>
+            </div>
+            {(h.underDispute > 0 || h.excludedByDispute > 0) && (
+              <div className="mt-1 text-xs text-slate-500">
+                {h.underDispute > 0 && <>Under dispute: {h.underDispute}. </>}
+                {h.excludedByDispute > 0 && <>Excluded (analyst correct): {h.excludedByDispute}.</>}
               </div>
+            )}
+          </section>
+
+          {/* Strengths */}
+          <section>
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">
+              Strengths (95-100% accuracy)
+            </h3>
+            {plan.strengths.items.length === 0 ? (
               <div className="text-xs text-slate-600">
-                Analyst average {pct(h.analystAvgAccuracy)} ({h.historyChecksUsed} checks) - All
-                analysts {pct(h.allAnalystAvgAccuracy)}
+                No stats at 95%+ this check (min {C.STRENGTH_MIN_INSTANCES} instances)
+                {plan.strengths.fallback.length > 0 && (
+                  <>
+                    . Best:{" "}
+                    {plan.strengths.fallback
+                      .map((s) => `${s.stat} ${pct(s.accuracy)} (${s.instances})`)
+                      .join(", ")}
+                  </>
+                )}
               </div>
-            </div>
-            <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              {ERROR_TYPE_ORDER.map((t) => (
-                <span key={t} className="rounded bg-slate-100 px-2 py-1 font-medium text-slate-700">
-                  {ERROR_TYPE_LABEL[t]}: {h.counts[t]}
-                </span>
-              ))}
-              {h.underDispute > 0 && (
-                <span className="rounded bg-amber-100 px-2 py-1 text-amber-800">
-                  Under dispute: {h.underDispute}
-                </span>
-              )}
-              {h.excludedByDispute > 0 && (
-                <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-800">
-                  Excluded (analyst correct): {h.excludedByDispute}
-                </span>
-              )}
-            </div>
-            {h.categories.length > 0 && (
-              <table className="mt-3 w-full text-xs">
-                <thead>
-                  <tr className="text-left text-slate-500">
-                    <th className="py-1">Category</th>
-                    <th>This check</th>
-                    <th>Analyst avg</th>
-                    <th>All analysts</th>
-                    <th>Delta</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {h.categories.map((c) => (
-                    <tr key={c.category} className="border-t border-slate-100">
-                      <td className="py-1">{c.category}</td>
-                      <td>{pct(c.accuracy)}</td>
-                      <td>{pct(c.analystAvg)}</td>
-                      <td>{pct(c.allAnalystAvg)}</td>
-                      <td
-                        className={
-                          c.deltaVsAnalyst == null
-                            ? ""
-                            : c.deltaVsAnalyst < 0
-                              ? "text-red-600"
-                              : "text-emerald-600"
-                        }
-                      >
-                        {c.deltaVsAnalyst == null
-                          ? "-"
-                          : `${c.deltaVsAnalyst >= 0 ? "+" : ""}${(c.deltaVsAnalyst * 100).toFixed(1)} pts`}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            ) : (
+              <ul className="space-y-1">
+                {plan.strengths.items.map((s) => (
+                  <li key={s.key} className="flex flex-wrap items-center gap-x-3 text-xs">
+                    <span className="font-semibold text-slate-900">{s.stat}</span>
+                    <span className="text-emerald-700">{pct(s.accuracy)}</span>
+                    <span className="text-slate-500">{s.instances} instances</span>
+                    {s.consistency && <span className="text-slate-600">{s.consistency}</span>}
+                    {s.trendPoints && <TrendSparkline points={s.trendPoints} width={80} height={18} />}
+                  </li>
+                ))}
+              </ul>
             )}
           </section>
 
           {/* Focus */}
           <section>
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Focus areas</h3>
+            <h3 className="mb-2 text-sm font-semibold text-slate-800">Key focus areas</h3>
             {plan.focus.length === 0 && (
               <div className="text-xs text-slate-500">No focus areas for this scope.</div>
             )}
@@ -360,139 +341,151 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
                   <div className="font-semibold text-slate-900">
                     {f.rank}. {f.title}
                   </div>
-                  <div className="mt-1 text-xs text-slate-600">{f.why}</div>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 text-xs text-slate-600">
+                    {f.accuracy != null && <span>Accuracy {pct(f.accuracy)}</span>}
+                    {f.trendText && <span>{f.trendText}</span>}
+                    {f.trendPoints && <TrendSparkline points={f.trendPoints} width={80} height={18} />}
+                  </div>
                   <div className="mt-1 text-xs italic text-slate-700">Practice: {f.drill}</div>
-                  <button
-                    onClick={() => setFocusId(focusId === f.id ? null : f.id)}
-                    className="mt-2 text-xs font-semibold text-slate-700 underline"
-                  >
-                    {focusId === f.id ? "Show all instances" : `Show ${f.instanceKeys.length} instances`}
-                  </button>
+                  {f.examples.length > 0 && (
+                    <ul className="mt-2 space-y-0.5 text-xs text-slate-700">
+                      {f.examples.map((i) => (
+                        <li key={i.key} className="flex items-center gap-2">
+                          <span className="tabular-nums">{i.timeLabel}</span>
+                          <span>{ERROR_TYPE_LABEL[i.type]}:</span>
+                          <span>
+                            expected {i.expected ? `${i.expected.team} ${i.expected.player}` : "-"},
+                            coded {i.coded ? `${i.coded.team} ${i.coded.player}` : "-"}
+                            {i.codedStat && i.codedStat !== i.stat ? ` as ${i.codedStat}` : ""}
+                          </span>
+                          {onWatch && (
+                            <button
+                              title="Watch"
+                              aria-label="Watch clip"
+                              onClick={() => {
+                                onWatch(i.startSeconds);
+                                onClose();
+                              }}
+                              className="text-slate-600 hover:text-slate-900"
+                            >
+                              <Play size={12} />
+                            </button>
+                          )}
+                          {i.videoLink && (
+                            <a
+                              href={i.videoLink}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="Open video"
+                              className="text-slate-600 hover:text-slate-900"
+                            >
+                              <ExternalLink size={12} />
+                            </a>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                 </div>
               ))}
             </div>
           </section>
 
-          {/* Trends */}
-          <section>
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Trending stats</h3>
-            {plan.trends.items.length === 0 ? (
-              <div className="text-xs text-slate-500">Nothing flagged.</div>
-            ) : (
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="text-left text-slate-500">
-                    <th className="py-1">{plan.trends.level === "category" ? "Category" : "Stat"}</th>
-                    <th>Why flagged</th>
-                    <th>Trend</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {plan.trends.items.map((t) => (
-                    <tr key={t.key} className="border-t border-slate-100 align-top">
-                      <td className="py-1 pr-2 font-medium">{t.label}</td>
-                      <td className="pr-2">{t.reasons.map((r) => r.text).join("; ")}</td>
-                      <td>
-                        <TrendSparkline points={t.points} />
-                        <div className="text-[10px] text-slate-500">
-                          {t.points.map((p) => (p.counted ? pct(p.rate) : "-")).join(" / ")}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-
-          {/* Instances */}
-          <section>
-            <h3 className="mb-2 text-sm font-semibold text-slate-800">Instances</h3>
-            {plan.instances.length === 0 && (
-              <div className="text-xs text-slate-500">No errors in this scope.</div>
-            )}
-            {ERROR_TYPE_ORDER.map((t) => {
-              const all = plan.instances.filter((i) => i.type === t);
-              const rows = focusKeys ? all.filter((i) => focusKeys.has(i.key)) : all;
-              if (rows.length === 0) return null;
-              const shown = showAll[t] ? rows : rows.slice(0, RENDER_CAP);
-              return (
-                <div key={t} className="mb-3">
-                  <div className="mb-1 text-xs font-semibold text-slate-700">
-                    {ERROR_TYPE_LABEL[t]} ({rows.length})
+          {/* Appendix: full instance list, collapsed, not printed */}
+          <details className="rounded-xl border border-slate-200 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-800">
+              All instances ({plan.instances.length})
+              <span className="ml-2 text-xs font-normal text-slate-500">
+                {ERROR_TYPE_ORDER.filter((t) => h.counts[t] > 0)
+                  .map((t) => `${ERROR_TYPE_LABEL[t]} ${h.counts[t]}`)
+                  .join(", ")}
+              </span>
+            </summary>
+            <div className="mt-3">
+              {plan.instances.length === 0 && (
+                <div className="text-xs text-slate-500">No errors in this scope.</div>
+              )}
+              {ERROR_TYPE_ORDER.map((t) => {
+                const rows = plan.instances.filter((i) => i.type === t);
+                if (rows.length === 0) return null;
+                const shown = showAll[t] ? rows : rows.slice(0, RENDER_CAP);
+                return (
+                  <div key={t} className="mb-3">
+                    <div className="mb-1 text-xs font-semibold text-slate-700">
+                      {ERROR_TYPE_LABEL[t]} ({rows.length})
+                    </div>
+                    <table className="w-full text-xs">
+                      <tbody>
+                        {shown.map((i) => (
+                          <tr key={i.key} className="border-t border-slate-100 align-top">
+                            <td className="py-1 pr-2 tabular-nums">{i.timeLabel}</td>
+                            <td className="pr-2">
+                              {i.stat}
+                              {i.codedStat && i.codedStat !== i.stat && (
+                                <span className="text-slate-500"> (coded {i.codedStat})</span>
+                              )}
+                              {i.alsoWrongPlayer && (
+                                <span className="ml-1 rounded bg-slate-100 px-1">+ wrong player</span>
+                              )}
+                              {i.alsoWrongTeam && (
+                                <span className="ml-1 rounded bg-slate-100 px-1">+ wrong team</span>
+                              )}
+                              {i.dispute.state === "open" && (
+                                <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">
+                                  Under dispute
+                                </span>
+                              )}
+                            </td>
+                            <td className="pr-2">
+                              {i.expected ? `${i.expected.team} ${i.expected.player}` : "-"}
+                            </td>
+                            <td className="pr-2">
+                              {i.coded ? `${i.coded.team} ${i.coded.player}` : "-"}
+                            </td>
+                            <td className="whitespace-nowrap">
+                              {onWatch && (
+                                <button
+                                  title="Watch"
+                                  aria-label="Watch clip"
+                                  onClick={() => {
+                                    onWatch(i.startSeconds);
+                                    onClose();
+                                  }}
+                                  className="mr-1 text-slate-600 hover:text-slate-900"
+                                >
+                                  <Play size={12} />
+                                </button>
+                              )}
+                              {i.videoLink && (
+                                <a
+                                  href={i.videoLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title="Open video"
+                                  className="text-slate-600 hover:text-slate-900"
+                                >
+                                  <ExternalLink size={12} />
+                                </a>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {rows.length > RENDER_CAP && !showAll[t] && (
+                      <button
+                        onClick={() => setShowAll((s) => ({ ...s, [t]: true }))}
+                        className="mt-1 text-xs font-semibold underline"
+                      >
+                        Show all {rows.length}
+                      </button>
+                    )}
                   </div>
-                  <table className="w-full text-xs">
-                    <tbody>
-                      {shown.map((i) => (
-                        <tr key={i.key} className="border-t border-slate-100 align-top">
-                          <td className="py-1 pr-2 tabular-nums">{i.timeLabel}</td>
-                          <td className="pr-2">
-                            {i.stat}
-                            {i.codedStat && i.codedStat !== i.stat && (
-                              <span className="text-slate-500"> (coded {i.codedStat})</span>
-                            )}
-                            {i.alsoWrongPlayer && (
-                              <span className="ml-1 rounded bg-slate-100 px-1">+ wrong player</span>
-                            )}
-                            {i.alsoWrongTeam && (
-                              <span className="ml-1 rounded bg-slate-100 px-1">+ wrong team</span>
-                            )}
-                            {i.dispute.state === "open" && (
-                              <span className="ml-1 rounded bg-amber-100 px-1 text-amber-800">
-                                Under dispute
-                              </span>
-                            )}
-                          </td>
-                          <td className="pr-2">
-                            {i.expected ? `${i.expected.team} ${i.expected.player}` : "-"}
-                          </td>
-                          <td className="pr-2">
-                            {i.coded ? `${i.coded.team} ${i.coded.player}` : "-"}
-                          </td>
-                          <td className="whitespace-nowrap">
-                            {onWatch && (
-                              <button
-                                title="Watch"
-                                aria-label="Watch clip"
-                                onClick={() => {
-                                  onWatch(i.startSeconds);
-                                  onClose();
-                                }}
-                                className="mr-1 text-slate-600 hover:text-slate-900"
-                              >
-                                <Play size={12} />
-                              </button>
-                            )}
-                            {i.videoLink && (
-                              <a
-                                href={i.videoLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                title="Open video"
-                                className="text-slate-600 hover:text-slate-900"
-                              >
-                                <ExternalLink size={12} />
-                              </a>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {rows.length > RENDER_CAP && !showAll[t] && (
-                    <button
-                      onClick={() => setShowAll((s) => ({ ...s, [t]: true }))}
-                      className="mt-1 text-xs font-semibold underline"
-                    >
-                      Show all {rows.length}
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-          </section>
+                );
+              })}
+            </div>
+          </details>
         </div>
-
         {/* Footer */}
         <div className="no-print border-t border-slate-200 px-5 py-3">
           {exportError && <div className="mb-2 text-xs text-red-600">{exportError}</div>}

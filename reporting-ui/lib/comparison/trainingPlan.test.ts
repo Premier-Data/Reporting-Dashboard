@@ -95,9 +95,21 @@ function result(rows: ComparisonRow[]): ComparisonResult {
       avgTimeDrift: 0,
     },
     byCategory: [{ category: "Defence", total: masterTotal, exact, accuracy: masterTotal ? exact / masterTotal : 0 }],
-    byStat: [],
+    byStat: byStatOf(rows),
     byTeam: [],
   };
+}
+/** Per-stat accuracy as the comparison page defines it: exact / master instances. */
+function byStatOf(rows: ComparisonRow[]) {
+  const m = new Map<string, { total: number; exact: number }>();
+  for (const r of rows) {
+    if (!r.master) continue;
+    const e = m.get(r.master.stat) ?? { total: 0, exact: 0 };
+    e.total += 1;
+    if (r.status === "exact") e.exact += 1;
+    m.set(r.master.stat, e);
+  }
+  return Array.from(m, ([stat, v]) => ({ stat, total: v.total, exact: v.exact, accuracy: v.exact / v.total }));
 }
 const ctx = (over: Partial<PlanContext> = {}): PlanContext => ({
   analystName: "Sam",
@@ -354,15 +366,42 @@ describe("trends", () => {
     expect(t2.items[0].points[0].counted).toBe(false);
     expect(t2.items[0].points.map((p) => p.isCurrent)).toEqual([false, false, false, true]);
   });
-  it("flags worsening at a delta of exactly 0.10 (floating point safe) but not 0.09", () => {
-    expect(0.3 - 0.2).toBeLessThan(C.WORSENING_DELTA); // the raw subtraction would miss the boundary
-    const earlier = [hc(1, 1, { tackles: [10, 2] }), hc(2, 2, { tackles: [10, 2] })];
-    const recent = [hc(3, 3, { tackles: [10, 3] }), hc(4, 4, { tackles: [10, 3] })];
-    expect(kinds(trends(statRows("Tackles", 10, 3), [...earlier, ...recent]), "tackles")).toContain("worsening");
+  it("flags worsening at a delta of exactly 0.15 (floating point safe) but not 0.14", () => {
+    expect(0.35 - 0.2).toBeLessThan(C.WORSENING_DELTA); // the raw subtraction would miss the boundary
+    const earlier = [hc(1, 1, { tackles: [100, 20] }), hc(2, 2, { tackles: [100, 20] })];
+    const recent = [hc(3, 3, { tackles: [100, 35] }), hc(4, 4, { tackles: [100, 35] })];
+    expect(kinds(trends(statRows("Tackles", 100, 35), [...earlier, ...recent]), "tackles")).toContain("worsening");
 
-    const e9 = [hc(1, 1, { tackles: [100, 20] }), hc(2, 2, { tackles: [100, 20] })];
-    const r9 = [hc(3, 3, { tackles: [100, 29] }), hc(4, 4, { tackles: [100, 29] })];
-    expect(kinds(trends(statRows("Tackles", 100, 29), [...e9, ...r9]), "tackles")).not.toContain("worsening");
+    const r9 = [hc(3, 3, { tackles: [100, 34] }), hc(4, 4, { tackles: [100, 34] })];
+    expect(kinds(trends(statRows("Tackles", 100, 34), [...earlier, ...r9]), "tackles")).not.toContain("worsening");
+  });
+  it("does not flag worsening when the recent rate is below the floor", () => {
+    const earlier = [hc(1, 1, { tackles: [100, 0] }), hc(2, 2, { tackles: [100, 0] })];
+    const recent = [hc(3, 3, { tackles: [100, 15] }), hc(4, 4, { tackles: [100, 15] })];
+    // the delta is exactly 15 points but 15% is under WORSENING_MIN_RECENT_RATE
+    expect(kinds(trends(statRows("Tackles", 100, 15), [...earlier, ...recent]), "tackles")).not.toContain("worsening");
+  });
+  it("tightened persistent rule flags fewer stats on a noisy fixture but still flags a clearly persistent stat", () => {
+    // 4 stats at a steady 25% (old rule: flagged), 1 at 35% in 3 of 5 checks (old: flagged), 1 at a steady 40%, 10 clean stats.
+    const keys = ["a1", "a2", "a3", "a4", "c1", "b1", ...Array.from({ length: 10 }, (_, i) => `z${i}`)];
+    const rowsFor = (cur: Record<string, number>) => keys.flatMap((k) => statRows(k, 20, cur[k] ?? 0));
+    const rates = (n: number): Record<string, [number, number]> =>
+      Object.fromEntries(keys.map((k) => [k, [20, k.startsWith("a") ? 5 : k === "b1" ? 8 : k === "c1" ? (n < 3 ? 7 : 2) : 0] as [number, number]]));
+    const history = [1, 2, 3, 4].map((n) => hc(n, n, rates(n)));
+    const current = { a1: 5, a2: 5, a3: 5, a4: 5, b1: 8, c1: 7 };
+    const flagged = trends(rowsFor(current), history).items.filter((i) => i.reasons.some((r) => r.kind === "persistent")).map((i) => i.key);
+    expect(flagged).toEqual(["b1"]);
+  });
+  it("persistent also needs the pooled rate at or above the analyst 90th-percentile stat rate and 3+ errors this check", () => {
+    const rates: Record<string, number> = { s1: 12, s2: 10, s3: 8, s4: 7, s5: 6 }; // 60/50/40/35/30% of 20; 90th percentile 60%
+    const rows = Object.entries(rates).flatMap(([k, e]) => statRows(k, 20, e));
+    const history = [1, 2, 3].map((n) => hc(n, n, Object.fromEntries(Object.entries(rates).map(([k, e]) => [k, [20, e] as [number, number]]))));
+    const t = trends(rows, history);
+    const flagged = t.items.filter((i) => i.reasons.some((r) => r.kind === "persistent")).map((i) => i.key).sort();
+    expect(flagged).toEqual(["s1"]);
+    // 2 errors this check is below PERSISTENT_MIN_CURRENT_ERRORS even at a persistent 40%+ rate
+    const few = trends(statRows("Tackles", 5, 2), [1, 2, 3].map((n) => hc(n, n, { tackles: [5, 2] })));
+    expect(kinds(few, "tackles")).not.toContain("persistent");
   });
   it("does not flag worsening with too few earlier points or pooled events", () => {
     const h = [hc(1, 1, { tackles: [10, 0] }), hc(2, 2, { tackles: [10, 5] }), hc(3, 3, { tackles: [10, 5] })];
@@ -392,7 +431,7 @@ describe("trends", () => {
     const item = t.items[0];
     expect(item.reasons.map((r) => r.kind)).toEqual(expect.arrayContaining(["persistent", "top_this_check"]));
     expect(item.points.map((p) => p.checkId)).toEqual([1, 2, null]);
-    expect(item.reasons[0].text).toContain(`${Math.round(C.ERROR_RATE_THRESHOLD * 100)}%`);
+    expect(item.reasons[0].text).toContain(`${Math.round(C.TREND_PERSISTENT_RATE * 100)}%`);
   });
   it("keeps persistent/worsening flags and series identical under a scope filter", () => {
     const rows = [...statRows("Tackles", 10, 4), ...statRows("Goal", 10, 1)];
@@ -455,7 +494,7 @@ describe("degradation", () => {
 });
 
 describe("focus", () => {
-  it("links stat items to every scope instance of the stat and caps at 5", () => {
+  it("links stat items to every scope instance of the stat and caps at 3", () => {
     const rows = [
       ...statRows("Tackles", 10, 5, "wrong_player"),
       ...statRows("Goal", 10, 4),
@@ -467,18 +506,54 @@ describe("focus", () => {
     ];
     const hs = (n: number) => hc(n, n, { tackles: [10, 4], goal: [10, 4], mark: [10, 4], kick: [10, 4], hand: [10, 4], run: [10, 4], block: [10, 4] });
     const p = plan(rows, { history: hist([hs(1), hs(2), hs(3)]) });
-    expect(p.focus.length).toBeLessThanOrEqual(C.MAX_FOCUS_ITEMS);
+    expect(C.FOCUS_MAX).toBe(3);
+    expect(p.focus).toHaveLength(3);
     const tackles = p.focus.find((f) => f.id === "stat:tackles")!;
     expect(tackles.kind).toBe("stat");
     expect(tackles.instanceKeys).toHaveLength(5);
     expect(tackles.errorType).toBe("wrong_player");
-    expect(tackles.title).toContain("Tackles attribution");
-    expect(tackles.title).toContain("3 of last 3 checks");
+    expect(tackles.title).toBe("Tackles: attribution (5 wrong-player)");
+    expect(tackles.accuracy).toBeCloseTo(0.5);
+    expect(tackles.trendText).toContain("Persistent");
+    expect(tackles.trendPoints).toHaveLength(4); // 3 history + this check
     const keys = new Set(p.instances.map((i) => i.key));
     for (const f of p.focus) for (const k of f.instanceKeys) expect(keys.has(k)).toBe(true);
-    expect(p.focus.map((f) => f.rank)).toEqual(p.focus.map((_, i) => i + 1));
+    expect(p.focus.map((f) => f.rank)).toEqual([1, 2, 3]);
   });
-  it("scores priority and orders descending", () => {
+  it("merges one stat's error types into a single block", () => {
+    const rows = [
+      ...statRows("Touch", 12, 4, "extra"),
+      ...statRows("Touch", 12, 2, "missed"),
+      ...statRows("Mark", 12, 3),
+    ];
+    const p = plan(rows);
+    const touch = p.focus.filter((f) => f.label === "Touch");
+    expect(touch).toHaveLength(1);
+    expect(touch[0].title).toBe("Touch: over-calling (4 extra)");
+    expect(touch[0].why).toBe("4 extra, 2 missed");
+    expect(touch[0].errorTypes).toEqual([{ type: "extra", count: 4 }, { type: "missed", count: 2 }]);
+    expect(touch[0].instanceKeys).toHaveLength(6);
+    expect(touch[0].trendText).toBe("No history to compare");
+  });
+  it("picks at most 3 representative examples: dominant type first, spread across the game", () => {
+    const rows = [...statRows("Touch", 20, 9, "missed"), ...statRows("Touch", 20, 2, "extra")];
+    const f = plan(rows).focus.find((x) => x.label === "Touch")!;
+    expect(f.examples).toHaveLength(C.EXAMPLES_MAX);
+    expect(f.examples.every((e) => e.type === "missed")).toBe(true);
+    const missedTimes = plan(rows).instances.filter((i) => i.type === "missed").map((i) => i.timeSeconds).sort((a, b) => a - b);
+    const t = f.examples.map((e) => e.timeSeconds);
+    expect(t).toEqual([...t].sort((a, b) => a - b));
+    expect(t[0]).toBeGreaterThan(missedTimes[0]);
+    expect(t[2]).toBeLessThan(missedTimes[missedTimes.length - 1]);
+    expect(new Set(t).size).toBe(3);
+    // fewer than 3 of the dominant type: other types fill the remaining slots
+    const small = plan([...statRows("Touch", 20, 2, "missed"), ...statRows("Touch", 20, 2, "extra")]).focus.find((x) => x.label === "Touch")!;
+    expect(small.examples).toHaveLength(3);
+    expect(small.examples.filter((e) => e.type === "missed")).toHaveLength(2);
+    // never more than the instances available
+    const one = plan([...statRows("A", 5, 1)]).focus;
+    expect(one).toHaveLength(0); // below FOCUS_TYPE_MIN_ERRORS, no stat block
+  });  it("scores priority and orders descending", () => {
     const rows = [...statRows("Tackles", 10, 5), ...statRows("Goal", 10, 4)];
     const hs = (n: number) => hc(n, n, { tackles: [10, 4], goal: [10, 0] });
     const p = plan(rows, { history: hist([hs(1), hs(2)]) });
@@ -508,18 +583,11 @@ describe("focus", () => {
     const p = plan(rows, { history: hist([h(1), h(2)]) });
     expect(p.focus.some((f) => f.id === "stat:x")).toBe(true);
     expect(p.focus.some((f) => f.id === "type:wrong_stat")).toBe(false); // 7/10 >= 0.7 skipped
-    const rows2 = [...statRows("X", 10, 6, "wrong_stat"), ...statRows("Y", 10, 4, "wrong_stat")];
-    const h2 = (n: number) => hc(n, n, { x: [10, 6], y: [10, 0] });
+    // 6 in trending X, the other 4 spread one per stat (too few for their own block)
+    const rows2 = [...statRows("X", 10, 6, "wrong_stat"), ...statRows("Y1", 10, 1, "wrong_stat"), ...statRows("Y2", 10, 1, "wrong_stat"), ...statRows("Y3", 10, 1, "wrong_stat"), ...statRows("Y4", 10, 1, "wrong_stat")];
+    const h2 = (n: number) => hc(n, n, { x: [10, 6], y1: [10, 0] });
     const p2 = plan(rows2, { history: hist([h2(1), h2(2)]) });
     expect(p2.focus.some((f) => f.id === "type:wrong_stat")).toBe(true); // 6/10 < 0.7 kept
-  });
-  it("mentions wrong-stat rows that also had the wrong player", () => {
-    const rows = [
-      ...statRows("Tackles", 3, 3, "wrong_player"),
-      row("wrong_stat", { stat: "Tackles" }, { stat: "Hit Out" }, { alsoWrongPlayer: true }),
-    ];
-    const p = plan(rows);
-    expect(p.focus.find((f) => f.id === "type:wrong_player")!.why).toContain("+1 wrong-stat rows also had the wrong player");
   });
   it("drillFor picks the most specific rule and falls back to the default", () => {
     expect(drillFor("Tackles", null, "missed")).toMatch(/second pass/);
@@ -578,16 +646,92 @@ describe("selectHistoryChecks", () => {
 });
 
 describe("default message", () => {
-  it("lists accuracy, counts, top focus titles, attachment note and link, within the cap", () => {
-    const rows = [...statRows("Tackles", 10, 5), ...statRows("Goal", 10, 4)];
+  it("is short: summary line, strengths, numbered focus, workbook note and link, within the cap", () => {
+    const rows = [...statRows("Tackles", 10, 5), ...statRows("Goal", 10, 4), ...statRows("Kick", 40, 1)];
     const p = plan(rows, { history: hist([hc(1, 1, { tackles: [10, 4], goal: [10, 4] }), hc(2, 2, { tackles: [10, 4], goal: [10, 4] })]) });
     const msg = buildDefaultMessage(p, { senderName: "Boss", reviewLink: "https://a/b?check=5" });
-    expect(msg).toContain("Overall accuracy");
-    expect(msg).toContain("Missed 9");
-    expect(msg).toContain(`1. ${p.focus[0].title}`);
-    expect(msg).toContain("Full plan attached as Excel");
+    expect(msg).toContain(p.summary.accuracyLine);
+    expect(msg).toContain("Strengths: Kick 98%");
+    expect(msg).toContain(`Focus: 1) ${p.focus[0].title} 2) ${p.focus[1].title}`);
+    expect(msg).toContain("Full details in the attached workbook.");
     expect(msg).toContain("https://a/b?check=5");
-    expect(msg).not.toContain(`${C.MESSAGE_TOP_FOCUS + 1}. `);
-    expect(msg.length).toBeLessThanOrEqual(4000);
+    expect(msg).not.toContain("4) ");
+    expect(msg.split("\n").length).toBeLessThanOrEqual(10);
+    expect(msg.length).toBeLessThan(600);
+  });
+  it("omits Strengths and Focus lines when there are none", () => {
+    const msg = buildDefaultMessage(plan([row("exact", {}, {})]), { senderName: null, reviewLink: null });
+    expect(msg).not.toContain("Strengths:");
+    expect(msg).not.toContain("Focus:");
+  });
+});
+
+describe("strengths", () => {
+  const strengths = (rows: ComparisonRow[], h: HistoryInput | null = null) => plan(rows, { history: h }).strengths;
+  it("includes stats at exactly 95% and 100% and excludes 90%", () => {
+    const s = strengths([...statRows("Kick", 20, 1), ...statRows("Mark", 20, 0), ...statRows("Tackle", 20, 2)]);
+    expect(s.all.map((x) => x.stat).sort()).toEqual(["Kick", "Mark"]);
+    expect(s.items.find((x) => x.stat === "Kick")!.accuracy).toBeCloseTo(0.95);
+    expect(s.fallback).toEqual([]);
+  });
+  it("needs at least 10 master instances", () => {
+    const s = strengths([...statRows("Few", 9, 0), ...statRows("Enough", 10, 0)]);
+    expect(s.items.map((x) => x.stat)).toEqual(["Enough"]);
+    expect(s.items[0].instances).toBe(10);
+  });
+  it("caps at 5 and sorts by instances desc, then accuracy desc, then name", () => {
+    const rows = [
+      ...statRows("B", 20, 1), // 95%
+      ...statRows("F", 20, 0), // 100%
+      ...statRows("D", 10, 0),
+      ...statRows("C", 10, 0),
+      ...statRows("E", 15, 0),
+      ...statRows("G", 11, 0),
+      ...statRows("H", 12, 0),
+    ];
+    const s = strengths(rows);
+    expect(s.all).toHaveLength(7);
+    expect(s.items.map((x) => x.stat)).toEqual(["F", "B", "E", "H", "G"]);
+    expect(C.STRENGTH_MAX).toBe(5);
+    const tie = strengths([...statRows("D", 10, 0), ...statRows("C", 10, 0)]);
+    expect(tie.items.map((x) => x.stat)).toEqual(["C", "D"]);
+  });
+  it("describes consistency from history, or says it is new", () => {
+    const rows = [...statRows("Kick", 20, 0), ...statRows("Mark", 20, 0), ...statRows("Hit", 20, 0)];
+    const h = hist([
+      hc(1, 1, { kick: [20, 0], mark: [20, 4], hit: [20, 0] }),
+      hc(2, 2, { kick: [20, 1], mark: [20, 4], hit: [20, 3] }),
+      hc(3, 3, { kick: [20, 0], mark: [20, 4], hit: [20, 3] }),
+    ]);
+    const by = Object.fromEntries(strengths(rows, h).items.map((x) => [x.stat, x]));
+    expect(by.Kick.consistency).toBe("consistently 95%+ in 3 of last 3 checks");
+    expect(by.Mark.consistency).toBe("new strength this check");
+    expect(by.Hit.consistency).toBe("95%+ in 1 of last 3 checks");
+    expect(by.Kick.trendPoints).toHaveLength(4);
+    expect(strengths(rows, null).items.every((x) => x.consistency === null && x.trendPoints === null)).toBe(true);
+  });
+  it("falls back to the best 2 stats when none reaches 95%", () => {
+    const s = strengths([...statRows("A", 20, 3), ...statRows("B", 20, 2), ...statRows("C", 20, 4), ...statRows("Tiny", 5, 0)]);
+    expect(s.items).toEqual([]);
+    expect(s.fallback.map((x) => x.stat)).toEqual(["B", "A"]);
+  });
+});
+
+describe("summary", () => {
+  const h = (acc: number[]) => hist(acc.map((a, i) => hc(i + 1, i + 1, null, { accuracy: a })));
+  const sum = (rows: ComparisonRow[], acc: number[]) => plan(rows, { history: h(acc) }).summary;
+  it("says up / down / in line against the analyst's recent average", () => {
+    const rows = [...statRows("A", 100, 10)]; // 90%
+    expect(sum(rows, [0.881, 0.881]).accuracyLine).toBe("Accuracy 90.0%. Up 1.9 pts on your last 2 checks.");
+    expect(sum(rows, [0.919, 0.919]).accuracyLine).toBe("Accuracy 90.0%. Down 1.9 pts on your last 2 checks.");
+    expect(sum(rows, [0.9, 0.9]).accuracyLine).toBe("Accuracy 90.0%. In line with your last 2 checks.");
+    expect(sum(rows, [0.9, 0.9]).direction).toBe("flat");
+  });
+  it("handles no history and appends the all-analyst average", () => {
+    const rows = [...statRows("A", 100, 10)];
+    expect(plan(rows).summary.accuracyLine).toBe("Accuracy 90.0%. No earlier checks to compare.");
+    const withAll = plan(rows, { history: { ...h([0.88]), allAnalystAverage: { accuracy: 0.85, byCategory: {} } } });
+    expect(withAll.summary.accuracyLine).toContain("All analysts average 85.0%.");
+    expect(withAll.summary.headline).toContain("Sam");
   });
 });
