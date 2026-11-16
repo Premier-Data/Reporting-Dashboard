@@ -5,7 +5,7 @@ import Link from "next/link";
 
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
-import { isPracticeCompetition } from "@/lib/analytics/competitionNames";
+import { isExcludedCompetition } from "@/lib/analytics/competitionNames";
 import { THEME } from "@/lib/theme";
 import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
 import TeamsDashboard from "@/components/competitions/TeamsDashboard";
@@ -97,11 +97,12 @@ export default function CompetitionsPage() {
                 });
 
                 // Season/week derived from each fixture's Date (unified rule).
-                // Practice matches are excluded from this page entirely (both
-                // the Dashboard tallies and Competition details).
+                // Practice and listed one-off/test competitions are excluded
+                // from this page entirely (all tabs). Their teams drop out too
+                // unless they also play in a competition that is kept.
                 setGames(
                     mapFixtureWeekTT(data).filter(
-                        (g) => !isPracticeCompetition(g.Competition)
+                        (g) => !isExcludedCompetition(g.Competition)
                     )
                 );
             } catch (e) {

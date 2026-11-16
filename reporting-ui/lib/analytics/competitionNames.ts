@@ -55,6 +55,29 @@ export function isPracticeCompetition(name: string | null | undefined): boolean 
   return /\bpracti[cs]e\b/i.test(collapseSpaces(name));
 }
 
+/**
+ * Competitions not counted on the Competitions page (test, exhibition and
+ * one-off games). Matched year-insensitively by canonical name, so
+ * "Influencer Games 2024" and "VAFA C Section 1998" are covered too.
+ */
+export const EXCLUDED_COMPETITIONS: readonly string[] = [
+  "Grand Finals",
+  "Influencer Games",
+  "Intra",
+  "NMFC Academy",
+  "Perth FL North vs South Colts Clash",
+  "Sandringham Dragons",
+  "SportVot Test",
+  "Vafa C Section",
+];
+
+const EXCLUDED_KEYS = new Set(EXCLUDED_COMPETITIONS.map((n) => canonicalCompetition(n)));
+
+/** True for Practice competitions and the EXCLUDED_COMPETITIONS list. */
+export function isExcludedCompetition(name: string | null | undefined): boolean {
+  return isPracticeCompetition(name) || EXCLUDED_KEYS.has(canonicalCompetition(name));
+}
+
 /** Grouping key for a team: case-insensitive, whitespace collapsed. */
 export function canonicalTeam(name: string | null | undefined): string {
   return stripTeamYear(name).toLowerCase();

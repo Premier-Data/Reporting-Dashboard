@@ -360,7 +360,9 @@ export default function CompetitionDashboard({
         League and TIO NTFL Men Premier League count as one). Numbers that are part of a name,
         such as Under 19s or Division 1, are kept. Teams are matched ignoring case and spacing.
         Seasons run from the Wednesday on or before 1 October. Competitions with
-        &quot;Practice&quot; in the name are not counted. In the season table, Active = New +
+        &quot;Practice&quot; in the name, and test or one-off competitions (Grand Finals, Influencer
+        Games, Intra, NMFC Academy, Perth FL North vs South Colts Clash, Sandringham Dragons,
+        SportVot Test, VAFA C Section), are not counted. In the season table, Active = New +
         Returning (an asterisk marks returning counts that include some back after a gap), and
         Running total = previous running total + New.
       </p>

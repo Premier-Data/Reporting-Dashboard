@@ -2,9 +2,32 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalCompetition,
   canonicalTeam,
+  isExcludedCompetition,
   isPracticeCompetition,
   stripCompetitionYear,
 } from "./competitionNames";
+
+describe("isExcludedCompetition", () => {
+  it.each([
+    ["Grand Finals", true],
+    ["Influencer Games 2024", true],
+    ["Influencer Games", true],
+    ["Intra 2025", true],
+    ["NMFC Academy", true],
+    ["Perth FL North vs South Colts Clash", true],
+    ["Sandringham Dragons", true],
+    ["SportVot Test 2025", true],
+    ["VAFA C Section 1998", true],
+    ["vafa c section", true],
+    ["NGA Practice", true],
+    ["Intra Club League", false],
+    ["Sandringham Dragons Girls", false],
+    ["VAFA Prem C", false],
+    ["EFNL Premier Division 2023", false],
+  ])("%s -> %s", (name, expected) => {
+    expect(isExcludedCompetition(name)).toBe(expected);
+  });
+});
 import { buildCompetitionSummary } from "./competitionSummary";
 
 describe("isPracticeCompetition", () => {

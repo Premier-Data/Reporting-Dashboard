@@ -287,8 +287,10 @@ export default function TeamsDashboard({
       <p className="text-xs text-slate-500">
         Teams are matched ignoring case, extra spaces and a year at the end of the name (for
         example Doncaster and Doncaster 2022 count as one team). A game counts once for a team,
-        whether it played home or away. Competitions with &quot;Practice&quot; in the name are
-        not counted. Competitions per team merge names that differ only by case, spacing or a
+        whether it played home or away. Competitions with &quot;Practice&quot; in the name, and test
+        or one-off competitions (Grand Finals, Influencer Games, Intra, NMFC Academy, Perth FL
+        North vs South Colts Clash, Sandringham Dragons, SportVot Test, VAFA C Section), are not
+        counted; teams that only played in those competitions are not listed. Competitions per team merge names that differ only by case, spacing or a
         season in the name; hover the Competitions number to see them. In the season table,
         Active = New + Returning, and Running total = previous running total + New.
       </p>
