@@ -63,6 +63,10 @@ export type TeamEntry = {
   /** Distinct canonical competitions the team played in. */
   competitions: number;
   competitionLabels: string[];
+  /** Label of the competition the team played most games in ('' if none). Tie: most recent game, then A-Z. */
+  primaryCompetition: string;
+  /** Every competition the team played in with its game count, most games first. */
+  competitionsWithGames: { label: string; games: number }[];
   firstDate: string | null;
   lastDate: string | null;
 };
@@ -76,7 +80,15 @@ export type CompetitionSummary = {
   teams: TeamEntry[]; // label A-Z
 };
 
-export type SummaryOptions = { onlyAllocated?: boolean };
+export type SummaryOptions = {
+  onlyAllocated?: boolean;
+  /**
+   * Canonical team keys (see canonicalTeam) removed from every team count and
+   * the teams list. Their games still count towards competitions, game totals
+   * and the opponent's numbers.
+   */
+  excludedTeamKeys?: ReadonlySet<string> | readonly string[];
+};
 
 const hasText = (v: unknown) => String(v ?? "").trim() !== "";
 
@@ -91,6 +103,14 @@ function seasonOfRow(r: SummaryRow): number | null {
 function dateOf(r: SummaryRow): string | null {
   const m = /^(\d{4}-\d{2}-\d{2})/.exec(String(r.Date ?? ""));
   return m ? m[1] : null;
+}
+
+/** Most recent date first; a missing date sorts last. */
+function compareLastDesc(a: string | null, b: string | null): number {
+  if (a === b) return 0;
+  if (a == null) return 1;
+  if (b == null) return -1;
+  return a < b ? 1 : -1;
 }
 
 type Acc = {
@@ -108,6 +128,7 @@ type TeamAcc = {
   raws: Set<string>;
   seasons: Set<number>;
   comps: Set<string>;
+  compStats: Map<string, { games: number; last: string | null }>;
   first: string | null;
   last: string | null;
   games: number;
@@ -120,6 +141,10 @@ export function buildCompetitionSummary(
   opts: SummaryOptions = {}
 ): CompetitionSummary {
   const onlyAllocated = opts.onlyAllocated ?? false;
+  const excludedTeams: ReadonlySet<string> =
+    opts.excludedTeamKeys instanceof Set
+      ? opts.excludedTeamKeys
+      : new Set(opts.excludedTeamKeys ?? []);
   const allTeams = new Set<string>();
   const comps = new Map<string, Acc>();
   const teamAccs = new Map<string, TeamAcc>();
@@ -137,7 +162,7 @@ export function buildCompetitionSummary(
     const season = seasonOfRow(r);
     const key = canonicalCompetition(r.Competition);
     const teamKeys = [canonicalTeam(r.home_team), canonicalTeam(r.away_team)].filter(
-      (t) => t !== ""
+      (t) => t !== "" && !excludedTeams.has(t)
     );
     teamKeys.forEach((t) => allTeams.add(t));
 
@@ -149,7 +174,7 @@ export function buildCompetitionSummary(
     const countedThisGame = new Set<string>();
     for (const [raw, side] of sides) {
       const tk = canonicalTeam(raw);
-      if (tk === "") continue;
+      if (tk === "" || excludedTeams.has(tk)) continue;
       let ta = teamAccs.get(tk);
       if (!ta) {
         teamAccs.set(
@@ -159,6 +184,7 @@ export function buildCompetitionSummary(
             raws: new Set(),
             seasons: new Set(),
             comps: new Set(),
+            compStats: new Map(),
             first: null,
             last: null,
             games: 0,
@@ -176,7 +202,13 @@ export function buildCompetitionSummary(
         countedThisGame.add(tk);
         ta.games++;
         if (season != null) ta.seasons.add(season);
-        if (key !== "") ta.comps.add(key);
+        if (key !== "") {
+          ta.comps.add(key);
+          const cs = ta.compStats.get(key) ?? { games: 0, last: null };
+          cs.games++;
+          if (date && (cs.last == null || date > cs.last)) cs.last = date;
+          ta.compStats.set(key, cs);
+        }
         if (date) {
           if (ta.first == null || date < ta.first) ta.first = date;
           if (ta.last == null || date > ta.last) ta.last = date;
@@ -300,7 +332,16 @@ export function buildCompetitionSummary(
   });
 
   const teams: TeamEntry[] = [...teamAccs.entries()]
-    .map(([key, t]) => ({
+    .map(([key, t]) => {
+      const ranked = [...t.compStats.entries()]
+        .map(([k, s]) => ({ label: compLabel.get(k)!, games: s.games, last: s.last }))
+        .sort(
+          (a, b) =>
+            b.games - a.games ||
+            compareLastDesc(a.last, b.last) ||
+            a.label.localeCompare(b.label)
+        );
+      return {
       key,
       label: [...t.labels.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0],
       rawNames: [...t.raws].sort((a, b) => a.localeCompare(b)),
@@ -311,8 +352,11 @@ export function buildCompetitionSummary(
       competitions: t.comps.size,
       competitionLabels: [...t.comps].map((k) => compLabel.get(k)!).sort((a, b) => a.localeCompare(b)),
       firstDate: t.first,
+      primaryCompetition: ranked.length > 0 ? ranked[0].label : "",
+      competitionsWithGames: ranked.map(({ label, games }) => ({ label, games })),
       lastDate: t.last,
-    }))
+      };
+    })
     .sort((a, b) => a.label.localeCompare(b.label));
 
   return {

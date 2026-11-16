@@ -29,6 +29,7 @@ describe("isExcludedCompetition", () => {
   });
 });
 import { buildCompetitionSummary } from "./competitionSummary";
+import { filterExcludedCompetitions } from "./exclusions";
 
 describe("isPracticeCompetition", () => {
   it.each([
@@ -222,5 +223,114 @@ describe("buildCompetitionSummary teams", () => {
     expect(a.teams.find((t) => t.key === "doncaster")!.games).toBe(2);
     expect(a.teams.find((t) => t.key === "box hill")!.games).toBe(2);
     expect(a.totalTeams).toBe(a.teams.length);
+  });
+});
+describe("buildCompetitionSummary team exclusions", () => {
+  const g = (Competition: string, Date: string, home_team: string, away_team: string) => ({
+    Competition,
+    Date,
+    home_team,
+    away_team,
+  });
+  const rows = [
+    g("League X", "2024-04-06", "A", "B"),
+    g("League X", "2024-04-13", "A 2024", "C"),
+    g("League Y", "2025-04-05", "B", "C"),
+  ];
+
+  it("removes an excluded team from team stats but keeps games and competitions", () => {
+    const base = buildCompetitionSummary(rows);
+    const s = buildCompetitionSummary(rows, { excludedTeamKeys: new Set(["a"]) });
+    expect(base.totalTeams).toBe(3);
+    expect(s.totalTeams).toBe(2);
+    expect(s.teams.map((t) => t.key)).toEqual(["b", "c"]);
+    expect(s.totalGames).toBe(base.totalGames);
+    expect(s.totalCompetitions).toBe(base.totalCompetitions);
+    const s24 = s.seasons.find((x) => x.season === 2024)!;
+    expect(s24.teams).toBe(2);
+    expect(s24.newTeams).toBe(2);
+    expect(s24.games).toBe(2);
+    expect(s.seasons.find((x) => x.season === 2025)!.runningTeams).toBe(2);
+    const x = s.competitions.find((c) => c.key === "league x")!;
+    expect(x.games).toBe(2);
+    // flagged decision: per-competition team counts drop the excluded team
+    expect(x.teams).toBe(2);
+    // opponent keeps the game, side and competition
+    const b = s.teams.find((t) => t.key === "b")!;
+    expect(b.games).toBe(2);
+    expect(b.awayGames).toBe(1);
+    expect(b.homeGames).toBe(1);
+  });
+
+  it("matches year/case/space variants by canonical key", () => {
+    const s = buildCompetitionSummary(
+      [g("L", "2024-04-06", "Sunbury 1 2024", "Z"), g("L", "2024-04-13", " SUNBURY 1 ", "Z")],
+      { excludedTeamKeys: ["sunbury 1"] }
+    );
+    expect(s.teams.map((t) => t.key)).toEqual(["z"]);
+    expect(s.teams[0].games).toBe(2);
+  });
+
+  it("accepts Set, array, empty and undefined", () => {
+    const n = (o?: any) => buildCompetitionSummary(rows, o).teams.length;
+    expect(n({ excludedTeamKeys: ["a"] })).toBe(2);
+    expect(n({ excludedTeamKeys: new Set(["a"]) })).toBe(2);
+    expect(n({ excludedTeamKeys: [] })).toBe(3);
+    expect(n({})).toBe(3);
+    expect(n()).toBe(3);
+  });
+
+  it("competition exclusion via pre-filter drops teams only found there", () => {
+    const all = [
+      g("Intra", "2024-04-06", "Only", "Both"),
+      g("Real", "2024-04-13", "Both", "Other"),
+    ];
+    const kept = filterExcludedCompetitions(all, new Set(["intra"]));
+    const s = buildCompetitionSummary(kept);
+    expect(s.teams.map((t) => t.key)).toEqual(["both", "other"]);
+    expect(s.teams.find((t) => t.key === "both")!.games).toBe(1);
+  });
+});
+
+describe("TeamEntry primary competition", () => {
+  const g = (Competition: string | null, Date: string, home_team: string, away_team = "Opp") => ({
+    Competition,
+    Date,
+    home_team,
+    away_team,
+  });
+  const team = (rows: any[], key: string) =>
+    buildCompetitionSummary(rows).teams.find((t) => t.key === key)!;
+
+  it("most games wins and the list is sorted desc with merged year variants", () => {
+    const t = team(
+      [
+        g("PSA", "2023-04-01", "T"),
+        g("PSA 2022", "2022-04-01", "T"),
+        g("Other", "2024-04-01", "T"),
+      ],
+      "t"
+    );
+    expect(t.primaryCompetition).toBe("PSA");
+    expect(t.competitionsWithGames).toEqual([
+      { label: "PSA", games: 2 },
+      { label: "Other", games: 1 },
+    ]);
+  });
+
+  it("tie goes to the most recent game", () => {
+    const t = team([g("Old", "2023-04-01", "T"), g("New", "2024-04-01", "T")], "t");
+    expect(t.primaryCompetition).toBe("New");
+  });
+
+  it("full tie goes to label A-Z", () => {
+    const t = team([g("Beta", "2024-04-01", "T"), g("Alpha", "2024-04-01", "T")], "t");
+    expect(t.primaryCompetition).toBe("Alpha");
+  });
+
+  it("no competition name gives an empty primary competition", () => {
+    const t = team([g(null, "2024-04-01", "T")], "t");
+    expect(t.primaryCompetition).toBe("");
+    expect(t.competitionsWithGames).toEqual([]);
   });
 });

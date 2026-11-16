@@ -56,11 +56,12 @@ export function isPracticeCompetition(name: string | null | undefined): boolean 
 }
 
 /**
- * Competitions not counted on the Competitions page (test, exhibition and
- * one-off games). Matched year-insensitively by canonical name, so
+ * Built-in exclusion list, used ONLY when the competition_exclusions table is
+ * unavailable (migration 010 not run, or the load failed). The table is the
+ * source of truth otherwise. Matched year-insensitively by canonical name, so
  * "Influencer Games 2024" and "VAFA C Section 1998" are covered too.
  */
-export const EXCLUDED_COMPETITIONS: readonly string[] = [
+export const FALLBACK_EXCLUDED_COMPETITIONS: readonly string[] = [
   "Grand Finals",
   "Influencer Games",
   "Intra",
@@ -71,11 +72,19 @@ export const EXCLUDED_COMPETITIONS: readonly string[] = [
   "Vafa C Section",
 ];
 
-const EXCLUDED_KEYS = new Set(EXCLUDED_COMPETITIONS.map((n) => canonicalCompetition(n)));
+export const FALLBACK_EXCLUDED_KEYS: ReadonlySet<string> = new Set(
+  FALLBACK_EXCLUDED_COMPETITIONS.map((n) => canonicalCompetition(n))
+);
 
-/** True for Practice competitions and the EXCLUDED_COMPETITIONS list. */
-export function isExcludedCompetition(name: string | null | undefined): boolean {
-  return isPracticeCompetition(name) || EXCLUDED_KEYS.has(canonicalCompetition(name));
+/**
+ * True for Practice competitions (automatic rule) and for any competition whose
+ * canonical key is in `excludedKeys` (defaults to the built-in fallback list).
+ */
+export function isExcludedCompetition(
+  name: string | null | undefined,
+  excludedKeys: ReadonlySet<string> = FALLBACK_EXCLUDED_KEYS
+): boolean {
+  return isPracticeCompetition(name) || excludedKeys.has(canonicalCompetition(name));
 }
 
 /** Grouping key for a team: case-insensitive, whitespace collapsed. */
