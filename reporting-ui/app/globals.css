@@ -101,3 +101,17 @@ body {
     margin: 14mm 12mm;
   }
 }
+
+/* Training plan PDF view: the print root is mounted only while printing, and
+   the print rule applies only while it exists, so other pages' print output is
+   unchanged. */
+@media screen {
+  #training-plan-print-root {
+    display: none;
+  }
+}
+@media print {
+  body:has(#training-plan-print-root) > *:not(#training-plan-print-root) {
+    display: none !important;
+  }
+}

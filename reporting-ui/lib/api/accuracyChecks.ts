@@ -203,7 +203,7 @@ export interface SaveAccuracyCheckInput {
  * (null columns) that the backfill later reconciles — never a silent fall back
  * to a Range-dependent, unknown-scope value.
  */
-function gradeOverlapScoped(
+export function gradeOverlapScoped(
     xmlMaster: string | null | undefined,
     xmlAnalyst: string | null | undefined,
     tolerance: number | null | undefined,

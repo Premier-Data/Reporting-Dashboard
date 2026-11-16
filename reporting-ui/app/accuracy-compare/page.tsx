@@ -32,6 +32,7 @@ import {
   Pencil,
   Plus,
   Settings,
+  GraduationCap,
 } from "lucide-react";
 import {
   saveAccuracyCheck,
@@ -85,6 +86,7 @@ import {
 } from "@/lib/comparison/overlap-window";
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import ManageMastersDialog from "./ManageMastersDialog";
+import TrainingPlanPanel from "@/components/accuracy/TrainingPlanPanel";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -1027,6 +1029,11 @@ function AccuracyCompareInner() {
   }, [loadedCheckId]);
   const [checkAnalystName, setCheckAnalystName] = useState<string | null>(null);
   const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [trainingOpen, setTrainingOpen] = useState(false);
+  const [loadedCheckMeta, setLoadedCheckMeta] = useState<{
+    createdAt: string;
+    category: string | null;
+  } | null>(null);
   // Right-click context menu target for flagging.
   const [flagMenu, setFlagMenu] = useState<{
     x: number;
@@ -1684,6 +1691,7 @@ function AccuracyCompareInner() {
               setMaster(loaded);
               // Fresh compare — drop any previously-loaded saved check.
               setLoadedCheckId(null);
+              setLoadedCheckMeta(null);
               setCheckAnalystName(null);
               setDisputes([]);
               // Master video wins — set it whenever present.
@@ -1749,6 +1757,7 @@ function AccuracyCompareInner() {
         setMaster(null);
         setAnalyst(null);
         setLoadedCheckId(null);
+              setLoadedCheckMeta(null);
         setCheckAnalystName(null);
         setDisputes([]);
         setMatchLabel("");
@@ -1827,6 +1836,10 @@ function AccuracyCompareInner() {
       // Enable disputes for this saved check.
       setLoadedCheckId(check.id);
       setCheckAnalystName(check.analyst_name);
+      setLoadedCheckMeta({
+        createdAt: check.created_at,
+        category: check.category ?? null,
+      });
       reloadDisputes(check.id);
 
       // Deep-link: open the review focused on the disputed stat and seek to
@@ -3725,6 +3738,12 @@ function AccuracyCompareInner() {
                     {teamFilter === "all" ? "Both teams" : teamDisplay(teamFilter)}
                     {categoryFilter !== "all" ? ` · ${categoryFilter}` : ""}
                   </span>
+                  <button
+                    onClick={() => setTrainingOpen(true)}
+                    className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    <GraduationCap size={14} /> Training plan
+                  </button>
                 </div>
                 <div className="max-h-[340px] space-y-2.5 overflow-y-auto pr-1">
                   {insights.map((ins, i) => {
@@ -3941,6 +3960,30 @@ function AccuracyCompareInner() {
                 )}
               </div>
             </div>
+            <TrainingPlanPanel
+              open={trainingOpen}
+              onClose={() => setTrainingOpen(false)}
+              result={result}
+              scopeRows={statScopedRows}
+              context={{
+                analystName: checkAnalystName ?? (gradedAnalyst || null),
+                checkId: loadedCheckId,
+                checkCreatedAt: loadedCheckMeta?.createdAt ?? null,
+                checkCategory: loadedCheckMeta?.category ?? null,
+                sport,
+                matchLabel: matchLabel.trim() || null,
+                masterFileName: master?.name ?? null,
+                videoUrl: videoUrl.trim() || null,
+                teamLabel: teamDisplay,
+                scopeFilters: {
+                  team: teamFilter,
+                  category: categoryFilter,
+                  stat: statFilter,
+                },
+                disputes,
+              }}
+              onWatch={videoUrl.trim() ? seekVideo : undefined}
+            />
           </>
         )}
       </div>
