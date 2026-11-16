@@ -10,6 +10,19 @@ import {
 } from "@/lib/analytics/competitionSummary";
 import SortableTh from "@/components/UI/SortableTh";
 import { useTableSort, type SortColumn } from "@/lib/tableSort";
+import type { ExclusionsController } from "@/components/competitions/useCompetitionExclusions";
+import {
+  ConfirmExcludeDialog,
+  ExclusionActionBar,
+  ExcludedPanel,
+  FallbackNotice,
+  ResultMessage,
+  RowCheckbox,
+  SelectAllCheckbox,
+  useExcludeFlow,
+  useRowSelection,
+  type SelectableEntry,
+} from "@/components/competitions/ExclusionControls";
 
 type SortKey = "label" | "seasons" | "games" | "teams" | "firstDate" | "lastDate";
 
@@ -145,17 +158,27 @@ export default function CompetitionDashboard({
   games,
   loading,
   error,
+  exclusions,
+  allGames,
+  canManage = false,
 }: {
+  /** Games with excluded competitions already removed. */
   games: readonly SummaryRow[];
   loading: boolean;
   error: string | null;
+  exclusions?: ExclusionsController;
+  /** Unfiltered games, used to show what each exclusion affects. */
+  allGames?: readonly SummaryRow[];
+  /** Admin / super admin: shows the bulk exclude controls. */
+  canManage?: boolean;
 }) {
   const [onlyAllocated, setOnlyAllocated] = useState(false);
   const [query, setQuery] = useState("");
+  const teamKeys = exclusions?.teamKeys;
 
   const summary = useMemo(
-    () => buildCompetitionSummary(games, { onlyAllocated }),
-    [games, onlyAllocated]
+    () => buildCompetitionSummary(games, { onlyAllocated, excludedTeamKeys: teamKeys }),
+    [games, onlyAllocated, teamKeys]
   );
 
   const filtered = useMemo(() => {
@@ -180,6 +203,19 @@ export default function CompetitionDashboard({
     { columns: SEASON_COLUMNS, initialKey: "season", initialDir: "desc" }
   );
 
+  const manage = canManage && exclusions !== undefined;
+  const entries = useMemo<SelectableEntry[]>(
+    () => summary.competitions.map((c) => ({ key: c.key, label: c.label, games: c.games })),
+    [summary.competitions]
+  );
+  const allKeys = useMemo(() => entries.map((e) => e.key), [entries]);
+  const visibleKeys = useMemo(() => rows.map((c) => c.key), [rows]);
+  const selection = useRowSelection(visibleKeys, allKeys);
+  const flow = useExcludeFlow("competition", exclusions, entries, selection);
+  const excludedPanel = exclusions ? (
+    <ExcludedPanel kind="competition" exclusions={exclusions} allGames={allGames ?? games} canManage={manage} />
+  ) : null;
+
   if (loading) {
     return (
       <div role="status" className="p-6 text-slate-400">
@@ -201,6 +237,7 @@ export default function CompetitionDashboard({
         <div className="rounded-xl border border-slate-700 bg-[#0f1b2d] p-10 text-center text-slate-500">
           No games found.
         </div>
+        {excludedPanel}
       </div>
     );
   }
@@ -279,6 +316,9 @@ export default function CompetitionDashboard({
         </table>
         </div>
       </div>
+      {exclusions && <FallbackNotice notice={exclusions.notice} />}
+      {excludedPanel}
+
       <div className="overflow-hidden rounded-2xl border border-slate-700 bg-[#0f1b2d]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700 px-5 py-4">
           <div className="text-sm font-semibold text-white">
@@ -306,6 +346,16 @@ export default function CompetitionDashboard({
             <caption className="sr-only">Unique competitions across all years</caption>
             <thead className="sticky top-0 bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
               <tr>
+                {manage && (
+                  <th scope="col" className="w-10 px-4 py-3">
+                    <SelectAllCheckbox
+                      checked={selection.allSelected}
+                      indeterminate={selection.someSelected}
+                      onChange={selection.toggleAll}
+                      disabled={rows.length === 0}
+                    />
+                  </th>
+                )}
                 <SortableTh sort={sort} sortKey="label" className="px-4 py-3 font-semibold">Competition</SortableTh>
                 <SortableTh sort={sort} sortKey="seasons" className="px-4 py-3 font-semibold">Seasons</SortableTh>
                 <SortableTh sort={sort} sortKey="games" className="px-4 py-3 text-right font-semibold">Games</SortableTh>
@@ -317,7 +367,7 @@ export default function CompetitionDashboard({
             <tbody className="divide-y divide-slate-800">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={manage ? 7 : 6} className="px-4 py-6 text-center text-slate-500">
                     No competitions match your search.
                   </td>
                 </tr>
@@ -326,6 +376,15 @@ export default function CompetitionDashboard({
                   const merged = c.rawNames.filter((n) => n !== c.label);
                   return (
                     <tr key={c.key} className="hover:bg-slate-800/50">
+                      {manage && (
+                        <td className="w-10 px-4 py-2.5">
+                          <RowCheckbox
+                            label={c.label}
+                            checked={selection.selected.has(c.key)}
+                            onChange={() => selection.toggle(c.key)}
+                          />
+                        </td>
+                      )}
                       <th
                         scope="row"
                         className="px-4 py-2.5 font-medium text-slate-200"
@@ -352,17 +411,38 @@ export default function CompetitionDashboard({
             </tbody>
           </table>
         </div>
+        {manage && (
+          <>
+            <div className="px-5 py-2 empty:hidden">
+              <ResultMessage result={flow.result} />
+            </div>
+            <ExclusionActionBar
+              selectedCount={selection.selected.size}
+              canPersist={exclusions.canPersist}
+              busy={flow.busy}
+              onExclude={flow.open}
+              onClear={selection.clear}
+            />
+          </>
+        )}
       </div>
+      {manage && flow.dialogOpen && (
+        <ConfirmExcludeDialog
+          kind="competition"
+          entries={flow.selectedEntries}
+          busy={flow.busy}
+          onConfirm={flow.confirm}
+          onCancel={flow.cancel}
+        />
+      )}
 
       <p className="text-xs text-slate-500">
         Competition names are matched ignoring case, extra spaces and a year or season at the
         start or end of the name (for example PSA and PSA 2022, or 2026-27 TIO NTFL Men Premier
         League and TIO NTFL Men Premier League count as one). Numbers that are part of a name,
         such as Under 19s or Division 1, are kept. Teams are matched ignoring case and spacing.
-        Seasons run from the Wednesday on or before 1 October. Competitions with
-        &quot;Practice&quot; in the name, and test or one-off competitions (Grand Finals, Influencer
-        Games, Intra, NMFC Academy, Perth FL North vs South Colts Clash, Sandringham Dragons,
-        SportVot Test, VAFA C Section), are not counted. In the season table, Active = New +
+        Seasons run from the Wednesday on or before 1 October. Practice competitions and the
+        competitions/teams in the Excluded list are not counted. In the season table, Active = New +
         Returning (an asterisk marks returning counts that include some back after a gap), and
         Running total = previous running total + New.
       </p>

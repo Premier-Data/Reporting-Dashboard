@@ -10,9 +10,23 @@ import {
 } from "@/lib/analytics/competitionSummary";
 import SortableTh from "@/components/UI/SortableTh";
 import { useTableSort, type SortColumn } from "@/lib/tableSort";
+import type { ExclusionsController } from "@/components/competitions/useCompetitionExclusions";
+import {
+  ConfirmExcludeDialog,
+  ExclusionActionBar,
+  ExcludedPanel,
+  FallbackNotice,
+  ResultMessage,
+  RowCheckbox,
+  SelectAllCheckbox,
+  useExcludeFlow,
+  useRowSelection,
+  type SelectableEntry,
+} from "@/components/competitions/ExclusionControls";
 
 type TeamKey =
   | "label"
+  | "primaryCompetition"
   | "seasons"
   | "games"
   | "homeGames"
@@ -37,6 +51,7 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 
 const TEAM_COLUMNS: Record<TeamKey, SortColumn<TeamEntry>> = {
   label: { value: (t) => t.label },
+  primaryCompetition: { value: (t) => t.primaryCompetition },
   seasons: { value: (t) => t.seasons.length, defaultDir: "desc" },
   games: { value: (t) => t.games, defaultDir: "desc" },
   homeGames: { value: (t) => t.homeGames, defaultDir: "desc" },
@@ -62,17 +77,27 @@ export default function TeamsDashboard({
   games,
   loading,
   error,
+  exclusions,
+  allGames,
+  canManage = false,
 }: {
+  /** Games with excluded competitions already removed. */
   games: readonly SummaryRow[];
   loading: boolean;
   error: string | null;
+  exclusions?: ExclusionsController;
+  /** Unfiltered games, used to show what each exclusion affects. */
+  allGames?: readonly SummaryRow[];
+  /** Admin / super admin: shows the bulk exclude controls. */
+  canManage?: boolean;
 }) {
   const [onlyAllocated, setOnlyAllocated] = useState(false);
   const [query, setQuery] = useState("");
+  const teamKeys = exclusions?.teamKeys;
 
   const summary = useMemo(
-    () => buildCompetitionSummary(games, { onlyAllocated }),
-    [games, onlyAllocated]
+    () => buildCompetitionSummary(games, { onlyAllocated, excludedTeamKeys: teamKeys }),
+    [games, onlyAllocated, teamKeys]
   );
 
   const filtered = useMemo(() => {
@@ -98,6 +123,19 @@ export default function TeamsDashboard({
     { columns: SEASON_COLUMNS, initialKey: "season", initialDir: "desc" }
   );
 
+  const manage = canManage && exclusions !== undefined;
+  const entries = useMemo<SelectableEntry[]>(
+    () => summary.teams.map((t) => ({ key: t.key, label: t.label, games: t.games })),
+    [summary.teams]
+  );
+  const allKeys = useMemo(() => entries.map((e) => e.key), [entries]);
+  const visibleKeys = useMemo(() => rows.map((t) => t.key), [rows]);
+  const selection = useRowSelection(visibleKeys, allKeys);
+  const flow = useExcludeFlow("team", exclusions, entries, selection);
+  const excludedPanel = exclusions ? (
+    <ExcludedPanel kind="team" exclusions={exclusions} allGames={allGames ?? games} canManage={manage} />
+  ) : null;
+
   if (loading) {
     return (
       <div role="status" className="p-6 text-slate-400">
@@ -119,6 +157,7 @@ export default function TeamsDashboard({
         <div className="rounded-xl border border-slate-700 bg-[#0f1b2d] p-10 text-center text-slate-500">
           No teams found.
         </div>
+        {excludedPanel}
       </div>
     );
   }
@@ -200,6 +239,9 @@ export default function TeamsDashboard({
         </div>
       </div>
 
+      {exclusions && <FallbackNotice notice={exclusions.notice} />}
+      {excludedPanel}
+
       <div className="overflow-hidden rounded-2xl border border-slate-700 bg-[#0f1b2d]">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700 px-5 py-4">
           <div className="text-sm font-semibold text-white">
@@ -227,7 +269,18 @@ export default function TeamsDashboard({
             <caption className="sr-only">Unique teams across all years</caption>
             <thead className="sticky top-0 bg-slate-800 text-xs uppercase tracking-wide text-slate-400">
               <tr>
+                {manage && (
+                  <th scope="col" className="w-10 px-4 py-3">
+                    <SelectAllCheckbox
+                      checked={selection.allSelected}
+                      indeterminate={selection.someSelected}
+                      onChange={selection.toggleAll}
+                      disabled={rows.length === 0}
+                    />
+                  </th>
+                )}
                 <SortableTh sort={sort} sortKey="label" className="px-4 py-3 font-semibold">Team</SortableTh>
+                <SortableTh sort={sort} sortKey="primaryCompetition" className="px-4 py-3 font-semibold">Competition</SortableTh>
                 <SortableTh sort={sort} sortKey="seasons" className="px-4 py-3 font-semibold">Seasons</SortableTh>
                 <SortableTh sort={sort} sortKey="games" className="px-4 py-3 text-right font-semibold">Games</SortableTh>
                 <SortableTh sort={sort} sortKey="homeGames" className="px-4 py-3 text-right font-semibold">Home</SortableTh>
@@ -240,7 +293,7 @@ export default function TeamsDashboard({
             <tbody className="divide-y divide-slate-800">
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-slate-500">
+                  <td colSpan={manage ? 10 : 9} className="px-4 py-6 text-center text-slate-500">
                     No teams match your search.
                   </td>
                 </tr>
@@ -249,6 +302,15 @@ export default function TeamsDashboard({
                   const merged = t.rawNames.filter((n) => n !== t.label);
                   return (
                     <tr key={t.key} className="hover:bg-slate-800/50">
+                      {manage && (
+                        <td className="w-10 px-4 py-2.5">
+                          <RowCheckbox
+                            label={t.label}
+                            checked={selection.selected.has(t.key)}
+                            onChange={() => selection.toggle(t.key)}
+                          />
+                        </td>
+                      )}
                       <th
                         scope="row"
                         className="px-4 py-2.5 font-medium text-slate-200"
@@ -261,6 +323,23 @@ export default function TeamsDashboard({
                           </div>
                         )}
                       </th>
+                      <td
+                        className="px-4 py-2.5 text-slate-300"
+                        title={
+                          t.competitionsWithGames.length > 0
+                            ? t.competitionsWithGames
+                                .map((c) => `${c.label} (${c.games} game${c.games === 1 ? "" : "s"})`)
+                                .join("\n")
+                            : undefined
+                        }
+                      >
+                        {t.primaryCompetition || "-"}
+                        {t.competitionsWithGames.length > 1 && (
+                          <span className="ml-1 text-xs text-slate-500">
+                            +{t.competitionsWithGames.length - 1}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-2.5 text-slate-300">
                         {t.seasons.length > 0 ? t.seasons.join(", ") : "-"}
                       </td>
@@ -282,16 +361,39 @@ export default function TeamsDashboard({
             </tbody>
           </table>
         </div>
+        {manage && (
+          <>
+            <div className="px-5 py-2">
+              <ResultMessage result={flow.result} />
+            </div>
+            <ExclusionActionBar
+              selectedCount={selection.selected.size}
+              canPersist={exclusions.canPersist}
+              busy={flow.busy}
+              onExclude={flow.open}
+              onClear={selection.clear}
+            />
+          </>
+        )}
       </div>
+      {manage && flow.dialogOpen && (
+        <ConfirmExcludeDialog
+          kind="team"
+          entries={flow.selectedEntries}
+          busy={flow.busy}
+          onConfirm={flow.confirm}
+          onCancel={flow.cancel}
+        />
+      )}
 
       <p className="text-xs text-slate-500">
         Teams are matched ignoring case, extra spaces and a year at the end of the name (for
         example Doncaster and Doncaster 2022 count as one team). A game counts once for a team,
-        whether it played home or away. Competitions with &quot;Practice&quot; in the name, and test
-        or one-off competitions (Grand Finals, Influencer Games, Intra, NMFC Academy, Perth FL
-        North vs South Colts Clash, Sandringham Dragons, SportVot Test, VAFA C Section), are not
-        counted; teams that only played in those competitions are not listed. Competitions per team merge names that differ only by case, spacing or a
-        season in the name; hover the Competitions number to see them. In the season table,
+        whether it played home or away. Practice competitions and the competitions/teams in the
+        Excluded list are not counted; teams that only played in excluded competitions are not
+        listed. The Competition column shows the competition the team played most games in, with
+        +N for others; hover it, or the Competitions number, to see them all. Competitions per team merge names that differ only by case, spacing or a
+        season in the name. In the season table,
         Active = New + Returning, and Running total = previous running total + New.
       </p>
     </div>

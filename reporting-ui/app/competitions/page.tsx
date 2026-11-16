@@ -5,7 +5,9 @@ import Link from "next/link";
 
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { mapFixtureWeekTT } from "@/lib/analytics/season";
-import { isExcludedCompetition } from "@/lib/analytics/competitionNames";
+import { canManageExclusions, filterExcludedCompetitions } from "@/lib/analytics/exclusions";
+import { useAuth } from "@/components/auth/AuthContext";
+import { useCompetitionExclusions } from "@/components/competitions/useCompetitionExclusions";
 import { THEME } from "@/lib/theme";
 import CompetitionDashboard from "@/components/competitions/CompetitionDashboard";
 import TeamsDashboard from "@/components/competitions/TeamsDashboard";
@@ -77,7 +79,11 @@ type TeamCoder = {
 export default function CompetitionsPage() {
 
     const [loading, setLoading] = useState(true);
-    const [games, setGames] = useState<TTGame[]>([]);
+    const { user } = useAuth();
+    const canManage = canManageExclusions(user?.role);
+    const exclusions = useCompetitionExclusions(user?.username);
+    // All loaded games, before exclusions. `games` below is what every tab uses.
+    const [allGames, setAllGames] = useState<TTGame[]>([]);
     const [loadError, setLoadError] = useState<string | null>(null);
     const [selectedCompetition, setSelectedCompetition] = useState("");
     // Season filter ("all" = every season). The season is stamped per sheet in
@@ -97,14 +103,9 @@ export default function CompetitionsPage() {
                 });
 
                 // Season/week derived from each fixture's Date (unified rule).
-                // Practice and listed one-off/test competitions are excluded
-                // from this page entirely (all tabs). Their teams drop out too
-                // unless they also play in a competition that is kept.
-                setGames(
-                    mapFixtureWeekTT(data).filter(
-                        (g) => !isExcludedCompetition(g.Competition)
-                    )
-                );
+                // Exclusions are applied after loading (see `games`), so
+                // restoring one needs no refetch.
+                setAllGames(mapFixtureWeekTT(data));
             } catch (e) {
                 console.error("Error fetching TT_Games:", e);
                 setLoadError(e instanceof Error ? e.message : String(e));
@@ -115,6 +116,14 @@ export default function CompetitionsPage() {
         load();
 
     }, []);
+
+    // Practice competitions and the competitions in the exclusion list are
+    // removed from this page entirely (all tabs). Their teams drop out too
+    // unless they also play in a competition that is kept.
+    const games = useMemo(
+        () => filterExcludedCompetitions(allGames, exclusions.competitionKeys),
+        [allGames, exclusions.competitionKeys]
+    );
 
     // -------------------------
     // SEASON LIST
@@ -414,6 +423,9 @@ export default function CompetitionsPage() {
                         games={games}
                         loading={false}
                         error={loadError}
+                        exclusions={exclusions}
+                        allGames={allGames}
+                        canManage={canManage}
                     />
                 </TabsContent>
 
@@ -422,6 +434,9 @@ export default function CompetitionsPage() {
                         games={games}
                         loading={false}
                         error={loadError}
+                        exclusions={exclusions}
+                        allGames={allGames}
+                        canManage={canManage}
                     />
                 </TabsContent>
 
