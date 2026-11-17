@@ -51,6 +51,12 @@ import {
   type Json,
   type UnitLookup,
 } from "./shape.ts";
+import {
+  SCHEMA_NOT_EXPOSED_MESSAGE,
+  SchemaNotExposedError,
+  describeError,
+  withSchemaRetry,
+} from "../_shared/deputySchema.ts";
 
 // Server-side cap so a huge table can't be dumped in a single response.
 const MAX_ROWS = 20000;
@@ -67,7 +73,8 @@ const SYNC_TIMEOUT_MS = 55_000;
 
 // Shape of a single PostgREST ranged response (data + error), narrowed to what
 // the pagination loop needs.
-type PageResult = { data: unknown; error: { message: string } | null };
+type PgError = { message: string; code?: string };
+type PageResult = { data: unknown; error: PgError | null };
 
 // Fetch ALL matching rows for a dataset by paging through `.range(from, to)`.
 // `buildQuery` reproduces the exact per-dataset query (schema/table/select/
@@ -78,10 +85,12 @@ type PageResult = { data: unknown; error: { message: string } | null };
 // done here — the caller runs them once on the full accumulated set.
 async function fetchAllPages(
   buildQuery: (from: number, to: number) => PromiseLike<PageResult>
-): Promise<{ rows: Json[]; error: { message: string } | null }> {
+): Promise<{ rows: Json[]; error: PgError | null }> {
   const rows: Json[] = [];
   for (let offset = 0; ; offset += PAGE) {
-    const { data, error } = await buildQuery(offset, offset + PAGE - 1);
+    const { data, error } = await withSchemaRetry(() =>
+      buildQuery(offset, offset + PAGE - 1)
+    );
     if (error) {
       return { rows, error };
     }
@@ -125,11 +134,13 @@ async function resolveNames(
   let unitRows: UnitLookup[] = [];
 
   if (employeeIds.length > 0) {
-    const { data, error } = await supabase
-      .schema("deputy")
-      .from("employees")
-      .select("deputy_id, display_name, first_name, last_name")
-      .in("deputy_id", employeeIds);
+    const { data, error } = await withSchemaRetry(() =>
+      supabase
+        .schema("deputy")
+        .from("employees")
+        .select("deputy_id, display_name, first_name, last_name")
+        .in("deputy_id", employeeIds)
+    );
     if (error) {
       console.error("deputy-read employees lookup failed:", error.message);
     } else {
@@ -138,11 +149,13 @@ async function resolveNames(
   }
 
   if (unitIds.length > 0) {
-    const { data, error } = await supabase
-      .schema("deputy")
-      .from("operational_units")
-      .select("deputy_id, operational_unit_name")
-      .in("deputy_id", unitIds);
+    const { data, error } = await withSchemaRetry(() =>
+      supabase
+        .schema("deputy")
+        .from("operational_units")
+        .select("deputy_id, operational_unit_name")
+        .in("deputy_id", unitIds)
+    );
     if (error) {
       console.error("deputy-read units lookup failed:", error.message);
     } else {
@@ -174,15 +187,17 @@ async function maybeSync(
 
   let last: string | null = null;
   try {
-    const { data, error } = await supabase
-      .schema("deputy")
-      .from("sync_runs")
-      .select("started_at")
-      // ANY recent run counts (succeeded, running, failed or partial). Counting
-      // only successes would let an anon-key caller trigger a fresh sync attempt
-      // on every request while Deputy is failing, hammering its API.
-      .order("started_at", { ascending: false })
-      .limit(1);
+    const { data, error } = await withSchemaRetry(() =>
+      supabase
+        .schema("deputy")
+        .from("sync_runs")
+        .select("started_at")
+        // ANY recent run counts (succeeded, running, failed or partial). Counting
+        // only successes would let an anon-key caller trigger a fresh sync attempt
+        // on every request while Deputy is failing, hammering its API.
+        .order("started_at", { ascending: false })
+        .limit(1)
+    );
     if (error) {
       console.error("deputy-read sync throttle query failed:", error.message);
       return false; // fail safe: just read
@@ -255,8 +270,8 @@ async function readRosters(
   });
 
   if (error) {
-    console.error("deputy-read rosters query failed:", error.message);
-    return json({ error: "query_failed" }, 500);
+    console.error("deputy-read rosters query failed:", describeError(error));
+    return json({ error: "query_failed", detail: describeError(error) }, 500);
   }
 
   const rows = await resolveNames(supabase, data);
@@ -288,8 +303,8 @@ async function readTimesheets(
   });
 
   if (error) {
-    console.error("deputy-read timesheets query failed:", error.message);
-    return json({ error: "query_failed" }, 500);
+    console.error("deputy-read timesheets query failed:", describeError(error));
+    return json({ error: "query_failed", detail: describeError(error) }, 500);
   }
 
   const rows = await resolveNames(supabase, data);
@@ -335,7 +350,25 @@ Deno.serve(async (req: Request) => {
       ? await maybeSync(supabase, supaUrl, serviceKey)
       : false;
 
-  return dataset === "rosters"
-    ? await readRosters(supabase, synced, range)
-    : await readTimesheets(supabase, synced, range);
+  try {
+    return dataset === "rosters"
+      ? await readRosters(supabase, synced, range)
+      : await readTimesheets(supabase, synced, range);
+  } catch (err) {
+    if (err instanceof SchemaNotExposedError) {
+      console.error(
+        `deputy-read: deputy schema not exposed by the Data API (${err.detail}). Add it under Project Settings -> Data API -> Exposed schemas.`
+      );
+      return json(
+        {
+          error: "deputy_schema_not_exposed",
+          message: SCHEMA_NOT_EXPOSED_MESSAGE,
+          detail: err.detail,
+        },
+        503
+      );
+    }
+    console.error("deputy-read unexpected error:", describeError(err));
+    return json({ error: "query_failed", detail: describeError(err) }, 500);
+  }
 });

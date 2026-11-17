@@ -131,7 +131,7 @@ function toDeputyShiftsError(e: unknown): DeputyShiftsError {
   if (e instanceof DeputyShiftsError) return e;
   const message = e instanceof Error ? e.message : String(e);
   if (message.includes("no rows array")) return new DeputyShiftsError("bad_data", message);
-  if (/ failed: \d+/.test(message)) return new DeputyShiftsError("http", message);
+  if (/ failed: \d+/.test(message) || message.includes("'deputy' schema")) return new DeputyShiftsError("http", message);
   return new DeputyShiftsError("network", message);
 }
 

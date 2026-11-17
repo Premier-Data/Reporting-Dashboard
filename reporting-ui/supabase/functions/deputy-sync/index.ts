@@ -37,6 +37,12 @@ import {
 } from "./query.ts";
 import { RESOURCE_MAP, type Json } from "./mappers.ts";
 import { planRosterReconcile } from "./reconcile.ts";
+import {
+  SCHEMA_NOT_EXPOSED_MESSAGE,
+  SchemaNotExposedError,
+  describeError,
+  withSchemaRetry,
+} from "../_shared/deputySchema.ts";
 
 const PAGE_SIZE = 500;
 const MAX_PAGES = 200; // runaway guard (200 * 500 = 100k records/resource)
@@ -116,19 +122,23 @@ async function syncResource(
   const dryRun = body.dryRun === true;
 
   // Open a sync_runs row.
-  const { data: runRow } = await supabase
-    .schema("deputy")
-    .from("sync_runs")
-    .insert({
-      resource: resourceName,
-      mode,
-      status: "running",
-      requested_from: body.startDate ?? null,
-      requested_to: body.endDate ?? null,
-      metadata: { dryRun },
-    })
-    .select("id")
-    .single();
+  // (Throws SchemaNotExposedError if the deputy schema is unavailable even
+  // after retries; the request handler reports that.)
+  const { data: runRow } = await withSchemaRetry(() =>
+    supabase
+      .schema("deputy")
+      .from("sync_runs")
+      .insert({
+        resource: resourceName,
+        mode,
+        status: "running",
+        requested_from: body.startDate ?? null,
+        requested_to: body.endDate ?? null,
+        metadata: { dryRun },
+      })
+      .select("id")
+      .single()
+  );
   const runId = (runRow as { id: number } | null)?.id ?? null;
 
   let read = 0;
@@ -168,10 +178,12 @@ async function syncResource(
       if (!dryRun && unique.length > 0) {
         for (let i = 0; i < unique.length; i += BATCH_SIZE) {
           const batch = unique.slice(i, i + BATCH_SIZE);
-          const { error } = await supabase
-            .schema("deputy")
-            .from(cfg.table)
-            .upsert(batch, { onConflict: "deputy_id" });
+          const { error } = await withSchemaRetry(() =>
+            supabase
+              .schema("deputy")
+              .from(cfg.table)
+              .upsert(batch, { onConflict: "deputy_id" })
+          );
           if (error) throw new Error(`db_upsert: ${error.message}`);
           written += batch.length;
         }
@@ -180,6 +192,8 @@ async function syncResource(
       if (!hasMorePages(raw.length, PAGE_SIZE)) break;
     }
   } catch (e) {
+    // Nothing written and the schema is gone: fail the whole request cleanly.
+    if (e instanceof SchemaNotExposedError && written === 0) throw e;
     status = written > 0 ? "partial" : "failed";
     errorMessage = e instanceof Error ? e.message : "error";
   }
@@ -192,15 +206,17 @@ async function syncResource(
     try {
       const existingIds: string[] = [];
       for (let from = 0; ; from += RECONCILE_PAGE) {
-        const { data, error } = await supabase
-          .schema("deputy")
-          .from("rosters")
-          .select("deputy_id")
-          .gte("roster_date", body.startDate ?? "")
-          .lte("roster_date", body.endDate ?? "")
-          .eq("is_deleted", false)
-          .order("deputy_id", { ascending: true })
-          .range(from, from + RECONCILE_PAGE - 1);
+        const { data, error } = await withSchemaRetry(() =>
+          supabase
+            .schema("deputy")
+            .from("rosters")
+            .select("deputy_id")
+            .gte("roster_date", body.startDate ?? "")
+            .lte("roster_date", body.endDate ?? "")
+            .eq("is_deleted", false)
+            .order("deputy_id", { ascending: true })
+            .range(from, from + RECONCILE_PAGE - 1)
+        );
         if (error) throw new Error(`reconcile_read: ${error.message}`);
         const page = (data ?? []) as { deputy_id: string }[];
         for (const p of page) existingIds.push(String(p.deputy_id));
@@ -221,14 +237,16 @@ async function syncResource(
       if (plan.action === "apply") {
         for (let i = 0; i < plan.idsToDelete.length; i += RECONCILE_BATCH) {
           const batch = plan.idsToDelete.slice(i, i + RECONCILE_BATCH);
-          const { error } = await supabase
-            .schema("deputy")
-            .from("rosters")
-            .update({ is_deleted: true })
-            .in("deputy_id", batch)
-            .gte("roster_date", body.startDate ?? "")
-            .lte("roster_date", body.endDate ?? "")
-            .eq("is_deleted", false);
+          const { error } = await withSchemaRetry(() =>
+            supabase
+              .schema("deputy")
+              .from("rosters")
+              .update({ is_deleted: true })
+              .in("deputy_id", batch)
+              .gte("roster_date", body.startDate ?? "")
+              .lte("roster_date", body.endDate ?? "")
+              .eq("is_deleted", false)
+          );
           if (error) throw new Error(`reconcile_update: ${error.message}`);
           softDeleted += batch.length;
         }
@@ -250,35 +268,46 @@ async function syncResource(
 
   // Close the run.
   if (runId != null) {
-    await supabase
-      .schema("deputy")
-      .from("sync_runs")
-      .update({
-        status,
-        finished_at: new Date().toISOString(),
-        records_read: read,
-        records_inserted: dryRun ? 0 : written, // can't distinguish ins/upd via upsert
-        records_updated: 0,
-        records_skipped: skipped,
-        error_message: errorMessage,
-        ...(reconcileMeta ? { metadata: { dryRun, reconcile: reconcileMeta } } : {}),
-      })
-      .eq("id", runId);
+    try {
+      await withSchemaRetry(() =>
+        supabase
+          .schema("deputy")
+          .from("sync_runs")
+          .update({
+            status,
+            finished_at: new Date().toISOString(),
+            records_read: read,
+            records_inserted: dryRun ? 0 : written, // can't distinguish ins/upd via upsert
+            records_updated: 0,
+            records_skipped: skipped,
+            error_message: errorMessage,
+            ...(reconcileMeta ? { metadata: { dryRun, reconcile: reconcileMeta } } : {}),
+          })
+          .eq("id", runId)
+      );
 
-    // Advance the checkpoint ONLY on full success (never past unstored records).
-    if (status === "succeeded" && !dryRun) {
-      await supabase
-        .schema("deputy")
-        .from("sync_checkpoints")
-        .upsert(
-          {
-            resource: resourceName,
-            last_successful_run_id: runId,
-            last_successful_modified_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "resource" }
+      // Advance the checkpoint ONLY on full success (never past unstored records).
+      if (status === "succeeded" && !dryRun) {
+        await withSchemaRetry(() =>
+          supabase
+            .schema("deputy")
+            .from("sync_checkpoints")
+            .upsert(
+              {
+                resource: resourceName,
+                last_successful_run_id: runId,
+                last_successful_modified_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "resource" }
+            )
         );
+      }
+    } catch (e) {
+      if (!(e instanceof SchemaNotExposedError)) throw e;
+      console.error("deputy-sync could not close sync_runs row:", e.detail);
+      status = status === "succeeded" ? "partial" : status;
+      errorMessage = errorMessage ?? "deputy_schema_not_exposed";
     }
   }
 
@@ -342,8 +371,43 @@ Deno.serve(async (req: Request) => {
   const toRun = order.filter((r) => requested.includes(r));
 
   const results: Json[] = [];
-  for (const r of toRun) {
-    results.push(await syncResource(supabase, base, token, r, body));
+  const startedAt = new Date().toISOString();
+  try {
+    for (const r of toRun) {
+      results.push(await syncResource(supabase, base, token, r, body));
+    }
+  } catch (e) {
+    if (!(e instanceof SchemaNotExposedError)) throw e;
+    console.error(
+      `deputy-sync: deputy schema not exposed by the Data API (${e.detail}). Add it under Project Settings -> Data API -> Exposed schemas.`
+    );
+    // deputy.sync_runs is in the unavailable schema, so record the failure in
+    // the PUBLIC sync_logs table (same one the Excel sync uses) instead.
+    try {
+      const { error } = await supabase.from("sync_logs").insert({
+        source: "deputy-sync",
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        status: "failed",
+        row_count: 0,
+        error_message: `deputy_schema_not_exposed: ${e.detail}`.slice(0, 500),
+      });
+      if (error) {
+        console.error("deputy-sync could not write sync_logs:", describeError(error));
+      }
+    } catch (logErr) {
+      console.error("deputy-sync could not write sync_logs:", describeError(logErr));
+    }
+    return json(
+      {
+        ok: false,
+        error: "deputy_schema_not_exposed",
+        message: SCHEMA_NOT_EXPOSED_MESSAGE,
+        detail: e.detail,
+        results,
+      },
+      503
+    );
   }
 
   const anyFailed = results.some((r) => r.status === "failed");

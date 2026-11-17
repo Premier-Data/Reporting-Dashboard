@@ -44,6 +44,28 @@ export function parseDeputyBody<T>(body: {
   };
 }
 
+/** Builds a descriptive Error from a non-OK deputy-read response. */
+export async function deputyReadError(
+  dataset: string,
+  res: { status: number; json: () => Promise<unknown> }
+): Promise<Error> {
+  let code: string | null = null;
+  try {
+    const body = (await res.json()) as { error?: unknown } | null;
+    if (typeof body?.error === "string") code = body.error;
+  } catch {
+    // Non-JSON body: fall back to the status alone.
+  }
+  if (code === "deputy_schema_not_exposed") {
+    return new Error(
+      "Deputy data unavailable: the Supabase Data API is not exposing the 'deputy' schema (Project Settings -> Data API -> Exposed schemas)."
+    );
+  }
+  return new Error(
+    `deputy-read ${dataset} failed: ${res.status}${code ? ` ${code}` : ""}`
+  );
+}
+
 async function callWithMeta<T>(
   dataset: Dataset,
   opts?: DeputyReadOptions
@@ -57,7 +79,7 @@ async function callWithMeta<T>(
     cache: "no-store",
   });
   if (!res.ok) {
-    throw new Error(`deputy-read ${dataset} failed: ${res.status}`);
+    throw await deputyReadError(dataset, res);
   }
   const body = (await res.json()) as { rows?: T[]; synced?: unknown };
   if (opts?.strict && !Array.isArray(body?.rows)) {
