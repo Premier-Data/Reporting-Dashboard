@@ -22,6 +22,7 @@ import {
   conciseNote,
   type HistoryWindow,
   type PlanContext,
+  type PlanInstance,
   type PlanScope,
   type TrainingPlan,
 } from "@/lib/comparison/trainingPlan";
@@ -42,7 +43,10 @@ export interface TrainingPlanPanelProps {
   result: ComparisonResult;
   scopeRows: ComparisonRow[];
   context: Omit<PlanContext, "reviewBaseUrl">;
-  onWatch?: (seconds: number) => void;
+  /** Opens the video player for an instance. The plan stays mounted underneath. */
+  onWatch?: (instance: PlanInstance, trigger: HTMLElement | null) => void;
+  /** True while the video player is layered above the plan (Esc then belongs to the player). */
+  playerOpen?: boolean;
 }
 
 const WINDOW_OPTIONS: { value: string; label: string }[] = [
@@ -68,7 +72,7 @@ type SendState =
   | { kind: "sent"; to: string }
   | { kind: "error"; message: string };
 
-function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPanelProps) {
+function Drawer({ onClose, result, scopeRows, context, onWatch, playerOpen }: TrainingPlanPanelProps) {
   const { user } = useAuth();
   const [scope, setScope] = useState<PlanScope>("filters");
   const [windowKey, setWindowKey] = useState(`checks:${C.DEFAULT_HISTORY_CHECKS}`);
@@ -96,12 +100,13 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      if (playerOpen) return; // the player layer handles its own Esc
       if (sendOpen) setSendOpen(false);
       else onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose, sendOpen]);
+  }, [onClose, sendOpen, playerOpen]);
 
   // Print: wait for the print view to mount, print, reset on afterprint.
   useEffect(() => {
@@ -362,10 +367,7 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
                             <button
                               title="Watch"
                               aria-label="Watch clip"
-                              onClick={() => {
-                                onWatch(i.startSeconds);
-                                onClose();
-                              }}
+                              onClick={(e) => onWatch(i, e.currentTarget)}
                               className="text-slate-600 hover:text-slate-900"
                             >
                               <Play size={12} />
@@ -447,10 +449,7 @@ function Drawer({ onClose, result, scopeRows, context, onWatch }: TrainingPlanPa
                                 <button
                                   title="Watch"
                                   aria-label="Watch clip"
-                                  onClick={() => {
-                                    onWatch(i.startSeconds);
-                                    onClose();
-                                  }}
+                                  onClick={(e) => onWatch(i, e.currentTarget)}
                                   className="mr-1 text-slate-600 hover:text-slate-900"
                                 >
                                   <Play size={12} />

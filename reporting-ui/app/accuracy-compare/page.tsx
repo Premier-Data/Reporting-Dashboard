@@ -96,6 +96,14 @@ import {
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import ManageMastersDialog from "./ManageMastersDialog";
 import TrainingPlanPanel from "@/components/accuracy/TrainingPlanPanel";
+import type { PlanInstance } from "@/lib/comparison/trainingPlan";
+import {
+  PLAYER_CLOSED,
+  closePlayer,
+  openFromPlan,
+  rowMatchesFocus,
+  type PlayerState,
+} from "@/lib/comparison/trainingPlanFocus";
 import { fetchFixtureReport } from "@/lib/api/fixtureReports";
 import {
   generateInsights,
@@ -1356,6 +1364,75 @@ function AccuracyCompareInner() {
     requestAnimationFrame(trySeek);
   };
 
+  // Training-plan launch: the plan drawer stays mounted underneath (the
+  // player layers above it at a higher z-index), and we remember the origin +
+  // the referenced instance so the player can highlight it and every close
+  // path returns to the plan. Timeline-opened players keep origin "timeline".
+  const [playerMeta, setPlayerMeta] = useState<PlayerState>(PLAYER_CLOSED);
+  const planTriggerRef = useRef<HTMLElement | null>(null);
+  const planFocus = videoOpen ? playerMeta.focus : null;
+  const focusRowRef = useRef<HTMLDivElement | null>(null);
+
+  const watchFromPlan = (instance: PlanInstance, trigger: HTMLElement | null) => {
+    planTriggerRef.current = trigger;
+    setPlayerMeta(openFromPlan(instance));
+    // Make sure the referenced row is not hidden by a review filter.
+    setVideoStatFilter("all");
+    setVideoStatusFilter("all");
+    setReviewPlayer(null);
+    setFlaggedOnly(false);
+    seekVideo(instance.startSeconds);
+  };
+
+  // Single close path for the player (X, Esc, backdrop). For a plan-opened
+  // player, hand focus back to the play button that opened it.
+  const closeVideo = () => {
+    const { next, returnToPlan } = closePlayer({ ...playerMeta, open: videoOpen });
+    setPlayerMeta(next);
+    setVideoOpen(false);
+    if (returnToPlan) {
+      const el = planTriggerRef.current;
+      planTriggerRef.current = null;
+      requestAnimationFrame(() => {
+        if (el && el.isConnected) el.focus();
+      });
+    }
+  };
+  const closeVideoRef = useRef(closeVideo);
+  closeVideoRef.current = closeVideo;
+
+  // Esc closes ONLY the player layer when it was opened from the plan. Capture
+  // phase + stopPropagation keeps the plan drawer's own Esc handler from also
+  // closing the plan underneath.
+  useEffect(() => {
+    if (!videoOpen || playerMeta.origin !== "training-plan") return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeVideoRef.current();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [videoOpen, playerMeta.origin]);
+
+  // Bring the referenced row into view once the player + rows have mounted.
+  useEffect(() => {
+    if (!planFocus) return;
+    let tries = 0;
+    let raf = 0;
+    const tick = () => {
+      const el = focusRowRef.current;
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
+      if (tries++ < 30) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [planFocus]);
+
   // Step to a clip (filtered review row) by index and seek the video to it.
   // Defined via ref-free closure over reviewSeekTimes at call sites below.
   const goToClip = (index: number, times: number[]) => {
@@ -1835,6 +1912,7 @@ function AccuracyCompareInner() {
         setVideoUrl("");
         autoFilledVideoFromMasterRef.current = false;
         setVideoOpen(false);
+    setPlayerMeta(PLAYER_CLOSED);
       }
       return;
     }
@@ -4167,7 +4245,8 @@ function AccuracyCompareInner() {
                 },
                 disputes,
               }}
-              onWatch={videoUrl.trim() ? seekVideo : undefined}
+              onWatch={videoUrl.trim() ? watchFromPlan : undefined}
+              playerOpen={videoOpen}
             />
           </>
         )}
@@ -4199,7 +4278,14 @@ function AccuracyCompareInner() {
       {/* Split-screen review pop-up: video on the left half, both
           timelines (clickable) on the right half. */}
       {videoOpen && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-slate-900/80 p-2 backdrop-blur-sm">
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-slate-900/80 p-2 backdrop-blur-sm"
+          onClick={(e) => {
+            // Backdrop click closes only plan-opened players.
+            if (e.target === e.currentTarget && playerMeta.origin === "training-plan")
+              closeVideo();
+          }}
+        >
           <div className="mx-auto flex h-full w-full max-w-[1800px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl">
             {/* Header */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 px-4 py-2.5">
@@ -4258,14 +4344,55 @@ function AccuracyCompareInner() {
                   </button>
                 )}
                 <button
-                  onClick={() => setVideoOpen(false)}
+                  onClick={closeVideo}
                   className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-800 hover:text-white"
-                  title="Close"
+                  title={
+                    playerMeta.origin === "training-plan"
+                      ? "Close and return to the training plan"
+                      : "Close"
+                  }
                 >
                   <XIcon size={18} />
                 </button>
               </div>
             </div>
+
+            {planFocus && (
+              <div
+                role="status"
+                aria-label="Training plan instance being reviewed"
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-amber-400/60 bg-amber-400/10 px-4 py-2 text-xs text-amber-100"
+              >
+                <span className="font-semibold uppercase tracking-wider text-amber-300">
+                  Training plan instance
+                </span>
+                <span
+                  className={`rounded-md px-2 py-0.5 text-[11px] font-bold ${planFocus.badgeClass}`}
+                >
+                  {planFocus.typeLabel}
+                </span>
+                <span className="font-semibold text-white">{planFocus.stat}</span>
+                <span className="tabular-nums">@ {planFocus.timeLabel}</span>
+                <span>
+                  Expected:{" "}
+                  {planFocus.expected
+                    ? `${planFocus.expected.team} ${planFocus.expected.player}`
+                    : "-"}
+                </span>
+                <span>
+                  Coded:{" "}
+                  {planFocus.coded
+                    ? `${planFocus.coded.team} ${planFocus.coded.player}`
+                    : "-"}
+                  {planFocus.codedStat && planFocus.codedStat !== planFocus.stat
+                    ? ` as ${planFocus.codedStat}`
+                    : ""}
+                </span>
+                <span className="ml-auto text-amber-200/80">
+                  Close to return to the training plan
+                </span>
+              </div>
+            )}
 
             {/* Status filter + clip navigator bar */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-700 bg-slate-900 px-4 py-2">
@@ -4448,11 +4575,23 @@ function AccuracyCompareInner() {
                       videoTime >= analystInstance.start &&
                       videoTime <= analystInstance.end;
                     const rowActive = masterActive || analystActive;
+                    const rowFocused = rowMatchesFocus(row, planFocus);
                     return (
                       <div
                         key={i}
-                        ref={rowActive ? activeRowRef : undefined}
+                        ref={
+                          rowFocused
+                            ? focusRowRef
+                            : rowActive
+                              ? activeRowRef
+                              : undefined
+                        }
+                        aria-current={rowFocused ? "true" : undefined}
                         className={`grid grid-cols-[124px_1fr_1fr] border-b text-sm last:border-b-0 ${
+                          rowFocused
+                            ? "relative z-10 animate-pulse ring-2 ring-inset ring-amber-400 bg-amber-50"
+                            : ""
+                        } ${
                           rowActive
                             ? "border-sky-400 bg-sky-50 shadow-[inset_4px_0_0_0_#0ea5e9]"
                             : "border-slate-100"
