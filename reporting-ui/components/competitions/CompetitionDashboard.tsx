@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 
 import {
   buildCompetitionSummary,
+  countExcludedCompetitionGames,
   type CompetitionEntry,
   type SeasonSummary,
   type SummaryRow,
@@ -28,11 +29,30 @@ type SortKey = "label" | "seasons" | "games" | "teams" | "firstDate" | "lastDate
 
 const nf = new Intl.NumberFormat("en-AU");
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  suffix,
+  suffixTitle,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  suffix?: string;
+  suffixTitle?: string;
+}) {
   return (
     <div className="rounded-2xl border border-slate-700 bg-[#0f1b2d] p-5">
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-2 text-3xl font-bold text-white">{value}</div>
+      <div className="mt-2 text-3xl font-bold text-white">
+        {value}
+        {suffix && (
+          <span className="ml-2 text-base font-medium text-slate-500" title={suffixTitle}>
+            {suffix}
+          </span>
+        )}
+      </div>
       {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
     </div>
   );
@@ -181,6 +201,15 @@ export default function CompetitionDashboard({
     [games, onlyAllocated, teamKeys]
   );
 
+  const competitionKeys = exclusions?.competitionKeys;
+  const excluded = useMemo(
+    () =>
+      countExcludedCompetitionGames(allGames ?? games, competitionKeys ?? new Set<string>(), {
+        onlyAllocated,
+      }),
+    [allGames, games, competitionKeys, onlyAllocated]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return summary.competitions.filter(
@@ -258,7 +287,12 @@ export default function CompetitionDashboard({
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard label="Unique competitions (all years)" value={nf.format(summary.totalCompetitions)} />
         <StatCard label="Unique teams (all years)" value={nf.format(summary.totalTeams)} />
-        <StatCard label="Games analysed" value={nf.format(summary.totalGames)} />
+        <StatCard
+          label="Games analysed"
+          value={nf.format(summary.totalGames)}
+          suffix={`(${nf.format(excluded.excludedGames)} excluded)`}
+          suffixTitle="Games in excluded competitions (manual exclusions and Practice competitions); not included in the total"
+        />
         <StatCard
           label="Seasons covered"
           value={range}

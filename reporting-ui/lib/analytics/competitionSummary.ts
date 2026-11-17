@@ -3,6 +3,7 @@ import {
   canonicalCompetition,
   canonicalTeam,
   collapseSpaces,
+  isPracticeCompetition,
   stripCompetitionYear,
   stripTeamYear,
 } from "@/lib/analytics/competitionNames";
@@ -91,6 +92,37 @@ export type SummaryOptions = {
 };
 
 const hasText = (v: unknown) => String(v ?? "").trim() !== "";
+
+export type ExcludedGamesSummary = {
+  /** Games in excluded competitions (manual + practice). */
+  excludedGames: number;
+  /** Excluded by the exclusion list (table or fallback), not Practice. */
+  manualGames: number;
+  /** Excluded automatically as a Practice competition. */
+  practiceGames: number;
+};
+
+/**
+ * Counts games belonging to EXCLUDED COMPETITIONS only. Pass the UNFILTERED
+ * rows. Team exclusions are not considered (those games stay in the main
+ * total). `onlyAllocated` matches buildCompetitionSummary so numbers compare.
+ */
+export function countExcludedCompetitionGames(
+  rows: readonly SummaryRow[],
+  competitionKeys: ReadonlySet<string>,
+  opts: { onlyAllocated?: boolean } = {}
+): ExcludedGamesSummary {
+  let manualGames = 0;
+  let practiceGames = 0;
+  for (const r of rows) {
+    if (opts.onlyAllocated && !hasText(r.home_allocated) && !hasText(r.away_allocated)) {
+      continue;
+    }
+    if (isPracticeCompetition(r.Competition)) practiceGames++;
+    else if (competitionKeys.has(canonicalCompetition(r.Competition))) manualGames++;
+  }
+  return { excludedGames: manualGames + practiceGames, manualGames, practiceGames };
+}
 
 function seasonOfRow(r: SummaryRow): number | null {
   const sw = seasonWeekOfIso(r.Date);

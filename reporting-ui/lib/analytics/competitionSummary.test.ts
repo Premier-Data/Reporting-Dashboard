@@ -28,7 +28,7 @@ describe("isExcludedCompetition", () => {
     expect(isExcludedCompetition(name)).toBe(expected);
   });
 });
-import { buildCompetitionSummary } from "./competitionSummary";
+import { buildCompetitionSummary, countExcludedCompetitionGames } from "./competitionSummary";
 import { filterExcludedCompetitions } from "./exclusions";
 
 describe("isPracticeCompetition", () => {
@@ -332,5 +332,49 @@ describe("TeamEntry primary competition", () => {
     const t = team([g(null, "2024-04-01", "T")], "t");
     expect(t.primaryCompetition).toBe("");
     expect(t.competitionsWithGames).toEqual([]);
+  });
+});
+
+describe("countExcludedCompetitionGames", () => {
+  const g = (Competition: string, home_team = "H", away_team = "A", home_allocated = "X") => ({
+    Date: "2024-05-01",
+    Competition,
+    home_team,
+    away_team,
+    home_allocated,
+  });
+  const rows = [
+    g("PSA 2022"),
+    g("PSA"),
+    g("Keep League"),
+    g("Keep League", "TeamX", "B"),
+    g("NGA Practice"),
+    g("Practise Kilsyth 2025"),
+    g("Intra", "H", "A", ""),
+  ];
+  const keys = new Set(["psa", "intra"]);
+
+  it("counts manual (normalised names) and practice separately", () => {
+    expect(countExcludedCompetitionGames(rows, keys)).toEqual({
+      excludedGames: 5,
+      manualGames: 3,
+      practiceGames: 2,
+    });
+  });
+
+  it("does not count team exclusions", () => {
+    const s = buildCompetitionSummary(filterExcludedCompetitions(rows, keys), { excludedTeamKeys: ["teamx"] });
+    expect(s.totalGames).toBe(2);
+    expect(countExcludedCompetitionGames(rows, keys).excludedGames).toBe(5);
+  });
+
+  it("included + excluded = all rows", () => {
+    const inc = buildCompetitionSummary(filterExcludedCompetitions(rows, keys)).totalGames;
+    expect(inc + countExcludedCompetitionGames(rows, keys).excludedGames).toBe(rows.length);
+  });
+
+  it("restoring a competition lowers the excluded count; onlyAllocated applies", () => {
+    expect(countExcludedCompetitionGames(rows, new Set(["psa"])).excludedGames).toBe(4);
+    expect(countExcludedCompetitionGames(rows, keys, { onlyAllocated: true }).excludedGames).toBe(4);
   });
 });
