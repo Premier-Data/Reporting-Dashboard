@@ -82,7 +82,8 @@ import {
 } from "@/lib/comparison/json-adapter";
 import {
   deriveOverlapWindow,
-  scopeToOverlap,
+  pairedEdgeIds,
+  scopeToOverlapPaired,
 } from "@/lib/comparison/overlap-window";
 import { canFlagRowPure, emptyCellAnchor } from "./dispute-permissions";
 import ManageMastersDialog from "./ManageMastersDialog";
@@ -1911,9 +1912,6 @@ function AccuracyCompareInner() {
     return { start: -Infinity, end: Infinity };
   }, [rangeMode, manualStart, manualEnd, analystWindow]);
 
-  const inRange = (i: Instance) =>
-    i.mid >= effectiveRange.start && i.mid <= effectiveRange.end;
-
   // Canonicalise team names to Home/Away ONCE, so team filtering and the
   // player breakdown use the same labels the comparison produces. Without
   // this, clicking a "Home"/"Away" filter would match none of the raw
@@ -1928,6 +1926,32 @@ function AccuracyCompareInner() {
     );
   }, [master, analyst, tolerance]);
 
+  // Overlap mode only: instances just outside the window (within tolerance)
+  // that pair with an unmatched in-window event, e.g. an analyst opening Kick
+  // Off at 79s vs the master's at 80s. Same rule the save flow uses
+  // (scopeToOverlapPaired). Holds both the raw and canonical objects so
+  // inRange works on either.
+  const overlapEdge = useMemo(() => {
+    if (rangeMode !== "auto" || !canonical || !master || !analyst) return null;
+    const ids = pairedEdgeIds(
+      canonical.master,
+      canonical.analyst,
+      tolerance,
+      master.name
+    );
+    if (ids.master.size === 0 && ids.analyst.size === 0) return null;
+    const set = new Set<Instance>();
+    for (const arr of [canonical.master, master.instances])
+      for (const i of arr) if (ids.master.has(i.id)) set.add(i);
+    for (const arr of [canonical.analyst, analyst.instances])
+      for (const i of arr) if (ids.analyst.has(i.id)) set.add(i);
+    return set;
+  }, [rangeMode, canonical, tolerance, master, analyst]);
+
+  const inRange = (i: Instance) =>
+    (i.mid >= effectiveRange.start && i.mid <= effectiveRange.end) ||
+    (overlapEdge?.has(i) ?? false);
+
   // Auto-suggested check category. Computed the SAME overlap-scoped way the
   // save flow (gradeOverlapScoped) actually stores, so the pre-selected value
   // matches what gets written: scope the already-canonical sets to the overlap
@@ -1935,7 +1959,12 @@ function AccuracyCompareInner() {
   // pure suggestCheckCategory helper. Null until both files are loaded.
   const checkCategorySuggestion = useMemo<CheckCategory | null>(() => {
     if (!canonical) return null;
-    const scoped = scopeToOverlap(canonical.master, canonical.analyst);
+    const scoped = scopeToOverlapPaired(
+      canonical.master,
+      canonical.analyst,
+      tolerance,
+      master?.name
+    );
     const cmp = compareInstances(
       scoped.master,
       scoped.analyst,

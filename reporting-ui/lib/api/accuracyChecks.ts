@@ -10,7 +10,7 @@ import type {
     TeamBreakdown,
     Instance,
 } from "@/lib/comparison/xml-compare";
-import { scopeToOverlap } from "@/lib/comparison/overlap-window";
+import { scopeToOverlapPaired } from "@/lib/comparison/overlap-window";
 import {
     jsonEventsToInstances,
     playerNumberMapFromReport,
@@ -226,8 +226,9 @@ export function gradeOverlapScoped(
     // 1. Canonicalise the FULL sets, exactly like the page's `canonical`.
     const canon = canonicaliseTeams(masterRaw, analystRaw, tol, name);
 
-    // 2. Scope the ALREADY-canonical sets by mid.
-    const scoped = scopeToOverlap(canon.master, canon.analyst);
+    // 2. Scope the ALREADY-canonical sets by mid, plus edge events just
+    //    outside the window that pair with an unmatched in-window event.
+    const scoped = scopeToOverlapPaired(canon.master, canon.analyst, tol, name);
 
     // 3. Grade over the scoped sets. Both calls re-canonicalise, hit the
     //    idempotency guard (inputs are Home/Away-only), and pass through — so

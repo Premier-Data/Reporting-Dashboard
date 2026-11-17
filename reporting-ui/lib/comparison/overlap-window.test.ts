@@ -17,7 +17,9 @@ import {
 import {
   deriveOverlapWindow,
   inOverlap,
+  pairedEdgeIds,
   scopeToOverlap,
+  scopeToOverlapPaired,
 } from "./overlap-window";
 
 function inst(
@@ -245,5 +247,80 @@ describe("canonicalise-FULL-then-scope preserves the live Home/Away split (item 
     // And the full-set canonicalisation labelled every in-window master row.
     expect(scoped.master.length).toBe(liveScopedMaster.length);
     expect(subsetCanon.master.length).toBe(rawScoped.master.length);
+  });
+});
+
+describe("scopeToOverlapPaired keeps edge events only when they pair", () => {
+  // Master (fewer instances) defines the window [80, 200]. The analyst's
+  // opening Kick Off is coded 1s earlier (79s), just outside the window.
+  const master = [
+    inst("m1", 80, "Kick Offs", "Home", 8),
+    inst("m2", 120, "Short Passes Successful", "Home", 8),
+    inst("m3", 200, "Short Passes Successful", "Home", 4),
+  ];
+  const analyst = [
+    inst("a1", 79, "Kick Offs", "Home", 8),
+    inst("a0", 78, "Touch", "Away", 3), // unpaired edge event
+    inst("a2", 120, "Short Passes Successful", "Home", 8),
+    inst("a3", 200, "Short Passes Successful", "Home", 4),
+    inst("a4", 202, "Carries", "Away", 5), // unpaired edge event
+    inst("a5", 150, "Carries", "Home", 9),
+  ];
+
+  it("plain window cuts the 79s analyst Kick Off, so the 80s master Kick Off is missed", () => {
+    const s = scopeToOverlap(master, analyst);
+    const r = compareInstances(s.master, s.analyst, 3, "Home vs Away");
+    const ko = r.rows.filter((x) => (x.master ?? x.analyst)!.stat === "Kick Offs");
+    expect(ko.map((x) => x.status)).toEqual(["missed"]);
+  });
+
+  it("keeps the paired 79s Kick Off and still drops unpaired edge events", () => {
+    const s = scopeToOverlapPaired(master, analyst, 3, "Home vs Away");
+    expect([...s.edge.analyst]).toEqual(["a1"]);
+    expect(s.edge.master.size).toBe(0);
+    expect(s.analyst.map((i) => i.id).sort()).toEqual(["a1", "a2", "a3", "a5"]);
+
+    const before = compareInstances(
+      scopeToOverlap(master, analyst).master,
+      scopeToOverlap(master, analyst).analyst,
+      3,
+      "Home vs Away"
+    ).summary;
+    const r = compareInstances(s.master, s.analyst, 3, "Home vs Away");
+    const ko = r.rows.filter((x) => x.master?.stat === "Kick Offs");
+    expect(ko.map((x) => [x.status, x.analyst?.id])).toEqual([["exact", "a1"]]);
+    expect(r.summary.missed).toBe(before.missed - 1);
+    expect(r.summary.extra).toBe(before.extra);
+    expect(r.summary.accuracy).toBeGreaterThan(before.accuracy);
+  });
+
+  it("ignores events beyond the tolerance band", () => {
+    const far = [inst("a1", 76, "Kick Offs", "Home", 8), ...analyst.slice(2)];
+    const s = scopeToOverlapPaired(master, far, 3, "Home vs Away");
+    expect(s.edge.analyst.size).toBe(0);
+  });
+
+  it("keeps a master edge event only on an exact pair with an extra analyst event", () => {
+    // Analyst is now the fewer-instance file: window = [100, 200].
+    const a = [
+      inst("a1", 100, "Kick Offs", "Home", 8),
+      inst("a2", 200, "Short Passes Successful", "Home", 4),
+    ];
+    const m = [
+      inst("m1", 98, "Kick Offs", "Home", 8), // exact pair with a1 -> kept
+      inst("m0", 97, "Touch", "Away", 3), // unpaired -> dropped
+      inst("m2", 200, "Short Passes Successful", "Home", 4),
+      inst("m3", 150, "Carries", "Home", 9),
+      inst("m4", 202, "Header", "Home", 4), // pairs a2 only as wrong stat -> dropped
+    ];
+    const ids = pairedEdgeIds(m, a, 3, "Home vs Away");
+    expect([...ids.master]).toEqual(["m1"]);
+    expect(ids.analyst.size).toBe(0);
+  });
+
+  it("is a no-op when nothing sits outside the window", () => {
+    const s = scopeToOverlapPaired(master, analyst.slice(2), 3, "Home vs Away");
+    expect(s.edge.master.size + s.edge.analyst.size).toBe(0);
+    expect(s.master).toEqual(scopeToOverlap(master, analyst.slice(2)).master);
   });
 });

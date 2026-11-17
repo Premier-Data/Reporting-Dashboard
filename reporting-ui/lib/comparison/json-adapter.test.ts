@@ -28,6 +28,7 @@ import {
   defaultMapStatName,
   type JsonEvent,
 } from "./json-adapter";
+import { scopeToOverlapPaired } from "./overlap-window";
 
 const FIX = join(__dirname, "__fixtures__");
 const MASTER_XML = "National League North 2026_08_full_Chester FC_Merthyr Town FC.xml";
@@ -150,6 +151,69 @@ describe("Chester vs Merthyr — JSON feed vs master XML", () => {
     const [co] = jsonEventsToInstances([corner], {});
     expect(co.start).toBe(36);
     expect(co.mid).toBe(codeTime("Corners", 36, 36));
+  });
+
+  it("keeps Kick Offs (and their same-time pass) and grades the opening Kick Off in overlap scope", () => {
+    // Shape of the pd-845-36082-Training analyst feed: StartHalf marker, then
+    // a Kick Off immediately followed by a pass at the SAME time by the SAME
+    // player. (Pitch coordinates aren't read by the adapter, so omitted.)
+    const player = {
+      playerName: "Alek Bozinovski",
+      playerNumber: 8,
+      playerUid: 213230,
+      teamName: "VIC Rovers U13 Boys",
+      teamUid: 10609,
+    };
+    const ev = (uid: number, t: number, code: string, name: string): JsonEvent => ({
+      uid,
+      quarter: 1,
+      relativeTime: t,
+      statTypeCode: code,
+      statTypeName: name,
+      ...player,
+    });
+    const analystEvents: JsonEvent[] = [
+      { uid: 27, quarter: 1, relativeTime: 79, statTypeCode: "StartHalf", statTypeName: "Start Half", playerUid: 0 },
+      ev(28, 79, "KickOff", "Kick Off"),
+      ev(29, 79, "LongPassEffective", "Pass"),
+      ev(176, 365, "KickOff", "Kick Off"),
+      ev(177, 365, "ShortPassEffective", "Pass"),
+      ev(1575, 2533, "KickOff", "Kick Off"),
+      ev(1576, 2533, "ShortPassEffective", "Pass"),
+    ];
+    const analyst = jsonEventsToInstances(analystEvents, {});
+    // StartHalf dropped; each Kick Off AND its pass kept as separate instances.
+    expect(analyst).toHaveLength(6);
+    const kos = analyst.filter((i) => i.stat === "Kick Offs");
+    expect(kos.map((i) => [i.start, i.category, i.playerNumber])).toEqual([
+      [79, "Event", 8],
+      [365, "Event", 8],
+      [2533, "Event", 8],
+    ]);
+
+    // Master codes the same moments 0-2s later (as in saved check 953), so the
+    // master defines the overlap window and starts at 80s — 1s AFTER the
+    // analyst's opening Kick Off.
+    const master = jsonEventsToInstances(
+      [
+        ev(1, 80, "KickOff", "Kick Off"),
+        ev(2, 80, "LongPassEffective", "Pass"),
+        ev(3, 367, "KickOff", "Kick Off"),
+        ev(4, 2533, "KickOff", "Kick Off"),
+      ],
+      {}
+    );
+    const scoped = scopeToOverlapPaired(master, analyst, 3, "Home v Away");
+    const r = compareInstances(scoped.master, scoped.analyst, 3, "Home v Away");
+    const koRows = r.rows.filter((x) => x.master?.stat === "Kick Offs");
+    expect(koRows.map((x) => [x.status, x.analyst?.start])).toEqual([
+      ["exact", 79],
+      ["exact", 365],
+      ["exact", 2533],
+    ]);
+    // Kick Off and the same-time pass don't double count each other.
+    expect(r.summary.exact).toBe(4);
+    expect(r.summary.missed).toBe(0);
   });
 
   it("runs the full comparison and produces sane, self-consistent totals", () => {
