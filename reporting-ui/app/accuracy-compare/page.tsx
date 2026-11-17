@@ -39,7 +39,7 @@ import {
   updateAccuracyCheck,
   getAccuracyCheckById,
   getSavedMasters,
-  getMasterAnalystRows,
+  getMasterCoderRows,
   getSavedMasterXml,
   propagateMasterCorrection,
   updateCheckAndPropagateMaster,
@@ -52,8 +52,8 @@ import {
 } from "@/lib/api/accuracyChecks";
 import { getPlatformAnalystNames } from "@/lib/api/analysts";
 import {
-  resolveOriginalAnalyst,
-  type OriginalAnalystRow,
+  resolveMasterCoder,
+  type MasterCoderRow,
 } from "@/lib/api/masterGroup";
 import { useAuth } from "@/components/auth/AuthContext";
 import {
@@ -1584,25 +1584,23 @@ function AccuracyCompareInner() {
   const [analystNames, setAnalystNames] = useState<string[]>([]);
   const [masterAnalyst, setMasterAnalyst] = useState("");
   const [gradedAnalyst, setGradedAnalyst] = useState("");
-  // True once the user picked the graded analyst themselves (or a saved check
-  // supplied it). Picking a master only DEFAULTS the analyst while this is false.
-  const gradedAnalystLockedRef = useRef(false);
-  // Light checks list (id, analyst, created_at, master name), loaded on first
-  // master pick and dropped when masters are changed in Manage masters.
-  const masterAnalystRowsRef = useRef<OriginalAnalystRow[] | null>(null);
-  const defaultAnalystForMaster = async (masterName: string) => {
-    if (gradedAnalystLockedRef.current || loadedCheckIdRef.current != null)
+  // True once the user picked the master coder themselves (or a saved check /
+  // swap supplied it). Picking a master only DEFAULTS "Coded by (master)" while
+  // this is false. The graded analyst is never touched by master selection.
+  const masterAnalystLockedRef = useRef(false);
+  // Light checks list (id, master coder, created_at, master name), loaded on
+  // first master pick and dropped when masters are changed in Manage masters.
+  const masterCoderRowsRef = useRef<MasterCoderRow[] | null>(null);
+  const defaultMasterCoderForMaster = async (masterName: string) => {
+    if (masterAnalystLockedRef.current || loadedCheckIdRef.current != null)
       return;
-    if (!masterAnalystRowsRef.current)
-      masterAnalystRowsRef.current = await getMasterAnalystRows();
+    if (!masterCoderRowsRef.current)
+      masterCoderRowsRef.current = await getMasterCoderRows();
     // Re-check after the await: the user may have chosen one meanwhile.
-    if (gradedAnalystLockedRef.current || loadedCheckIdRef.current != null)
+    if (masterAnalystLockedRef.current || loadedCheckIdRef.current != null)
       return;
-    const original = resolveOriginalAnalyst(
-      masterAnalystRowsRef.current,
-      masterName
-    );
-    if (original) setGradedAnalyst(original);
+    const coder = resolveMasterCoder(masterCoderRowsRef.current, masterName);
+    if (coder) setMasterAnalyst(coder);
   };
   const [matchLabel, setMatchLabel] = useState("");
   // Whether the user has typed their own label. Until they do, the
@@ -1722,6 +1720,7 @@ function AccuracyCompareInner() {
             ).trim();
             if (side === "master") {
               setMaster(loaded);
+              void defaultMasterCoderForMaster(loaded.name);
               // Fresh compare — drop any previously-loaded saved check.
               setLoadedCheckId(null);
               setLoadedCheckMeta(null);
@@ -1797,7 +1796,7 @@ function AccuracyCompareInner() {
         setLabelEdited(false);
         setCheckCategoryEdited(false);
         setGradedAnalyst("");
-        gradedAnalystLockedRef.current = false;
+        masterAnalystLockedRef.current = false;
         setMasterAnalyst("");
         setVideoUrl("");
         setVideoOpen(false);
@@ -1841,7 +1840,6 @@ function AccuracyCompareInner() {
       if (check.tolerance != null) setTolerance(check.tolerance);
       if (check.master_analyst_name) setMasterAnalyst(check.master_analyst_name);
       setGradedAnalyst(check.analyst_name);
-      gradedAnalystLockedRef.current = true;
       if (check.match_label) {
         setMatchLabel(check.match_label);
         setLabelEdited(true);
@@ -2529,7 +2527,7 @@ function AccuracyCompareInner() {
     const ma = masterAnalyst;
     setMasterAnalyst(gradedAnalyst);
     setGradedAnalyst(ma);
-    gradedAnalystLockedRef.current = true;
+    masterAnalystLockedRef.current = true;
   }
 
   async function handleSaveCheck() {
@@ -2848,6 +2846,7 @@ function AccuracyCompareInner() {
               allowJson
               onLoad={(f) => {
                 setMaster(f);
+                void defaultMasterCoderForMaster(f.name);
                 if (f.kind === "json") setSport("football");
               }}
               onClear={() => setMaster(null)}
@@ -2887,9 +2886,9 @@ function AccuracyCompareInner() {
                       // parsed". loadedFileFromRaw detects JSON vs XML and sets
                       // kind correctly.
                       setMaster(loadedFileFromRaw(sm.fileName, xml));
-                      // Default the analyst to the master's original analyst
+                      // Default 'Coded by (master)' to the master's original coder
                       // (no-op if the user already chose one).
-                      void defaultAnalystForMaster(sm.fileName);
+                      void defaultMasterCoderForMaster(sm.fileName);
                       // If this master had a video and none is set yet,
                       // prefill it too.
                       if (sm.videoUrl && !videoUrl) setVideoUrl(sm.videoUrl);
@@ -2934,7 +2933,7 @@ function AccuracyCompareInner() {
                       cur && cur.name === change.source ? null : cur
                     );
                   }
-                  masterAnalystRowsRef.current = null;
+                  masterCoderRowsRef.current = null;
                   await refreshSavedMasters();
                 }}
               />
@@ -2945,7 +2944,10 @@ function AccuracyCompareInner() {
               </label>
               <AnalystCombobox
                 value={masterAnalyst}
-                onChange={setMasterAnalyst}
+                onChange={(v) => {
+                  masterAnalystLockedRef.current = true;
+                  setMasterAnalyst(v);
+                }}
                 options={analystNames}
               />
             </div>
@@ -2987,10 +2989,7 @@ function AccuracyCompareInner() {
               </label>
               <AnalystCombobox
                 value={gradedAnalyst}
-                onChange={(v) => {
-                  gradedAnalystLockedRef.current = true;
-                  setGradedAnalyst(v);
-                }}
+                onChange={setGradedAnalyst}
                 options={analystNames}
               />
             </div>

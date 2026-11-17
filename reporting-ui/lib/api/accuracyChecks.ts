@@ -27,7 +27,7 @@ import { createCache } from "@/lib/api/cache";
 import {
     masterKey,
     isSafeMasterWrite,
-    type OriginalAnalystRow,
+    type MasterCoderRow,
 } from "@/lib/api/masterGroup";
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 // Cross-table invalidation (one-directional: accuracyChecks → disputes, no
@@ -1579,14 +1579,14 @@ export async function getSavedMasters(): Promise<SavedMaster[]> {
 }
 
 /**
- * Light read (no XML blobs) of every non-deleted check's analyst + master name,
- * used to default the analyst when a master is picked. Pair with
- * resolveOriginalAnalyst(). Returns [] on error (defaulting is best-effort).
+ * Light read (no XML blobs) of every non-deleted check's master coder + master name,
+ * used to default "Coded by (master)" when a master is picked. Pair with
+ * resolveMasterCoder(). Returns [] on error (defaulting is best-effort).
  */
-export async function getMasterAnalystRows(): Promise<OriginalAnalystRow[]> {
+export async function getMasterCoderRows(): Promise<MasterCoderRow[]> {
     try {
-        return await fetchAllPaged<OriginalAnalystRow>("accuracy_checks", {
-            select: "id, analyst_name, created_at, file_name_master",
+        return await fetchAllPaged<MasterCoderRow>("accuracy_checks", {
+            select: "id, master_analyst_name, created_at, file_name_master",
             order: ["created_at"],
             unique: "id",
             filters: (q) => (q as any).is("deleted_at", null),
