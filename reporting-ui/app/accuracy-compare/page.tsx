@@ -53,6 +53,8 @@ import {
 import { getPlatformAnalystNames } from "@/lib/api/analysts";
 import {
   resolveMasterCoder,
+  masterKey,
+  resolveMasterVideoUrl,
   type MasterCoderRow,
 } from "@/lib/api/masterGroup";
 import { useAuth } from "@/components/auth/AuthContext";
@@ -1602,6 +1604,38 @@ function AccuracyCompareInner() {
     const coder = resolveMasterCoder(masterCoderRowsRef.current, masterName);
     if (coder) setMasterAnalyst(coder);
   };
+  // True while the game video URL was filled from a selected master (so it can
+  // be replaced/cleared on the next master pick). Typing in the field clears it.
+  const autoFilledVideoFromMasterRef = useRef(false);
+  const masterVideoPickRef = useRef(0);
+  // Set the game video URL from the selected master: a known URL always wins;
+  // with none, only a previously auto-filled URL is cleared. Never touches a
+  // loaded saved check's own video.
+  const applyMasterVideo = async (
+    masterName: string,
+    savedVideoUrl?: string | null
+  ) => {
+    if (loadedCheckIdRef.current != null) return;
+    const pick = ++masterVideoPickRef.current;
+    const apply = (url: string | null) => {
+      if (url) {
+        setVideoUrl(url);
+        autoFilledVideoFromMasterRef.current = true;
+      } else if (autoFilledVideoFromMasterRef.current) {
+        setVideoUrl("");
+        autoFilledVideoFromMasterRef.current = false;
+      }
+    };
+    if (savedVideoUrl?.trim()) {
+      apply(savedVideoUrl.trim());
+      return;
+    }
+    if (!masterCoderRowsRef.current)
+      masterCoderRowsRef.current = await getMasterCoderRows();
+    if (pick !== masterVideoPickRef.current || loadedCheckIdRef.current != null)
+      return;
+    apply(resolveMasterVideoUrl(masterCoderRowsRef.current, masterName));
+  };
   const [matchLabel, setMatchLabel] = useState("");
   // Whether the user has typed their own label. Until they do, the
   // label auto-defaults to AnalystName_AnalystFilename.
@@ -1799,6 +1833,7 @@ function AccuracyCompareInner() {
         masterAnalystLockedRef.current = false;
         setMasterAnalyst("");
         setVideoUrl("");
+        autoFilledVideoFromMasterRef.current = false;
         setVideoOpen(false);
       }
       return;
@@ -2808,7 +2843,10 @@ function AccuracyCompareInner() {
           <input
             type="text"
             value={videoUrl}
-            onChange={(e) => setVideoUrl(e.target.value)}
+            onChange={(e) => {
+              autoFilledVideoFromMasterRef.current = false;
+              setVideoUrl(e.target.value);
+            }}
             placeholder="Paste the game video URL (mp4 / direct link)"
             className="min-w-[280px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-slate-500 focus:outline-none"
           />
@@ -2847,6 +2885,11 @@ function AccuracyCompareInner() {
               onLoad={(f) => {
                 setMaster(f);
                 void defaultMasterCoderForMaster(f.name);
+                void applyMasterVideo(
+                  f.name,
+                  savedMasters.find((s) => masterKey(s.fileName) === masterKey(f.name))
+                    ?.videoUrl
+                );
                 if (f.kind === "json") setSport("football");
               }}
               onClear={() => setMaster(null)}
@@ -2889,9 +2932,8 @@ function AccuracyCompareInner() {
                       // Default 'Coded by (master)' to the master's original coder
                       // (no-op if the user already chose one).
                       void defaultMasterCoderForMaster(sm.fileName);
-                      // If this master had a video and none is set yet,
-                      // prefill it too.
-                      if (sm.videoUrl && !videoUrl) setVideoUrl(sm.videoUrl);
+                      // Point the game video at this master's video.
+                      void applyMasterVideo(sm.fileName, sm.videoUrl);
                     } finally {
                       setLoadingSavedMaster(false);
                     }

@@ -6,6 +6,7 @@ import {
   masterTotalsDiffer,
   mastersGenuinelyDiffer,
   resolveMasterCoder,
+  resolveMasterVideoUrl,
 } from "./masterGroup";
 
 describe("resolveMasterCoder", () => {
@@ -109,5 +110,56 @@ describe("masterTotalsDiffer", () => {
   });
   it("is true when totals differ", () => {
     expect(masterTotalsDiffer([415, 414])).toBe(true);
+  });
+});
+
+describe("resolveMasterVideoUrl", () => {
+  const v = (
+    id: number,
+    created_at: string,
+    video_url: string | null,
+    file_name_master: string | null = "m.json",
+    deleted_at: string | null = null
+  ) => ({
+    id,
+    created_at,
+    master_analyst_name: null,
+    file_name_master,
+    video_url,
+    deleted_at,
+  });
+
+  it("prefers the saved master video", () => {
+    const rows = [v(1, "2026-01-01T00:00:00Z", "http://old")];
+    expect(resolveMasterVideoUrl(rows, "m.json", " http://saved ")).toBe(
+      "http://saved"
+    );
+  });
+
+  it("falls back to the latest check with a video", () => {
+    const rows = [
+      v(1, "2026-01-01T00:00:00Z", "http://old"),
+      v(2, "2026-03-01T00:00:00Z", "http://new"),
+      v(3, "2026-04-01T00:00:00Z", null),
+    ];
+    expect(resolveMasterVideoUrl(rows, "m.json", null)).toBe("http://new");
+  });
+
+  it("matches on the normalised key (AFc/AFC)", () => {
+    const rows = [v(1, "2026-01-01T00:00:00Z", "http://a", "  R6 AFc.json ")];
+    expect(resolveMasterVideoUrl(rows, "r6 AFC.json")).toBe("http://a");
+  });
+
+  it("ignores soft-deleted checks", () => {
+    const rows = [
+      v(1, "2026-01-01T00:00:00Z", "http://a"),
+      v(2, "2026-05-01T00:00:00Z", "http://del", "m.json", "2026-06-01T00:00:00Z"),
+    ];
+    expect(resolveMasterVideoUrl(rows, "m.json")).toBe("http://a");
+  });
+
+  it("returns null when none", () => {
+    expect(resolveMasterVideoUrl([v(1, "2026-01-01T00:00:00Z", " ")], "m.json")).toBeNull();
+    expect(resolveMasterVideoUrl([], "")).toBeNull();
   });
 });

@@ -1586,7 +1586,8 @@ export async function getSavedMasters(): Promise<SavedMaster[]> {
 export async function getMasterCoderRows(): Promise<MasterCoderRow[]> {
     try {
         return await fetchAllPaged<MasterCoderRow>("accuracy_checks", {
-            select: "id, master_analyst_name, created_at, file_name_master",
+            select:
+                "id, master_analyst_name, created_at, file_name_master, video_url",
             order: ["created_at"],
             unique: "id",
             filters: (q) => (q as any).is("deleted_at", null),

@@ -32,6 +32,37 @@ export interface MasterCoderRow {
     master_analyst_name: string | null;
     file_name_master: string | null;
     deleted_at?: string | null;
+    video_url?: string | null;
+}
+
+/**
+ * The game video URL for a master. A non-empty saved-master URL wins; otherwise
+ * the most recent (created_at, then highest id) non-deleted check with the same
+ * masterKey that has a non-empty video_url. Null when none.
+ */
+export function resolveMasterVideoUrl(
+    rows: readonly MasterCoderRow[],
+    masterName: string | null | undefined,
+    savedVideoUrl?: string | null
+): string | null {
+    const saved = savedVideoUrl?.trim();
+    if (saved) return saved;
+    const key = masterKey(masterName);
+    if (!key) return null;
+    let best: MasterCoderRow | null = null;
+    let bestTime = 0;
+    for (const r of rows) {
+        if (r.deleted_at) continue;
+        if (masterKey(r.file_name_master) !== key) continue;
+        if (!r.video_url?.trim()) continue;
+        const t = Date.parse(r.created_at);
+        const time = Number.isFinite(t) ? t : Number.NEGATIVE_INFINITY;
+        if (!best || time > bestTime || (time === bestTime && r.id > best.id)) {
+            best = r;
+            bestTime = time;
+        }
+    }
+    return best?.video_url?.trim() ?? null;
 }
 
 /**
