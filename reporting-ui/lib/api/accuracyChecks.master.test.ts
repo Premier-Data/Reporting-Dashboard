@@ -101,7 +101,9 @@ import {
   regradeAllChecks,
   getMasterCheckSiblings,
   jsonDeepEqual,
+  probeMasterVersions,
 } from "./accuracyChecks";
+import { mastersGenuinelyDiffer } from "./masterGroup";
 import { parseInstances } from "@/lib/comparison/xml-compare";
 
 const FIX = join(__dirname, "..", "comparison", "__fixtures__");
@@ -169,6 +171,26 @@ describe("JSON-aware master counting", () => {
     const report = await diagnoseMasterConsistency(NAME);
     expect(report.unparsableMasterCheckIds).toEqual([1]);
     expect(report.staleTotalCheckIds).toEqual([]);
+  });
+});
+
+describe("probeMasterVersions", () => {
+  it("ignores differing stored master_total when the master file is identical", async () => {
+    db.rows = [
+      check(1, { master_total: 10 }),
+      check(2, { master_total: 70 }),
+      check(3, { master_total: 0 }),
+    ];
+    const r = await probeMasterVersions(NAME);
+    expect(r.distinctCounts).toEqual([instancesFromRaw(MASTER_JSON).length]);
+    expect(mastersGenuinelyDiffer(r.distinctCounts)).toBe(false);
+  });
+
+  it("reports both sizes when checks use genuinely different masters", async () => {
+    db.rows = [check(1), check(2, { xml_master: slice(60) })];
+    const r = await probeMasterVersions(NAME);
+    expect(r.distinctCounts).toHaveLength(2);
+    expect(mastersGenuinelyDiffer(r.distinctCounts)).toBe(true);
   });
 });
 

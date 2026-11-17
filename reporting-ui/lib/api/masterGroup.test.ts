@@ -4,6 +4,7 @@ import {
   isSafeMasterWrite,
   masterKey,
   masterTotalsDiffer,
+  mastersGenuinelyDiffer,
 } from "./masterGroup";
 
 describe("masterKey", () => {
@@ -53,6 +54,11 @@ describe("isSafeMasterWrite", () => {
 describe("masterTotalsDiffer", () => {
   it("is false when all non-null totals match", () => {
     expect(masterTotalsDiffer([415, 415, null])).toBe(false);
+  });
+  it("mastersGenuinelyDiffer ignores identical parsed sizes, flags real differences", () => {
+    expect(mastersGenuinelyDiffer([226, 226, 226])).toBe(false);
+    expect(mastersGenuinelyDiffer([])).toBe(false);
+    expect(mastersGenuinelyDiffer([264, 305])).toBe(true);
   });
   it("is true when totals differ", () => {
     expect(masterTotalsDiffer([415, 414])).toBe(true);

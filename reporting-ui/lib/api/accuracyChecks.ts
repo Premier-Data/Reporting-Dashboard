@@ -1385,6 +1385,37 @@ export async function diagnoseMasterConsistency(
 }
 
 /**
+ * Cheap master-identity probe for the History panel: the distinct parsed
+ * instance counts of the full stored masters across a fixture's sibling
+ * checks. No grading, no writes; one xml_master fetched at a time.
+ */
+export async function probeMasterVersions(
+    fileNameMaster: string
+): Promise<{ distinctCounts: number[]; checks: number }> {
+    const ids = await resolveActiveGroupIds(fileNameMaster);
+    const counts = new Set<number>();
+    for (const id of ids) {
+        const { data, error } = await supabase
+            .from("accuracy_checks")
+            .select("xml_master")
+            .eq("id", id)
+            .single();
+        if (error || !data) continue;
+        const raw = (data as { xml_master: string | null }).xml_master;
+        if (!raw) continue;
+        try {
+            counts.add(instancesFromRaw(raw).length);
+        } catch {
+            /* unparsable: ignore, as the modal does */
+        }
+    }
+    return {
+        distinctCounts: Array.from(counts).sort((a, b) => a - b),
+        checks: ids.length,
+    };
+}
+
+/**
  * Re-grade ONE check from its stored master + analyst data with the current
  * grader and write the grade columns (never xml_*, category or labels).
  * Writes nothing and reports why when the master is empty / parses to 0

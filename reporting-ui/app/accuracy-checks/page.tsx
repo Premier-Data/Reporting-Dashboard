@@ -39,6 +39,7 @@ import {
   backfillPlayerAccuracy,
   regradeAllChecks,
   diagnoseMasterConsistency,
+  probeMasterVersions,
   fixStaleMasterTotals,
   instancesFromRaw,
   setAccuracyCheckCategory,
@@ -49,7 +50,11 @@ import {
   type MasterConsistencyReport,
   type MasterSiblingCheck,
 } from "@/lib/api/accuracyChecks";
-import { masterKey, masterTotalsDiffer } from "@/lib/api/masterGroup";
+import {
+  masterKey,
+  masterTotalsDiffer,
+  mastersGenuinelyDiffer,
+} from "@/lib/api/masterGroup";
 import {
   getOpenDisputeCounts,
   getDisputesForCheck,
@@ -795,7 +800,7 @@ export default function AccuracyChecksPage() {
   // stored master_total — the tell-tale of an edited/re-coded master. Detected
   // from data already in memory (no XML fetch): group by file_name_master and
   // compare the master_total values. Keyed by filename with the min/max spread.
-  const masterTotalMismatches = useMemo(() => {
+  const storedTotalCandidates = useMemo(() => {
     const byFile = new Map<
       string,
       { file: string; label: string; totals: Set<number>; count: number }
@@ -835,6 +840,49 @@ export default function AccuracyChecksPage() {
     }
     return out.sort((a, b) => b.max - b.min - (a.max - a.min));
   }, [checks]);
+
+  // Stored master_total is overlap-scoped (varies per analyst window), so a
+  // spread there is only a CANDIDATE. Confirm lazily, one fixture at a time,
+  // by comparing the parsed instance counts of the real master files (same rule
+  // as the Master consistency modal). Verdicts are cached by fixture key.
+  const [masterVerdicts, setMasterVerdicts] = useState<
+    Record<string, number[]>
+  >({});
+  useEffect(() => {
+    if (!canResolve) return;
+    let cancelled = false;
+    (async () => {
+      for (const m of storedTotalCandidates) {
+        if (cancelled) return;
+        const k = masterKey(m.file);
+        if (masterVerdicts[k]) continue;
+        try {
+          const r = await probeMasterVersions(m.file);
+          if (cancelled) return;
+          setMasterVerdicts((prev) => ({ ...prev, [k]: r.distinctCounts }));
+        } catch {
+          /* leave unverified; retried on next change */
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // masterVerdicts intentionally omitted: already-probed fixtures are
+    // skipped via the closure value, and re-running per verdict would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storedTotalCandidates, canResolve]);
+
+  const masterTotalMismatches = useMemo(
+    () =>
+      storedTotalCandidates.filter((m) =>
+        mastersGenuinelyDiffer(masterVerdicts[masterKey(m.file)] ?? [])
+      ),
+    [storedTotalCandidates, masterVerdicts]
+  );
+  const masterProbePending = storedTotalCandidates.filter(
+    (m) => !masterVerdicts[masterKey(m.file)]
+  ).length;
 
   // Export the Saved-checks rows CURRENTLY SHOWING (respecting the week filter,
   // analyst scope and sort) to a CSV download. Percentages are written as plain
@@ -1866,9 +1914,12 @@ export default function AccuracyChecksPage() {
                   {masterTotalMismatches.length === 1 ? "" : "s"}
                 </p>
                 <p className="mt-0.5 text-xs text-amber-700">
-                  The stored master total isn&apos;t identical across analysts.
-                  That can be a different master file, or just a stale or
-                  analyst-window total that &quot;Recompute all&quot; refreshes.
+                  These fixtures&apos; checks use different master files (the
+                  parsed master size differs). Stored totals that only differ
+                  because each analyst&apos;s overlap window differs are not
+                  listed.
+                  {masterProbePending > 0 &&
+                    ` Verifying ${masterProbePending} more…`}{" "}
                   Click one to inspect each check&apos;s master.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -1881,7 +1932,10 @@ export default function AccuracyChecksPage() {
                     >
                       {m.label}
                       <span className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold">
-                        {m.min}–{m.max} · {m.checks} checks
+                        masters {(masterVerdicts[masterKey(m.file)] ?? []).join(
+                          " / "
+                        )}{" "}
+                        · {m.checks} checks
                       </span>
                     </button>
                   ))}
@@ -2616,7 +2670,8 @@ function MasterConsistencyModal({
               <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg bg-slate-50 px-3 py-2">
                 <span className="text-xs text-slate-600">
                   {report.staleTotalCheckIds.length} check
-                  {report.staleTotalCheckIds.length === 1 ? "" : "s"} have a
+                  {report.staleTotalCheckIds.length === 1 ? "" : "s"}{" "}
+                  {report.staleTotalCheckIds.length === 1 ? "has" : "have"} a
                   stored total that doesn&apos;t match the current grading.
                 </span>
                 <button

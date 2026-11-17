@@ -38,6 +38,18 @@ export function isSafeMasterWrite(
     return Number.isFinite(count) && count > 0;
 }
 
+/**
+ * True when sibling checks genuinely use DIFFERENT master files, judged by the
+ * parsed instance count of each check's full master (same rule as the Master
+ * consistency modal). Stored master_total is overlap-scoped per analyst, so it
+ * must NOT be used for this.
+ */
+export function mastersGenuinelyDiffer(
+    parsedCounts: readonly (number | null | undefined)[]
+): boolean {
+    return masterTotalsDiffer(parsedCounts);
+}
+
 /** True when the non-null totals are not all identical. */
 export function masterTotalsDiffer(
     totals: readonly (number | null | undefined)[]
