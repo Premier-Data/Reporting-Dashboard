@@ -25,6 +25,42 @@ export function groupByMasterKey<T extends { file_name_master: string | null }>(
     return out;
 }
 
+/** Minimal check row needed to resolve a master's original analyst. */
+export interface OriginalAnalystRow {
+    id: number;
+    created_at: string;
+    analyst_name: string | null;
+    file_name_master: string | null;
+    deleted_at?: string | null;
+}
+
+/**
+ * The ORIGINAL analyst allocated to a master: the analyst on the earliest
+ * (created_at, then lowest id) non-deleted check whose master matches by
+ * masterKey. Checks with a blank analyst are skipped. Null when none found.
+ */
+export function resolveOriginalAnalyst(
+    rows: readonly OriginalAnalystRow[],
+    masterName: string | null | undefined
+): string | null {
+    const key = masterKey(masterName);
+    if (!key) return null;
+    let best: OriginalAnalystRow | null = null;
+    let bestTime = 0;
+    for (const r of rows) {
+        if (r.deleted_at) continue;
+        if (masterKey(r.file_name_master) !== key) continue;
+        if (!r.analyst_name?.trim()) continue;
+        const t = Date.parse(r.created_at);
+        const time = Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+        if (!best || time < bestTime || (time === bestTime && r.id < best.id)) {
+            best = r;
+            bestTime = time;
+        }
+    }
+    return best?.analyst_name?.trim() ?? null;
+}
+
 /**
  * Guard for writing a master-derived total: never write 0 (or anything when the
  * source is blank) over a stored value. Returns false when the count is 0, which

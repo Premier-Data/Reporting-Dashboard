@@ -24,7 +24,12 @@ import {
     type StoredAflPlayerAccuracy,
 } from "@/lib/comparison/afl-player-accuracy";
 import { createCache } from "@/lib/api/cache";
-import { masterKey, isSafeMasterWrite } from "@/lib/api/masterGroup";
+import {
+    masterKey,
+    isSafeMasterWrite,
+    type OriginalAnalystRow,
+} from "@/lib/api/masterGroup";
+import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 // Cross-table invalidation (one-directional: accuracyChecks → disputes, no
 // cycle — disputes.ts imports only @/lib/supabase and @/lib/api/cache). The
 // two dispute list fetches are filtered by the parent check's deleted_at, so a
@@ -1571,6 +1576,25 @@ export async function getSavedMasters(): Promise<SavedMaster[]> {
         });
     }
     return masters;
+}
+
+/**
+ * Light read (no XML blobs) of every non-deleted check's analyst + master name,
+ * used to default the analyst when a master is picked. Pair with
+ * resolveOriginalAnalyst(). Returns [] on error (defaulting is best-effort).
+ */
+export async function getMasterAnalystRows(): Promise<OriginalAnalystRow[]> {
+    try {
+        return await fetchAllPaged<OriginalAnalystRow>("accuracy_checks", {
+            select: "id, analyst_name, created_at, file_name_master",
+            order: ["created_at"],
+            unique: "id",
+            filters: (q) => (q as any).is("deleted_at", null),
+        });
+    } catch (err) {
+        console.error("Failed loading master analyst rows:", err);
+        return [];
+    }
 }
 
 /**

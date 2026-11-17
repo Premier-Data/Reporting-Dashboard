@@ -5,7 +5,54 @@ import {
   masterKey,
   masterTotalsDiffer,
   mastersGenuinelyDiffer,
+  resolveOriginalAnalyst,
 } from "./masterGroup";
+
+describe("resolveOriginalAnalyst", () => {
+  const row = (
+    id: number,
+    created_at: string,
+    analyst_name: string | null,
+    file_name_master: string | null,
+    deleted_at: string | null = null
+  ) => ({ id, created_at, analyst_name, file_name_master, deleted_at });
+
+  it("earliest check wins", () => {
+    const rows = [
+      row(1, "2026-02-01T00:00:00Z", "Late", "m.json"),
+      row(2, "2026-01-01T00:00:00Z", "Early", "m.json"),
+    ];
+    expect(resolveOriginalAnalyst(rows, "m.json")).toBe("Early");
+  });
+
+  it("matches on the normalised key (case + whitespace)", () => {
+    const rows = [row(1, "2026-01-01T00:00:00Z", "Ann", "  R6 AFc.json ")];
+    expect(resolveOriginalAnalyst(rows, "r6 afC.json")).toBe("Ann");
+  });
+
+  it("ignores soft-deleted checks", () => {
+    const rows = [
+      row(1, "2026-01-01T00:00:00Z", "Gone", "m.json", "2026-03-01T00:00:00Z"),
+      row(2, "2026-02-01T00:00:00Z", "Kept", "m.json"),
+    ];
+    expect(resolveOriginalAnalyst(rows, "m.json")).toBe("Kept");
+  });
+
+  it("returns null when nothing matches or name is blank", () => {
+    const rows = [row(1, "2026-01-01T00:00:00Z", "Ann", "other.json")];
+    expect(resolveOriginalAnalyst(rows, "m.json")).toBeNull();
+    expect(resolveOriginalAnalyst(rows, "  ")).toBeNull();
+    expect(resolveOriginalAnalyst([], "m.json")).toBeNull();
+  });
+
+  it("breaks created_at ties by lowest id", () => {
+    const rows = [
+      row(9, "2026-01-01T00:00:00Z", "Nine", "m.json"),
+      row(3, "2026-01-01T00:00:00Z", "Three", "m.json"),
+    ];
+    expect(resolveOriginalAnalyst(rows, "m.json")).toBe("Three");
+  });
+});
 
 describe("masterKey", () => {
   it("trims and lowercases, null becomes empty", () => {
