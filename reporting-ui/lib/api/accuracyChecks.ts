@@ -24,6 +24,7 @@ import {
     type StoredAflPlayerAccuracy,
 } from "@/lib/comparison/afl-player-accuracy";
 import { createCache } from "@/lib/api/cache";
+import { masterKey, isSafeMasterWrite } from "@/lib/api/masterGroup";
 // Cross-table invalidation (one-directional: accuracyChecks → disputes, no
 // cycle — disputes.ts imports only @/lib/supabase and @/lib/api/cache). The
 // two dispute list fetches are filtered by the parent check's deleted_at, so a
@@ -253,6 +254,32 @@ export function gradeOverlapScoped(
     return { result, playerAccuracy };
 }
 
+type GradedResult = NonNullable<ReturnType<typeof gradeOverlapScoped>>;
+
+/**
+ * The stored grade columns for a graded result (everything derived from the
+ * grade; never xml_*, category or labels). Shared by propagate, backfill,
+ * regrade-all and the stale-total fixer.
+ */
+function gradedColumns(graded: GradedResult) {
+    const s = graded.result.summary;
+    return {
+        accuracy: s.accuracy,
+        master_total: s.masterTotal,
+        analyst_total: s.analystTotal,
+        exact: s.exact,
+        wrong_stat: s.wrongStat,
+        wrong_player: s.wrongPlayer,
+        wrong_team: s.wrongTeam,
+        missed: s.missed,
+        extra: s.extra,
+        avg_time_drift: s.avgTimeDrift,
+        category_breakdown: graded.result.byCategory ?? null,
+        team_breakdown: graded.result.byTeam ?? null,
+        player_accuracy: graded.playerAccuracy,
+    };
+}
+
 /**
  * Persists a comparison result as an accuracy check attributed to the
  * graded analyst (and, optionally, the analyst who coded the master).
@@ -389,6 +416,10 @@ export interface UpdateAccuracyCheckInput {
 export async function updateAccuracyCheck(
     input: UpdateAccuracyCheckInput
 ): Promise<AccuracyCheck> {
+    // Never overwrite a stored master with an empty/unparsable one.
+    if (instancesFromRaw(input.xmlMaster).length === 0) {
+        throw new Error("Master has no instances; nothing was changed.");
+    }
     // Grade OVERLAP-SCOPED from the (edited) master vs the analyst, NOT from
     // input.result. The sole caller (handleUpdateCheck on the compare page)
     // always passes xmlAnalyst/fileNameMaster/tolerance, so this normally
@@ -493,58 +524,71 @@ export async function updateAccuracyCheck(
 }
 
 export interface PropagateMasterResult {
-    /** How many checks were updated (including the source check). */
+    /** How many OTHER checks were updated (the excluded source check is not counted). */
     updated: number;
+    /** How many checks could not be re-graded/written (logged, never thrown). */
+    failed: number;
     /** Distinct analyst names whose checks were re-graded. */
     analysts: string[];
+    /** Distinct raw master names that were matched (spelling variants). */
+    matchedNames: string[];
 }
 
 /**
  * The master file is a single source of truth: correcting it should apply to
  * EVERY check graded against that same master, not just the one being viewed.
  *
- * Given a corrected master XML and the master file name, this rewrites
- * `xml_master` on every check with that `file_name_master` and RECOMPUTES each
- * one's accuracy against ITS OWN analyst XML (the analyst side is untouched).
- * So an admin corrects the master once — from any analyst's dispute — and all
- * checks of that master reflect it; later corrections keep building on it.
+ * Given a corrected master (XML or JSON feed) and the master file name, this
+ * rewrites `xml_master` on every active check in the same normalised master
+ * group (trim + case-insensitive, same key as History grouping) and RECOMPUTES
+ * each one's grade against ITS OWN analyst data with the current grading. The
+ * analyst side (`xml_analyst`) is never written.
  *
- * Matching key: `file_name_master` (the master file is always the same file).
+ * Throws, writing nothing, when the master has no instances. A per-row failure
+ * is counted in `failed` and does not stop the remaining rows.
  */
 export async function propagateMasterCorrection(
     fileNameMaster: string,
-    xmlMaster: string
+    xmlMaster: string,
+    opts?: { excludeId?: number }
 ): Promise<PropagateMasterResult> {
-    // Every check for this master, with the analyst XML needed to re-grade.
-    const { data, error } = await supabase
-        .from("accuracy_checks")
-        .select("id, analyst_name, tolerance, xml_analyst, file_name_master, sport")
-        .eq("file_name_master", fileNameMaster)
-        .is("deleted_at", null);
-
-    if (error) {
-        console.error("Failed loading checks for master:", error);
-        throw new Error(error.message || "Failed loading checks for master");
+    if (instancesFromRaw(xmlMaster).length === 0) {
+        throw new Error("Master has no instances; nothing was changed.");
     }
 
-    const analysts = new Set<string>();
-    let updated = 0;
+    const ids = (await resolveActiveGroupIds(fileNameMaster)).filter(
+        (id) => id !== opts?.excludeId
+    );
 
-    // The per-row loop THROWS on any upErr, so it can commit several rows and
-    // then throw mid-way. Clear M in a `finally` so a mid-loop throw after
-    // committing rows still clears the (now-stale) meta cache.
+    const analysts = new Set<string>();
+    const names = new Set<string>();
+    let updated = 0;
+    let failed = 0;
+
+    // Clear the meta cache in a `finally` so a throw after committing rows
+    // still clears the (now-stale) cache.
     try {
-        for (const row of (data ?? []) as {
-            id: number;
-            analyst_name: string;
-            tolerance: number | null;
-            xml_analyst: string | null;
-            file_name_master: string | null;
-            sport: string | null;
-        }[]) {
-            // Re-grade this check against the corrected master, OVERLAP-SCOPED the
-            // same deterministic way as save/update/backfill — so a later master
-            // correction can never silently rewrite siblings back to full-game scope.
+        for (const id of ids) {
+            // One row at a time: the xml blobs are large.
+            const { data: cur, error: curErr } = await supabase
+                .from("accuracy_checks")
+                .select("id, analyst_name, tolerance, xml_analyst, file_name_master, sport")
+                .eq("id", id)
+                .single();
+            if (curErr || !cur) {
+                console.error(`Failed loading check ${id}:`, curErr);
+                failed += 1;
+                continue;
+            }
+            const row = cur as {
+                analyst_name: string;
+                tolerance: number | null;
+                xml_analyst: string | null;
+                file_name_master: string | null;
+                sport: string | null;
+            };
+
+            // Re-grade OVERLAP-SCOPED with the current grader, JSON-aware.
             const graded = gradeOverlapScoped(
                 xmlMaster,
                 row.xml_analyst,
@@ -553,62 +597,105 @@ export async function propagateMasterCorrection(
                 row.sport
             );
             if (!graded) {
-                // Ungradeable row: write null accuracy columns (reconciled by
-                // backfill) and continue rather than aborting the whole propagation.
-                console.warn(
-                    `propagateMasterCorrection: check ${row.id} ungradeable; writing null accuracy.`
-                );
+                console.warn(`propagateMasterCorrection: check ${id} ungradeable; left unchanged.`);
+                failed += 1;
+                continue;
             }
-            const s = graded?.result.summary;
 
             const { error: upErr } = await supabase
                 .from("accuracy_checks")
-                .update({
-                    accuracy: s?.accuracy ?? null,
-                    master_total: s?.masterTotal ?? null,
-                    analyst_total: s?.analystTotal ?? null,
-                    exact: s?.exact ?? null,
-                    wrong_stat: s?.wrongStat ?? null,
-                    wrong_player: s?.wrongPlayer ?? null,
-                    wrong_team: s?.wrongTeam ?? null,
-                    missed: s?.missed ?? null,
-                    extra: s?.extra ?? null,
-                    avg_time_drift: s?.avgTimeDrift ?? null,
-                    category_breakdown: graded?.result.byCategory ?? null,
-                    team_breakdown: graded?.result.byTeam ?? null,
-                    xml_master: xmlMaster,
-                    player_accuracy: graded?.playerAccuracy ?? null,
-                })
-                .eq("id", row.id);
-
+                .update({ ...gradedColumns(graded), xml_master: xmlMaster })
+                .eq("id", id);
             if (upErr) {
-                console.error(`Failed updating check ${row.id}:`, upErr);
-                throw new Error(upErr.message || "Failed propagating master");
+                console.error(`Failed updating check ${id}:`, upErr);
+                failed += 1;
+                continue;
             }
             updated += 1;
             if (row.analyst_name) analysts.add(row.analyst_name);
+            if (row.file_name_master) names.add(row.file_name_master);
         }
     } finally {
-        // Mass summary change across the group → meta list is stale on every
-        // path that committed any row (including a mid-loop throw).
         invalidateAccuracyChecksMetaCache();
     }
 
-    return { updated, analysts: Array.from(analysts) };
+    return {
+        updated,
+        failed,
+        analysts: Array.from(analysts),
+        matchedNames: Array.from(names),
+    };
+}
+
+export interface UpdateCheckAndPropagateResult {
+    check: AccuracyCheck;
+    /** Other checks of the same master that were re-graded. */
+    siblingsUpdated: number;
+    siblingsFailed: number;
+    analysts: string[];
+    /** True when the master name was changed, so siblings were NOT touched. */
+    nameChanged: boolean;
+}
+
+/**
+ * "Update check" with the edited master applied to every other check of the
+ * same master. When the master file name was changed on this check, only this
+ * row is updated (the others belong to the old name).
+ */
+export async function updateCheckAndPropagateMaster(
+    input: UpdateAccuracyCheckInput
+): Promise<UpdateCheckAndPropagateResult> {
+    if (instancesFromRaw(input.xmlMaster).length === 0) {
+        throw new Error("Master has no instances; nothing was changed.");
+    }
+    const { data: cur } = await supabase
+        .from("accuracy_checks")
+        .select("file_name_master")
+        .eq("id", input.id)
+        .single();
+    const storedName =
+        (cur as { file_name_master: string | null } | null)?.file_name_master ?? null;
+
+    const check = await updateAccuracyCheck(input);
+
+    const newName =
+        input.fileNameMaster !== undefined ? input.fileNameMaster : storedName;
+    const nameChanged = masterKey(newName) !== masterKey(storedName);
+    if (nameChanged || !newName) {
+        return { check, siblingsUpdated: 0, siblingsFailed: 0, analysts: [], nameChanged };
+    }
+    const res = await propagateMasterCorrection(newName, input.xmlMaster, {
+        excludeId: input.id,
+    });
+    return {
+        check,
+        siblingsUpdated: res.updated,
+        siblingsFailed: res.failed,
+        analysts: res.analysts,
+        nameChanged: false,
+    };
 }
 
 /**
  * Count how many checks share a master file (for a confirmation prompt before
- * propagating a correction). Returns the count and the distinct analyst names.
+ * propagating a correction). Uses the same normalised group as propagation, so
+ * the count matches what will be touched. Returns the count and the distinct
+ * analyst names.
  */
 export async function getMasterCheckSiblings(
     fileNameMaster: string
 ): Promise<{ count: number; analysts: string[] }> {
+    let ids: number[];
+    try {
+        ids = await resolveActiveGroupIds(fileNameMaster);
+    } catch {
+        return { count: 0, analysts: [] };
+    }
+    if (ids.length === 0) return { count: 0, analysts: [] };
     const { data, error } = await supabase
         .from("accuracy_checks")
         .select("analyst_name")
-        .eq("file_name_master", fileNameMaster)
-        .is("deleted_at", null);
+        .in("id", ids);
     if (error) {
         console.error("Failed counting master siblings:", error);
         return { count: 0, analysts: [] };
@@ -620,7 +707,7 @@ export async function getMasterCheckSiblings(
                 .filter(Boolean)
         )
     );
-    return { count: data?.length ?? 0, analysts };
+    return { count: ids.length, analysts };
 }
 
 // ---- Manage saved masters (rename / delete) -----------------------
@@ -669,9 +756,10 @@ export interface DeleteMasterResult {
  * SAME master group as `fileName` under trim + case-insensitive equality, and
  * return their ids.
  *
- * The `.ilike("file_name_master", fileName.trim())` is a deliberately loose
- * SERVER-SIDE prefilter: it is case-insensitive but NOT whitespace-insensitive,
- * and `_`/`%` in a filename are ILIKE wildcards that may over-match. The JS
+ * The `.ilike("file_name_master", "%name%")` is a deliberately loose
+ * SERVER-SIDE prefilter: it is case-insensitive and tolerates leading/trailing
+ * whitespace in the stored name, and `_`/`%` in a filename are ILIKE wildcards
+ * that may over-match (as does the substring pattern). The JS
  * `sameMasterName` filter afterwards narrows the result to exact normalized
  * equality, so the resolved id set is always correct regardless of what the
  * prefilter returned.
@@ -681,7 +769,7 @@ async function resolveActiveGroupIds(fileName: string): Promise<number[]> {
     const { data, error } = await supabase
         .from("accuracy_checks")
         .select("id, file_name_master")
-        .ilike("file_name_master", key)
+        .ilike("file_name_master", `%${key}%`)
         .is("deleted_at", null);
     if (error) {
         console.error("Failed resolving master group:", error);
@@ -1043,8 +1131,16 @@ export interface MasterSiblingCheck {
     createdAt: string;
     /** master_total stored on the row (as shown in the Ex/Mas column). */
     storedMasterTotal: number;
-    /** Live count of parsed instances in this check's xml_master. */
+    /**
+     * Instance count of the FULL stored master file (JSON feeds via the JSON
+     * adapter, XML via parseInstances). null when nothing could be loaded.
+     */
     parsedMasterTotal: number | null;
+    /**
+     * Master total the CURRENT grading gives for this check (overlap-scoped, so
+     * it can legitimately be below the full-file count). null when ungradeable.
+     */
+    gradedMasterTotal: number | null;
     /** SHA-like short hash of the raw xml_master, to spot identical files. */
     xmlHash: string | null;
     /**
@@ -1069,12 +1165,13 @@ export interface MasterConsistencyReport {
     /** True when every sibling parses to the same master instance count. */
     consistent: boolean;
     /**
-     * Check ids whose STORED master_total disagrees with what their own
-     * xml_master actually parses to — i.e. a stale column, not a real master
-     * difference. These are what make the history banner fire while the
-     * parsed masters are actually identical.
+     * Check ids whose STORED master_total differs from what the current
+     * grading gives for them (a stale column, not a real master difference).
+     * Fixed by re-grading the check.
      */
     staleTotalCheckIds: number[];
+    /** Check ids with a non-empty master that parsed to 0 instances. */
+    unparsableMasterCheckIds: number[];
 }
 
 // Tiny, fast, non-cryptographic hash (djb2) of a string, hex-encoded. Used
@@ -1090,64 +1187,94 @@ function cheapHash(s: string): string {
 
 /**
  * Diagnose why sibling checks of the SAME master file can show different
- * master totals. Fetches each check's stored xml_master, re-parses it to count
- * instances, and hashes the raw XML so identical vs edited files are obvious.
+ * master totals. Fetches each check's stored master, counts its instances
+ * (JSON feeds and XML both, via instancesFromRaw), grades it with the current
+ * grader and hashes the raw text so identical vs edited files are obvious.
  *
- * Read-only: touches no data. Runs client-side (parseInstances needs the
- * browser DOMParser). Fetches XML one row at a time to avoid the statement
- * timeouts that batching hits on large blobs.
+ * Read-only: touches no data. Runs client-side (XML parsing needs the browser
+ * DOMParser). Fetches one row at a time to avoid statement timeouts on large
+ * blobs. Siblings are resolved through the same normalised group key as
+ * History and propagation.
  */
 export async function diagnoseMasterConsistency(
     fileNameMaster: string
 ): Promise<MasterConsistencyReport> {
-    const { data, error } = await supabase
-        .from("accuracy_checks")
-        .select("id, analyst_name, created_at, master_total")
-        .eq("file_name_master", fileNameMaster)
-        .is("deleted_at", null)
-        .order("created_at", { ascending: true });
+    const ids = await resolveActiveGroupIds(fileNameMaster);
 
-    if (error) {
-        console.error("Failed loading sibling checks:", error);
-        throw new Error(error.message || "Failed loading sibling checks");
-    }
-
-    const rows = (data ?? []) as {
+    let rows: {
         id: number;
         analyst_name: string;
         created_at: string;
         master_total: number;
-    }[];
+    }[] = [];
+    if (ids.length > 0) {
+        const { data, error } = await supabase
+            .from("accuracy_checks")
+            .select("id, analyst_name, created_at, master_total")
+            .in("id", ids)
+            .order("created_at", { ascending: true });
+        if (error) {
+            console.error("Failed loading sibling checks:", error);
+            throw new Error(error.message || "Failed loading sibling checks");
+        }
+        rows = (data ?? []) as typeof rows;
+    }
 
-    // First pass: fetch + parse each check's master XML.
+    // First pass: fetch + parse each check's master.
     type Parsed = {
         row: (typeof rows)[number];
-        instances: ReturnType<typeof parseInstances> | null;
+        instances: Instance[] | null;
+        graded: number | null;
         xmlHash: string | null;
+        unparsable: boolean;
     };
     const parsed: Parsed[] = [];
     for (const row of rows) {
         // One row at a time — xml blobs are large.
         const { data: xmlRow, error: xmlErr } = await supabase
             .from("accuracy_checks")
-            .select("xml_master")
+            .select("xml_master, xml_analyst, tolerance, sport, file_name_master")
             .eq("id", row.id)
             .single();
 
-        let instances: ReturnType<typeof parseInstances> | null = null;
+        let instances: Instance[] | null = null;
+        let graded: number | null = null;
         let xmlHash: string | null = null;
+        let unparsable = false;
         if (!xmlErr && xmlRow) {
-            const xml = (xmlRow as { xml_master: string | null }).xml_master;
-            if (xml) {
+            const r = xmlRow as {
+                xml_master: string | null;
+                xml_analyst: string | null;
+                tolerance: number | null;
+                sport: string | null;
+                file_name_master: string | null;
+            };
+            if (r.xml_master) {
                 try {
-                    instances = parseInstances(xml);
+                    instances = instancesFromRaw(r.xml_master);
                 } catch {
                     instances = null;
                 }
-                xmlHash = cheapHash(xml);
+                xmlHash = cheapHash(r.xml_master);
+                unparsable =
+                    r.xml_master.trim().length > 0 &&
+                    instances != null &&
+                    instances.length === 0;
+                try {
+                    graded =
+                        gradeOverlapScoped(
+                            r.xml_master,
+                            r.xml_analyst,
+                            r.tolerance,
+                            r.file_name_master,
+                            r.sport
+                        )?.result.summary.masterTotal ?? null;
+                } catch {
+                    graded = null;
+                }
             }
         }
-        parsed.push({ row, instances, xmlHash });
+        parsed.push({ row, instances, graded, xmlHash, unparsable });
     }
 
     // Choose the REFERENCE version: the xml hash shared by the most checks
@@ -1168,15 +1295,12 @@ export async function diagnoseMasterConsistency(
     const referenceInstances =
         parsed.find((p) => p.xmlHash === referenceHash)?.instances ?? null;
 
-    type PInst = { stat: string; category: string };
-    const statOf = (i: PInst) => (i.stat || i.category || "—").trim();
+    const statOf = (i: Instance) => (i.stat || i.category || "—").trim();
 
     // Count instances per stat for a master. This is the basis of the diff:
     // comparing per-stat counts (not individual events) cleanly explains a
     // total difference and is immune to re-graded player/timing noise.
-    const countByStat = (
-        instances: ReturnType<typeof parseInstances> | null
-    ): Map<string, number> => {
+    const countByStat = (instances: Instance[] | null): Map<string, number> => {
         const m = new Map<string, number>();
         for (const i of instances ?? []) {
             const s = statOf(i);
@@ -1218,6 +1342,7 @@ export async function diagnoseMasterConsistency(
             createdAt: p.row.created_at,
             storedMasterTotal: p.row.master_total,
             parsedMasterTotal: p.instances ? p.instances.length : null,
+            gradedMasterTotal: p.graded,
             xmlHash: p.xmlHash,
             statDiffs,
             totalDelta,
@@ -1236,11 +1361,13 @@ export async function diagnoseMasterConsistency(
         checks.map((c) => c.xmlHash).filter(Boolean)
     ).size;
 
+    // Stale = the stored (overlap-scoped) total differs from what the current
+    // grading produces. Never flag ungradeable / unparsable masters.
     const staleTotalCheckIds = checks
         .filter(
             (c) =>
-                c.parsedMasterTotal != null &&
-                c.parsedMasterTotal !== c.storedMasterTotal
+                c.gradedMasterTotal != null &&
+                c.gradedMasterTotal !== c.storedMasterTotal
         )
         .map((c) => c.checkId);
 
@@ -1251,57 +1378,85 @@ export async function diagnoseMasterConsistency(
         distinctHashes,
         consistent: distinctCounts.length <= 1,
         staleTotalCheckIds,
+        unparsableMasterCheckIds: parsed
+            .filter((p) => p.unparsable)
+            .map((p) => p.row.id),
     };
 }
 
 /**
- * Recompute + persist `master_total` for checks whose stored value has drifted
- * from what their xml_master actually parses to. Read the master XML, count
- * instances, and write the corrected count. Returns how many rows were fixed.
- *
- * Fixes the case where the history "master totals differ" banner fires purely
- * because a stored total is stale (the master files are actually identical).
- * Runs client-side (parseInstances). Pass the check ids from a
- * MasterConsistencyReport's `staleTotalCheckIds`.
+ * Re-grade ONE check from its stored master + analyst data with the current
+ * grader and write the grade columns (never xml_*, category or labels).
+ * Writes nothing and reports why when the master is empty / parses to 0
+ * instances or the grade is null, so a good stored total is never overwritten
+ * with 0 or null.
+ */
+async function regradeCheckById(
+    id: number
+): Promise<{ status: "updated" } | { status: "skipped"; reason: string }> {
+    const { data, error } = await supabase
+        .from("accuracy_checks")
+        .select("xml_master, xml_analyst, tolerance, file_name_master, sport")
+        .eq("id", id)
+        .single();
+    if (error || !data) {
+        console.error(`Failed loading check ${id}:`, error);
+        return { status: "skipped", reason: "could not load the check" };
+    }
+    const r = data as {
+        xml_master: string | null;
+        xml_analyst: string | null;
+        tolerance: number | null;
+        file_name_master: string | null;
+        sport: string | null;
+    };
+    if (!isSafeMasterWrite(r.xml_master, instancesFromRaw(r.xml_master).length)) {
+        return {
+            status: "skipped",
+            reason: "master is empty or parsed to 0 instances, left unchanged",
+        };
+    }
+    const graded = gradeOverlapScoped(
+        r.xml_master,
+        r.xml_analyst,
+        r.tolerance,
+        r.file_name_master,
+        r.sport
+    );
+    if (!graded) {
+        return { status: "skipped", reason: "could not be graded, left unchanged" };
+    }
+    const { error: upErr } = await supabase
+        .from("accuracy_checks")
+        .update(gradedColumns(graded))
+        .eq("id", id);
+    if (upErr) {
+        console.error(`Failed re-grading check ${id}:`, upErr);
+        return { status: "skipped", reason: "write failed" };
+    }
+    return { status: "updated" };
+}
+
+/**
+ * Re-grade the given checks with the current grader (see regradeCheckById).
+ * Used by the consistency modal's "Fix stored totals". Never writes 0 over a
+ * stored total: a master that parses to 0 instances is skipped and reported.
  */
 export async function fixStaleMasterTotals(
     checkIds: number[]
-): Promise<{ fixed: number }> {
+): Promise<{ fixed: number; skipped: { id: number; reason: string }[] }> {
     let fixed = 0;
-    for (const id of checkIds) {
-        const { data, error } = await supabase
-            .from("accuracy_checks")
-            .select("xml_master")
-            .eq("id", id)
-            .single();
-        if (error || !data) {
-            console.error(`Failed loading XML for check ${id}:`, error);
-            continue;
+    const skipped: { id: number; reason: string }[] = [];
+    try {
+        for (const id of checkIds) {
+            const res = await regradeCheckById(id);
+            if (res.status === "updated") fixed += 1;
+            else skipped.push({ id, reason: res.reason });
         }
-        const xml = (data as { xml_master: string | null }).xml_master;
-        if (!xml) continue;
-        let count: number;
-        try {
-            count = parseInstances(xml).length;
-        } catch {
-            continue;
-        }
-        const { error: upErr } = await supabase
-            .from("accuracy_checks")
-            .update({ master_total: count })
-            .eq("id", id);
-        if (upErr) {
-            console.error(`Failed fixing master_total for ${id}:`, upErr);
-            continue;
-        }
-        fixed += 1;
+    } finally {
+        invalidateAccuracyChecksMetaCache();
     }
-    // master_total is a meta/leaderboard column. The loop never throws out
-    // (per-row errors are `continue`d), so clear M once on the normal return,
-    // unconditionally — any committed update makes M stale and a zero-fix run
-    // clearing it merely forces a harmless re-fetch.
-    invalidateAccuracyChecksMetaCache();
-    return { fixed };
+    return { fixed, skipped };
 }
 
 /**
@@ -1597,15 +1752,14 @@ export interface BackfillProgress {
 }
 
 /**
- * Compute + store Player Accuracy for saved checks, one row at a time (so it
- * never hits the statement-timeout that batching did). Reports progress via
- * the optional callback. Admin-triggered from the Accuracy History page.
+ * Compute + store the grade for saved checks that have no player_accuracy yet,
+ * one row at a time (so it never hits the statement-timeout that batching
+ * did). Reports progress via the optional callback. Admin-triggered from the
+ * Accuracy History page ("Backfill"). Rows that already have player_accuracy
+ * are NOT touched; use regradeAllChecks ("Recompute all") for those.
  *
- * @param onProgress progress callback (done / total)
- * @param force when true, RECOMPUTES every check's `player_accuracy` from its
- *   XML — use this after the grouping logic changes so stored values are
- *   refreshed. When false (default), only fills checks where the field is null
- *   (a safe, idempotent one-time backfill).
+ * @param force when true, processes every active check (kept for older
+ *   callers; the History page uses regradeAllChecks instead).
  */
 export async function backfillPlayerAccuracy(
     onProgress?: (p: BackfillProgress) => void,
@@ -1668,24 +1822,9 @@ export async function backfillPlayerAccuracy(
             continue;
         }
 
-        const s = graded.result.summary;
         const { error: upErr } = await supabase
             .from("accuracy_checks")
-            .update({
-                accuracy: s.accuracy,
-                master_total: s.masterTotal,
-                analyst_total: s.analystTotal,
-                exact: s.exact,
-                wrong_stat: s.wrongStat,
-                wrong_player: s.wrongPlayer,
-                wrong_team: s.wrongTeam,
-                missed: s.missed,
-                extra: s.extra,
-                avg_time_drift: s.avgTimeDrift,
-                category_breakdown: graded.result.byCategory ?? null,
-                team_breakdown: graded.result.byTeam ?? null,
-                player_accuracy: graded.playerAccuracy,
-            })
+            .update(gradedColumns(graded))
             .eq("id", row.id);
         if (!upErr) {
             updated += 1;
@@ -1698,23 +1837,238 @@ export async function backfillPlayerAccuracy(
     }
 
     // The loop always returns normally (per-row errors are counted, never
-    // thrown). Clear M on this unconditional return — NOT gated on `updated` —
-    // so any committed row update is reflected and a zero-update run clearing M
-    // is harmless. recomputeAllPlayerAccuracy inherits this (thin wrapper).
+    // thrown). Clear M on this unconditional return.
     invalidateAccuracyChecksMetaCache();
     return { updated, skipped };
 }
 
+// ---- Regrade ALL checks ---------------------------------------------
+
+/** The grade columns a regrade rewrites (and the backup captures). */
+const GRADE_COLUMNS = [
+    "accuracy",
+    "master_total",
+    "analyst_total",
+    "exact",
+    "wrong_stat",
+    "wrong_player",
+    "wrong_team",
+    "missed",
+    "extra",
+    "avg_time_drift",
+    "category_breakdown",
+    "team_breakdown",
+    "player_accuracy",
+] as const;
+
+/** One check's OLD stored grade values, as saved in the pre-regrade backup. */
+export type RegradeBackupRow = { id: number } & Record<
+    (typeof GRADE_COLUMNS)[number],
+    unknown
+>;
+
+export interface RegradeProgress {
+    done: number;
+    total: number;
+    /** Rows written. */
+    updated: number;
+    /** Written rows whose grade values actually differ from the old ones. */
+    changed: number;
+    skipped: number;
+    lastId: number;
+}
+
+export interface RegradeAllResult {
+    updated: number;
+    changed: number;
+    skipped: number;
+    total: number;
+    /** Highest id processed; pass as `afterId` to resume. */
+    lastId: number;
+    /** True when stopped early via shouldStop. */
+    stopped: boolean;
+}
+
+/** Key-order-insensitive deep equality (Postgres jsonb reorders object keys). */
+export function jsonDeepEqual(a: unknown, b: unknown): boolean {
+    if (a === b) return true;
+    if (a == null || b == null) return a == null && b == null;
+    if (typeof a === "number" && typeof b === "number") {
+        return Math.abs(a - b) < 1e-9;
+    }
+    if (typeof a !== "object" || typeof b !== "object") return false;
+    if (Array.isArray(a) || Array.isArray(b)) {
+        if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
+            return false;
+        }
+        return a.every((v, i) => jsonDeepEqual(v, b[i]));
+    }
+    const ao = a as Record<string, unknown>;
+    const bo = b as Record<string, unknown>;
+    const ak = Object.keys(ao);
+    const bk = Object.keys(bo);
+    if (ak.length !== bk.length) return false;
+    return ak.every((k) => k in bo && jsonDeepEqual(ao[k], bo[k]));
+}
+
 /**
- * Recompute + overwrite `player_accuracy` for EVERY saved check from its XML.
- * Use after the Player Accuracy grouping logic changes (e.g. a stat added to
- * or removed from a group) so all stored values reflect the new grouping.
- * Thin wrapper over backfillPlayerAccuracy with force=true.
+ * Re-grade EVERY active check with the current grading and rewrite its stored
+ * accuracy, summary counts, breakdowns, master_total and player_accuracy from
+ * its own stored master + analyst data (XML or JSON, via gradeOverlapScoped).
+ *
+ * - xml_master / xml_analyst / category / labels are never written; rows are
+ *   never deleted. Rows with missing XML, a fetch error, an empty master or a
+ *   null grade are skipped (left as they were).
+ * - The OLD grade values of every row to be processed are read first (no XML)
+ *   and handed to `onBackup` BEFORE any write; if `onBackup` throws, nothing is
+ *   written. The backup is skipped when resuming (`afterId` > 0).
+ * - Batched (`batchSize`, default 50) with 4 concurrent per-row XML fetches.
+ *   Per-row failures are counted as skipped, never thrown.
+ * - The accuracy-checks meta cache is invalidated when finished (or on error).
+ */
+export async function regradeAllChecks(opts: {
+    onProgress?: (p: RegradeProgress) => void;
+    onBackup?: (rows: RegradeBackupRow[]) => void | Promise<void>;
+    afterId?: number;
+    batchSize?: number;
+    shouldStop?: () => boolean;
+} = {}): Promise<RegradeAllResult> {
+    const batchSize = Math.max(1, opts.batchSize ?? 50);
+    const CONCURRENCY = 4;
+    const afterId = opts.afterId ?? 0;
+
+    type OldRow = RegradeBackupRow & {
+        tolerance: number | null;
+        file_name_master: string | null;
+        sport: string | null;
+    };
+
+    // Pass 1: ids + OLD grade values (no XML), paged by id.
+    const rows: OldRow[] = [];
+    const cols = `id, tolerance, file_name_master, sport, ${GRADE_COLUMNS.join(", ")}`;
+    let cursor = afterId;
+    for (;;) {
+        const { data, error } = await supabase
+            .from("accuracy_checks")
+            .select(cols)
+            .is("deleted_at", null)
+            .gt("id", cursor)
+            .order("id", { ascending: true })
+            .limit(200);
+        if (error) {
+            console.error("Failed listing checks to regrade:", error);
+            throw new Error(error.message || "Failed listing checks to regrade");
+        }
+        const page = (data ?? []) as unknown as OldRow[];
+        if (page.length === 0) break;
+        rows.push(...page);
+        cursor = page[page.length - 1].id;
+        if (page.length < 200) break;
+    }
+
+    if (afterId === 0 && opts.onBackup) {
+        await opts.onBackup(
+            rows.map((r) => {
+                const b = { id: r.id } as RegradeBackupRow;
+                for (const c of GRADE_COLUMNS) b[c] = r[c];
+                return b;
+            })
+        );
+    }
+
+    const total = rows.length;
+    let done = 0;
+    let updated = 0;
+    let changed = 0;
+    let skipped = 0;
+    let lastId = afterId;
+    let stopped = false;
+
+    const processOne = async (old: OldRow) => {
+        const { data, error } = await supabase
+            .from("accuracy_checks")
+            .select("xml_master, xml_analyst")
+            .eq("id", old.id)
+            .single();
+        if (error || !data) {
+            console.error(`Regrade XML fetch failed ${old.id}:`, error);
+            skipped += 1;
+            return;
+        }
+        const x = data as { xml_master: string | null; xml_analyst: string | null };
+        if (!x.xml_master || !x.xml_analyst) {
+            skipped += 1; // missing XML: leave the row as it is
+            return;
+        }
+        const graded = gradeOverlapScoped(
+            x.xml_master,
+            x.xml_analyst,
+            old.tolerance,
+            old.file_name_master,
+            old.sport
+        );
+        if (!graded) {
+            skipped += 1;
+            return;
+        }
+        const next = gradedColumns(graded);
+        const { error: upErr } = await supabase
+            .from("accuracy_checks")
+            .update(next)
+            .eq("id", old.id);
+        if (upErr) {
+            console.error(`Regrade update failed ${old.id}:`, upErr);
+            skipped += 1;
+            return;
+        }
+        updated += 1;
+        if (!GRADE_COLUMNS.every((c) => jsonDeepEqual(old[c], next[c]))) {
+            changed += 1;
+        }
+    };
+
+    try {
+        for (let i = 0; i < rows.length; i += batchSize) {
+            if (opts.shouldStop?.()) {
+                stopped = true;
+                break;
+            }
+            const batch = rows.slice(i, i + batchSize);
+            for (let j = 0; j < batch.length; j += CONCURRENCY) {
+                const slice = batch.slice(j, j + CONCURRENCY);
+                await Promise.all(
+                    slice.map(async (old) => {
+                        try {
+                            await processOne(old);
+                        } catch (e) {
+                            console.error(`Regrade failed ${old.id}:`, e);
+                            skipped += 1;
+                        }
+                    })
+                );
+                done += slice.length;
+                lastId = slice[slice.length - 1].id;
+                opts.onProgress?.({ done, total, updated, changed, skipped, lastId });
+            }
+        }
+    } finally {
+        invalidateAccuracyChecksMetaCache();
+    }
+
+    return { updated, changed, skipped, total, lastId, stopped };
+}
+
+/**
+ * Re-grade every active check (see regradeAllChecks). Kept for the existing
+ * name/signature: it is a FULL regrade, not just player_accuracy.
  */
 export async function recomputeAllPlayerAccuracy(
     onProgress?: (p: BackfillProgress) => void
 ): Promise<{ updated: number; skipped: number }> {
-    return backfillPlayerAccuracy(onProgress, true);
+    const res = await regradeAllChecks({
+        onProgress: (p) => onProgress?.({ done: p.done, total: p.total }),
+    });
+    return { updated: res.updated, skipped: res.skipped };
 }
 
 /**

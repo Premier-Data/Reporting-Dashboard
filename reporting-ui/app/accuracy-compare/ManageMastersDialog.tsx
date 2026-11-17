@@ -239,7 +239,9 @@ export default function ManageMastersDialog({
         replacing: false,
         message: `Replaced. Re-graded ${res.updated} check${
           res.updated === 1 ? "" : "s"
-        }${res.analysts.length ? ` (${res.analysts.join(", ")}).` : "."}`,
+        }${res.analysts.length ? ` (${res.analysts.join(", ")}).` : "."}${
+          res.failed > 0 ? ` ${res.failed} could not be updated.` : ""
+        }`,
       });
       await onChanged({ type: "replace", name: m.fileName, raw: text });
     } catch (err) {

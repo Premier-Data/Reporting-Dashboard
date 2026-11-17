@@ -1132,7 +1132,10 @@ function DisputeReviewModal({
                     `${res.updated === 1 ? "" : "s"}` +
                     (res.analysts.length
                         ? ` (${res.analysts.join(", ")}).`
-                        : ".")
+                        : ".") +
+                    (res.failed > 0
+                        ? ` ${res.failed} could not be updated.`
+                        : "")
             );
             // Refresh the disputes page so its list/meta reflect the new master.
             await onSaved?.();

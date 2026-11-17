@@ -41,6 +41,7 @@ import {
   getSavedMasters,
   getSavedMasterXml,
   propagateMasterCorrection,
+  updateCheckAndPropagateMaster,
   getMasterCheckSiblings,
   instancesFromRaw,
   CHECK_CATEGORY_OPTIONS,
@@ -1132,20 +1133,25 @@ function AccuracyCompareInner() {
   // Download reflects the edit). Re-parsing the serialized XML normalises the
   // instances (recomputes `mid`, playerNumber from code, etc.) exactly like a
   // fresh upload, keeping every downstream memo consistent.
+  // The raw master text produced by an in-page edit. `masterEdited` is true
+  // while the current master IS that edited text, so loading/overriding a
+  // different master resets it without any explicit bookkeeping.
+  const [editedMasterRaw, setEditedMasterRaw] = useState<string | null>(null);
+  const masterEdited = master != null && editedMasterRaw === master.raw;
   const applyMasterInstances = (next: Instance[]) => {
-    setMaster((cur) => {
-      if (!cur) return cur;
-      // Serialize + re-import through the SAME format the master was loaded in,
-      // so edits normalise like a fresh load and `raw` stays that format (XML
-      // or JSON). A JSON master must NOT be re-serialized as XML — that would
-      // lose the feed shape and break re-grading / propagation.
-      if (cur.kind === "json") {
-        const raw = serializeInstancesToJson(next);
-        return { ...cur, instances: instancesFromRaw(raw), raw };
-      }
-      const raw = serializeInstances(next);
-      return { ...cur, instances: parseInstances(raw), raw };
-    });
+    if (!master) return;
+    // Serialize + re-import through the SAME format the master was loaded in,
+    // so edits normalise like a fresh load and `raw` stays that format (XML
+    // or JSON). A JSON master must NOT be re-serialized as XML — that would
+    // lose the feed shape and break re-grading / propagation.
+    const raw =
+      master.kind === "json"
+        ? serializeInstancesToJson(next)
+        : serializeInstances(next);
+    const instances =
+      master.kind === "json" ? instancesFromRaw(raw) : parseInstances(raw);
+    setMaster((cur) => (cur ? { ...cur, instances, raw } : cur));
+    setEditedMasterRaw(raw);
   };
 
   const upsertMasterInstance = (inst: Instance) => {
@@ -1249,7 +1255,8 @@ function AccuracyCompareInner() {
       setMasterSaveMsg(
         `Saved. Master corrected across ${res.updated} check` +
           `${res.updated === 1 ? "" : "s"}` +
-          (res.analysts.length ? ` (${res.analysts.join(", ")}).` : ".")
+          (res.analysts.length ? ` (${res.analysts.join(", ")}).` : ".") +
+          (res.failed > 0 ? ` ${res.failed} could not be updated.` : "")
       );
     } catch (err) {
       setMasterSaveMsg(
@@ -2509,7 +2516,27 @@ function AccuracyCompareInner() {
       setSaving(true);
       setSaveMsg(null);
 
-      await saveAccuracyCheck({
+      // If the master was edited here, offer to apply the edit to the existing
+      // checks of the same master too (otherwise they keep the old master).
+      let applyToSiblings = false;
+      if (masterEdited && master?.name) {
+        let existing = 0;
+        try {
+          existing = (await getMasterCheckSiblings(master.name)).count;
+        } catch {
+          /* fall back */
+        }
+        if (existing > 0) {
+          applyToSiblings = window.confirm(
+            `You edited the master. Apply it to the ${existing} existing ` +
+              `check${existing === 1 ? "" : "s"} of "${master.name}" too and ` +
+              `re-grade them?\n\nOK = update them as well. Cancel = only save ` +
+              `this new check.`
+          );
+        }
+      }
+
+      const saved = await saveAccuracyCheck({
         analystName: gradedAnalyst,
         masterAnalystName: masterAnalyst || null,
         matchLabel: matchLabel || null,
@@ -2530,10 +2557,29 @@ function AccuracyCompareInner() {
         category: checkCategory,
       });
 
+      let siblingMsg = "";
+      if (applyToSiblings && master) {
+        try {
+          const res = await propagateMasterCorrection(master.name, master.raw, {
+            excludeId: saved.id,
+          });
+          siblingMsg =
+            ` Re-graded ${res.updated} other check${res.updated === 1 ? "" : "s"}` +
+            (res.analysts.length ? ` (${res.analysts.join(", ")})` : "") +
+            (res.failed > 0 ? `, ${res.failed} failed` : "") +
+            ".";
+        } catch (e) {
+          siblingMsg =
+            " Other checks were not updated: " +
+            (e instanceof Error ? e.message : "unknown error");
+        }
+      }
+
       setSaveMsg(
         `Saved to ${gradedAnalyst}'s profile` +
           (masterAnalyst ? ` (master by ${masterAnalyst})` : "") +
-          "."
+          "." +
+          siblingMsg
       );
     } catch (err) {
       console.error(err);
@@ -2556,7 +2602,26 @@ function AccuracyCompareInner() {
     try {
       setSaving(true);
       setSaveMsg(null);
-      await updateAccuracyCheck({
+      // If the master was edited here, offer to apply it to every other check
+      // of the same master (they are re-graded against their own analyst).
+      let applyToSiblings = false;
+      if (masterEdited && master?.name) {
+        let others = 0;
+        try {
+          others = Math.max(0, (await getMasterCheckSiblings(master.name)).count - 1);
+        } catch {
+          /* fall back */
+        }
+        if (others > 0) {
+          applyToSiblings = window.confirm(
+            `You edited the master. Apply it to all ${others + 1} checks of ` +
+              `"${master.name}" (re-grading ${others} other check` +
+              `${others === 1 ? "" : "s"})?\n\nOK = update them all. Cancel = ` +
+              `update only this check.`
+          );
+        }
+      }
+      const updateInput = {
         id: loadedCheckId,
         xmlMaster: master?.raw ?? "",
         xmlAnalyst: analyst?.raw ?? null,
@@ -2569,8 +2634,22 @@ function AccuracyCompareInner() {
         tolerance,
         videoUrl: videoUrl || null,
         sport,
-      });
-      setSaveMsg("Updated this check (no new check created).");
+      };
+      if (applyToSiblings) {
+        const res = await updateCheckAndPropagateMaster(updateInput);
+        setSaveMsg(
+          res.nameChanged
+            ? "Updated this check. The master name changed, so other checks were not touched."
+            : `Updated this check and re-graded ${res.siblingsUpdated} other check` +
+                `${res.siblingsUpdated === 1 ? "" : "s"} of this master` +
+                (res.analysts.length ? ` (${res.analysts.join(", ")})` : "") +
+                (res.siblingsFailed > 0 ? `, ${res.siblingsFailed} failed` : "") +
+                "."
+        );
+      } else {
+        await updateAccuracyCheck(updateInput);
+        setSaveMsg("Updated this check (no new check created).");
+      }
     } catch (err) {
       console.error(err);
       setSaveMsg(
@@ -2637,7 +2716,8 @@ function AccuracyCompareInner() {
       setMasterSaveMsg(
         `Master overridden across ${res.updated} check` +
           `${res.updated === 1 ? "" : "s"}` +
-          (res.analysts.length ? ` (${res.analysts.join(", ")}).` : ".")
+          (res.analysts.length ? ` (${res.analysts.join(", ")}).` : ".") +
+          (res.failed > 0 ? ` ${res.failed} could not be updated.` : "")
       );
     } catch (err) {
       setMasterSaveMsg(
@@ -3108,7 +3188,7 @@ function AccuracyCompareInner() {
                   <input
                     ref={overrideMasterInputRef}
                     type="file"
-                    accept=".xml,text/xml,application/xml"
+                    accept=".xml,.json,text/xml,application/xml,application/json"
                     className="hidden"
                     onChange={(e) => handleOverrideMaster(e.target.files)}
                   />

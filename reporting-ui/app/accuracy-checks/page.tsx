@@ -37,7 +37,7 @@ import {
   restoreAccuracyCheck,
   getDeletedAccuracyChecksMeta,
   backfillPlayerAccuracy,
-  recomputeAllPlayerAccuracy,
+  regradeAllChecks,
   diagnoseMasterConsistency,
   fixStaleMasterTotals,
   instancesFromRaw,
@@ -49,6 +49,7 @@ import {
   type MasterConsistencyReport,
   type MasterSiblingCheck,
 } from "@/lib/api/accuracyChecks";
+import { masterKey, masterTotalsDiffer } from "@/lib/api/masterGroup";
 import {
   getOpenDisputeCounts,
   getDisputesForCheck,
@@ -300,7 +301,8 @@ function matchTeamsLabel(check: AccuracyCheckMeta): string {
 // over-codes (extra > 0) DOES have data: its pct is 0, not null, so it must
 // NOT be gated out. Legacy rows lack `extra`, so `?? 0` keeps their old
 // behavior. This is the single place that decision is made, so live data is
-// correct even before an admin runs "Recompute all".
+// correct even before an admin runs "Recompute all" (which re-grades every
+// check, not just player accuracy).
 function groupPct(group: AccuracyGroup | null | undefined): number | null {
   if (!group || (group.master === 0 && (group.extra ?? 0) === 0)) return null;
   return group.pct;
@@ -546,30 +548,59 @@ export default function AccuracyChecksPage() {
     }
   }
 
-  // Admin: recompute + overwrite Player Accuracy for EVERY check. Needed after
-  // the Player Accuracy grouping changes (stats added/removed from a group) so
-  // every stored value reflects the new grouping, not just null ones.
-  async function handleRecomputeAll() {
+  // Admin: re-grade EVERY active check with the current grading and rewrite its
+  // stored accuracy, counts, breakdowns, master total and player accuracy from
+  // its stored XML/JSON. A JSON backup of the old values downloads first. If it
+  // stops part-way, `resumeAfterId` lets the admin continue from where it got to.
+  const [resumeAfterId, setResumeAfterId] = useState<number | null>(null);
+  function downloadJsonFile(name: string, data: unknown) {
+    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  async function handleRecomputeAll(afterId = 0) {
     if (
+      afterId === 0 &&
       !window.confirm(
-        "Recompute Player Accuracy for ALL checks? This overwrites every " +
-          "check's stored accuracy from its XML and may take a while."
+        `Re-grade ALL ${checks.length} checks with the current grading? This ` +
+          "rewrites every check's accuracy, exact/missed/extra, breakdowns, " +
+          "master total and player accuracy from its stored XML/JSON. A JSON " +
+          "backup of the old values downloads first. XML files and categories " +
+          "are not changed. It may take a few minutes."
       )
     )
       return;
     setBackfilling(true);
     setBackfillMsg("Starting…");
+    setResumeAfterId(null);
+    let lastId = afterId;
     try {
-      const res = await recomputeAllPlayerAccuracy((p) =>
-        setBackfillMsg(`Processing ${p.done} / ${p.total}…`)
-      );
+      const res = await regradeAllChecks({
+        afterId,
+        onBackup: (rows) =>
+          downloadJsonFile(
+            `accuracy-checks-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`,
+            rows
+          ),
+        onProgress: (p) => {
+          lastId = p.lastId;
+          setBackfillMsg(
+            `Processing ${p.done} / ${p.total} (${p.changed} changed)…`
+          );
+        },
+      });
       setBackfillMsg(
-        `Done. Recomputed ${res.updated}, skipped ${res.skipped}.`
+        `Done. Re-graded ${res.updated}, changed ${res.changed}, skipped ${res.skipped}.`
       );
       await load();
     } catch (err) {
+      setResumeAfterId(lastId);
       setBackfillMsg(
-        err instanceof Error ? err.message : "Recompute failed."
+        err instanceof Error ? err.message : "Re-grade failed."
       );
     } finally {
       setBackfilling(false);
@@ -767,17 +798,22 @@ export default function AccuracyChecksPage() {
   const masterTotalMismatches = useMemo(() => {
     const byFile = new Map<
       string,
-      { label: string; totals: Set<number>; count: number }
+      { file: string; label: string; totals: Set<number>; count: number }
     >();
     for (const c of checks) {
-      const file = (c.file_name_master || "").trim();
-      if (!file) continue;
+      const key = masterKey(c.file_name_master);
+      if (!key) continue;
       const e =
-        byFile.get(file) ??
-        { label: matchTeamsLabel(c), totals: new Set<number>(), count: 0 };
+        byFile.get(key) ??
+        {
+          file: (c.file_name_master || "").trim(),
+          label: matchTeamsLabel(c),
+          totals: new Set<number>(),
+          count: 0,
+        };
       e.totals.add(c.master_total);
       e.count += 1;
-      byFile.set(file, e);
+      byFile.set(key, e);
     }
     const out: {
       file: string;
@@ -786,11 +822,11 @@ export default function AccuracyChecksPage() {
       min: number;
       max: number;
     }[] = [];
-    for (const [file, e] of byFile.entries()) {
-      if (e.totals.size <= 1) continue; // consistent — skip
+    for (const e of byFile.values()) {
       const nums = Array.from(e.totals);
+      if (!masterTotalsDiffer(nums)) continue; // consistent — skip
       out.push({
-        file,
+        file: e.file,
         label: e.label,
         checks: e.count,
         min: Math.min(...nums),
@@ -1229,8 +1265,11 @@ export default function AccuracyChecksPage() {
     >();
 
     for (const c of checks) {
-      const key = (c.file_name_master || c.match_label || `check-${c.id}`)
-        .trim();
+      // Same normalised key as the consistency modal and propagation, so
+      // case/whitespace spellings of one master fold into one fixture.
+      const key =
+        masterKey(c.file_name_master) ||
+        (c.match_label || `check-${c.id}`).trim();
       if (!key) continue;
       let g = map.get(key);
       if (!g) {
@@ -1827,9 +1866,10 @@ export default function AccuracyChecksPage() {
                   {masterTotalMismatches.length === 1 ? "" : "s"}
                 </p>
                 <p className="mt-0.5 text-xs text-amber-700">
-                  These fixtures were graded against slightly different master
-                  files, so the master total isn&apos;t identical across
-                  analysts. Click one to inspect each check&apos;s master.
+                  The stored master total isn&apos;t identical across analysts.
+                  That can be a different master file, or just a stale or
+                  analyst-window total that &quot;Recompute all&quot; refreshes.
+                  Click one to inspect each check&apos;s master.
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {masterTotalMismatches.map((m) => (
@@ -1930,13 +1970,22 @@ export default function AccuracyChecksPage() {
                       {backfilling ? "Backfilling…" : "Backfill accuracy"}
                     </button>
                     <button
-                      onClick={handleRecomputeAll}
+                      onClick={() => handleRecomputeAll()}
                       disabled={backfilling}
-                      title="Recompute Player Accuracy for ALL checks (use after the accuracy grouping changes)"
+                      title="Re-grade every check (accuracy, breakdowns, master total, player accuracy) with the current grading"
                       className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                     >
                       {backfilling ? "Working…" : "Recompute all"}
                     </button>
+                    {resumeAfterId != null && !backfilling && (
+                      <button
+                        onClick={() => handleRecomputeAll(resumeAfterId)}
+                        title="Continue the re-grade after the last processed check"
+                        className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                      >
+                        Resume
+                      </button>
+                    )}
                   </>
                 )}
               </div>
@@ -2451,7 +2500,13 @@ function MasterConsistencyModal({
     setFixMsg(null);
     try {
       const res = await fixStaleMasterTotals(report.staleTotalCheckIds);
-      setFixMsg(`Corrected ${res.fixed} stored total(s).`);
+      setFixMsg(
+        `Re-graded ${res.fixed}, skipped ${res.skipped.length}` +
+          (res.skipped.length > 0
+            ? ` (${Array.from(new Set(res.skipped.map((s) => s.reason))).join("; ")})`
+            : "") +
+          "."
+      );
       onFixed();
       // Re-run the diagnostic so the modal reflects the fix.
       const fresh = await diagnoseMasterConsistency(fileNameMaster);
@@ -2547,7 +2602,7 @@ function MasterConsistencyModal({
             >
               {report.consistent
                 ? report.staleTotalCheckIds.length > 0
-                  ? "The master files are identical — but some stored totals are out of date. The history difference is stale data, not a real master difference."
+                  ? `The master files are identical, but ${report.staleTotalCheckIds.length} stored total${report.staleTotalCheckIds.length === 1 ? " is" : "s are"} out of date. Re-grading refreshes them.`
                   : "All checks parse to the same master total."
                 : `Master totals differ: ${report.distinctCounts.join(
                     ", "
@@ -2562,14 +2617,14 @@ function MasterConsistencyModal({
                 <span className="text-xs text-slate-600">
                   {report.staleTotalCheckIds.length} check
                   {report.staleTotalCheckIds.length === 1 ? "" : "s"} have a
-                  stored total that doesn&apos;t match their master file.
+                  stored total that doesn&apos;t match the current grading.
                 </span>
                 <button
                   onClick={handleFixStale}
                   disabled={fixing}
                   className="rounded-lg bg-slate-900 px-2.5 py-1 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-40"
                 >
-                  {fixing ? "Fixing…" : "Fix stored totals"}
+                  {fixing ? "Re-grading…" : "Re-grade stale checks"}
                 </button>
                 {fixMsg && (
                   <span className="text-xs text-slate-500">{fixMsg}</span>
@@ -2647,13 +2702,13 @@ function MasterDiffRow({
         </td>
         <td className="py-2 pr-2 text-right tabular-nums text-slate-600">
           {c.parsedMasterTotal ?? c.storedMasterTotal}
-          {c.parsedMasterTotal != null &&
-            c.parsedMasterTotal !== c.storedMasterTotal && (
+          {c.gradedMasterTotal != null &&
+            c.gradedMasterTotal !== c.storedMasterTotal && (
               <span
                 className="ml-1 text-[10px] font-semibold text-amber-600"
-                title={`Stored total is ${c.storedMasterTotal}; the master file actually has ${c.parsedMasterTotal}. Stored value is stale.`}
+                title={`Stored total is ${c.storedMasterTotal}; the current grading gives ${c.gradedMasterTotal} (the file has ${c.parsedMasterTotal}). Stored value is stale.`}
               >
-                (stored {c.storedMasterTotal})
+                (graded {c.gradedMasterTotal}, stored {c.storedMasterTotal})
               </span>
             )}
         </td>
