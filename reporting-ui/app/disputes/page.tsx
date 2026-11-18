@@ -16,6 +16,7 @@ import {
     Plus,
     Save,
     MessageSquare,
+    Download,
 } from "lucide-react";
 import {
     getAllDisputes,
@@ -506,6 +507,40 @@ export default function DisputesPage() {
         checkById,
     ]);
 
+    // Export one check's dispute results to Excel. Uses ALL of the check's
+    // disputes (ignores the table's status/category/stat filters).
+    async function exportCheck(g: {
+        checkId: number;
+        label: string;
+        analyst: string;
+        masterBy: string;
+        date: string | null;
+    }) {
+        try {
+            const { downloadDisputeResultsExcel } = await import(
+                "@/lib/exports/disputeResultsExcel"
+            );
+            await downloadDisputeResultsExcel({
+                match: g.label,
+                master: g.masterBy,
+                analyst: g.analyst,
+                date: g.date
+                    ? new Date(g.date).toLocaleDateString("en-AU", {
+                          day: "2-digit",
+                          month: "2-digit",
+                          year: "numeric",
+                      })
+                    : "",
+                disputes: disputes.filter((d) => d.check_id === g.checkId),
+                categoryLabel: (c) =>
+                    disputeCategoryLabel(c as DisputeCategory | null),
+            });
+        } catch (e) {
+            console.error("Dispute results export failed:", e);
+            alert("Export failed. Please try again.");
+        }
+    }
+
     function fmtDate(iso: string | null) {
         if (!iso) return "";
         return new Date(iso).toLocaleDateString("en-AU", {
@@ -716,7 +751,7 @@ export default function DisputesPage() {
                                         col="total"
                                         sort={sort}
                                         onSort={toggleSort}
-                                        className="w-20 text-right"
+                                        className="w-24 text-right"
                                         align="right"
                                     />
                                 </tr>
@@ -777,7 +812,21 @@ export default function DisputesPage() {
                                                     )}
                                                 </td>
                                                 <td className="px-3 py-2.5 text-right align-middle font-semibold text-slate-700">
-                                                    {g.disputes.length}
+                                                    <span className="inline-flex items-center justify-end gap-1.5">
+                                                        {g.disputes.length}
+                                                        <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                exportCheck(g);
+                                                            }}
+                                                            title="Export results to Excel"
+                                                            aria-label="Export results to Excel"
+                                                            className="rounded p-1 text-slate-400 hover:bg-slate-200 hover:text-emerald-700"
+                                                        >
+                                                            <Download size={14} />
+                                                        </button>
+                                                    </span>
                                                 </td>
                                             </tr>
                                             {isOpen && (
@@ -786,8 +835,18 @@ export default function DisputesPage() {
                                                         colSpan={8}
                                                         className="bg-slate-50/60 p-3"
                                                     >
-                                                        {canResolve && g.analyst && (
-                                                            <div className="mb-3 flex items-center justify-end">
+                                                        <div className="mb-3 flex items-center justify-end gap-2">
+                                                            <button
+                                                                onClick={() =>
+                                                                    exportCheck(g)
+                                                                }
+                                                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                                                title="Export results to Excel"
+                                                            >
+                                                                <Download size={13} />
+                                                                Export results
+                                                            </button>
+                                                            {canResolve && g.analyst && (
                                                                 <button
                                                                     onClick={() =>
                                                                         messageAnalyst(
@@ -810,8 +869,8 @@ export default function DisputesPage() {
                                                                         ? "Opening…"
                                                                         : `Message ${g.analyst}`}
                                                                 </button>
-                                                            </div>
-                                                        )}
+                                                            )}
+                                                        </div>
                                                         <DisputesPanel
                                                             disputes={g.disputes}
                                                             canResolve={canResolve}
