@@ -4,6 +4,8 @@ import { useMemo, useState } from "react";
 
 import {
   buildCompetitionSummary,
+  countExcludedEntities,
+  TEAMS_EXCLUDED_TITLE,
   type SeasonSummary,
   type SummaryRow,
   type TeamEntry,
@@ -39,11 +41,30 @@ type SeasonKey = "season" | "teams" | "newTeams" | "returningTeams" | "droppedTe
 
 const nf = new Intl.NumberFormat("en-AU");
 
-function StatCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function StatCard({
+  label,
+  value,
+  sub,
+  suffix,
+  suffixTitle,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  suffix?: string;
+  suffixTitle?: string;
+}) {
   return (
     <div className="rounded-2xl border border-slate-700 bg-[#0f1b2d] p-5">
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className="mt-2 text-3xl font-bold text-white">{value}</div>
+      <div className="mt-2 text-3xl font-bold text-white">
+        {value}
+        {suffix && (
+          <span className="ml-2 text-base font-medium text-slate-500" title={suffixTitle}>
+            {suffix}
+          </span>
+        )}
+      </div>
       {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
     </div>
   );
@@ -98,6 +119,15 @@ export default function TeamsDashboard({
   const summary = useMemo(
     () => buildCompetitionSummary(games, { onlyAllocated, excludedTeamKeys: teamKeys }),
     [games, onlyAllocated, teamKeys]
+  );
+
+  const competitionKeys = exclusions?.competitionKeys;
+  const excludedEntities = useMemo(
+    () =>
+      countExcludedEntities(allGames ?? games, competitionKeys ?? new Set<string>(), teamKeys ?? new Set<string>(), {
+        onlyAllocated,
+      }),
+    [allGames, games, competitionKeys, teamKeys, onlyAllocated]
   );
 
   const filtered = useMemo(() => {
@@ -173,7 +203,12 @@ export default function TeamsDashboard({
       <Toggle checked={onlyAllocated} onChange={setOnlyAllocated} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Unique teams (all years)" value={nf.format(summary.totalTeams)} />
+        <StatCard
+          label="Unique teams (all years)"
+          value={nf.format(summary.totalTeams)}
+          suffix={`(${nf.format(excludedEntities.excludedTeams)} excluded)`}
+          suffixTitle={TEAMS_EXCLUDED_TITLE}
+        />
         <StatCard
           label="Teams active this season"
           value={latest ? nf.format(latest.teams) : "-"}

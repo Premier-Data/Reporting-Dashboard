@@ -5,6 +5,8 @@ import { useMemo, useState } from "react";
 import {
   buildCompetitionSummary,
   countExcludedCompetitionGames,
+  countExcludedEntities,
+  TEAMS_EXCLUDED_TITLE,
   type CompetitionEntry,
   type SeasonSummary,
   type SummaryRow,
@@ -210,6 +212,14 @@ export default function CompetitionDashboard({
     [allGames, games, competitionKeys, onlyAllocated]
   );
 
+  const excludedEntities = useMemo(
+    () =>
+      countExcludedEntities(allGames ?? games, competitionKeys ?? new Set<string>(), teamKeys ?? new Set<string>(), {
+        onlyAllocated,
+      }),
+    [allGames, games, competitionKeys, teamKeys, onlyAllocated]
+  );
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return summary.competitions.filter(
@@ -285,8 +295,18 @@ export default function CompetitionDashboard({
       <Toggle checked={onlyAllocated} onChange={setOnlyAllocated} />
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="Unique competitions (all years)" value={nf.format(summary.totalCompetitions)} />
-        <StatCard label="Unique teams (all years)" value={nf.format(summary.totalTeams)} />
+        <StatCard
+          label="Unique competitions (all years)"
+          value={nf.format(summary.totalCompetitions)}
+          suffix={`(${nf.format(excludedEntities.excludedCompetitions)} excluded)`}
+          suffixTitle="Unique competitions excluded manually or as Practice competitions; not included in the total"
+        />
+        <StatCard
+          label="Unique teams (all years)"
+          value={nf.format(summary.totalTeams)}
+          suffix={`(${nf.format(excludedEntities.excludedTeams)} excluded)`}
+          suffixTitle={TEAMS_EXCLUDED_TITLE}
+        />
         <StatCard
           label="Games analysed"
           value={nf.format(summary.totalGames)}

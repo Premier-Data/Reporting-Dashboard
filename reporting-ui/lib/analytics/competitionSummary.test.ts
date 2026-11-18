@@ -378,3 +378,59 @@ describe("countExcludedCompetitionGames", () => {
     expect(countExcludedCompetitionGames(rows, keys, { onlyAllocated: true }).excludedGames).toBe(4);
   });
 });
+
+import { countExcludedEntities } from "./competitionSummary";
+
+describe("countExcludedEntities", () => {
+  const g = (Competition: string, home_team: string, away_team: string, home_allocated = "X") => ({
+    Date: "2024-05-01",
+    Competition,
+    home_team,
+    away_team,
+    home_allocated,
+  });
+  const rows = [
+    g("PSA 2022", "Alpha 2022", "Beta"),
+    g("PSA", "Alpha", "Gamma"),
+    g("Keep League", "Delta", "Epsilon"),
+    g("Keep League", "Both", "Delta"),
+    g("PSA", "Both", "Zeta"),
+    g("NGA Practice", "Prac FC", "Beta"),
+    g("Practise Kilsyth 2025", "Prac FC", "Other", ""),
+    g("Keep League", "Expl", "Delta"),
+  ];
+  const comps = new Set(["psa"]);
+  const teams = new Set(["expl"]);
+  const all = (r = rows, o = {}) => countExcludedEntities(r, new Set<string>(), [], o);
+
+  it("counts normalised PSA / PSA 2022 once, manual and practice separately", () => {
+    const c = countExcludedEntities(rows, comps, teams);
+    expect(c.manualCompetitions).toBe(1);
+    expect(c.practiceCompetitions).toBe(2);
+    expect(c.excludedCompetitions).toBe(3);
+  });
+
+  it("teams: explicit, only-in-excluded, and in-both stays included", () => {
+    const c = countExcludedEntities(rows, comps, teams);
+    expect(c.explicitTeams).toBe(1); // expl
+    // alpha, gamma, zeta, beta? (beta only in excluded comps), prac fc, other
+    expect(c.teamsOnlyInExcludedCompetitions).toBe(6);
+    expect(c.excludedTeams).toBe(7);
+    // "both" plays in Keep League so stays included
+    const s = buildCompetitionSummary(filterExcludedCompetitions(rows, comps), { excludedTeamKeys: teams });
+    expect(s.teams.map((t) => t.key)).toContain("both");
+  });
+
+  it("included + excluded = unique total with no exclusions", () => {
+    const inc = buildCompetitionSummary(filterExcludedCompetitions(rows, comps), { excludedTeamKeys: teams });
+    const none = buildCompetitionSummary(rows);
+    const c = countExcludedEntities(rows, comps, teams);
+    expect(inc.totalTeams + c.excludedTeams).toBe(none.totalTeams);
+    expect(inc.totalCompetitions + c.excludedCompetitions).toBe(none.totalCompetitions);
+  });
+
+  it("no exclusions -> practice only; restoring lowers counts; onlyAllocated applies", () => {
+    expect(all().excludedCompetitions).toBe(2);
+    expect(countExcludedEntities(rows, comps, teams, { onlyAllocated: true }).practiceCompetitions).toBe(1);
+  });
+});

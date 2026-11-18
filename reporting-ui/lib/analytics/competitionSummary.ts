@@ -124,6 +124,73 @@ export function countExcludedCompetitionGames(
   return { excludedGames: manualGames + practiceGames, manualGames, practiceGames };
 }
 
+export const TEAMS_EXCLUDED_TITLE =
+  "Teams excluded directly or only found in excluded competitions; not included in the total";
+
+export type ExcludedEntitiesSummary = {
+  /** Unique (normalised) competitions that are excluded (manual + practice). */
+  excludedCompetitions: number;
+  manualCompetitions: number;
+  practiceCompetitions: number;
+  /** Unique teams not in the included total (explicit + only in excluded competitions). */
+  excludedTeams: number;
+  /** Teams excluded directly via team exclusions (even if they also play in included competitions). */
+  explicitTeams: number;
+  /** Teams not excluded directly whose only games are in excluded competitions. */
+  teamsOnlyInExcludedCompetitions: number;
+};
+
+/**
+ * Counts unique competitions and teams that are left out of the included
+ * totals. Pass the UNFILTERED rows. included + excluded = unique total with
+ * no exclusions applied. `onlyAllocated` matches buildCompetitionSummary.
+ */
+export function countExcludedEntities(
+  rows: readonly SummaryRow[],
+  competitionKeys: ReadonlySet<string>,
+  teamKeys: ReadonlySet<string> | readonly string[] = [],
+  opts: { onlyAllocated?: boolean } = {}
+): ExcludedEntitiesSummary {
+  const excludedTeamKeys: ReadonlySet<string> = teamKeys instanceof Set ? teamKeys : new Set(teamKeys);
+  const manual = new Set<string>();
+  const practice = new Set<string>();
+  const allTeams = new Set<string>();
+  const inIncludedComp = new Set<string>();
+  for (const r of rows) {
+    if (opts.onlyAllocated && !hasText(r.home_allocated) && !hasText(r.away_allocated)) {
+      continue;
+    }
+    const ck = canonicalCompetition(r.Competition);
+    const isPractice = isPracticeCompetition(r.Competition);
+    const isManual = !isPractice && competitionKeys.has(ck);
+    if (ck !== "") {
+      if (isPractice) practice.add(ck);
+      else if (isManual) manual.add(ck);
+    }
+    const excludedRow = isPractice || isManual;
+    for (const t of [canonicalTeam(r.home_team), canonicalTeam(r.away_team)]) {
+      if (t === "") continue;
+      allTeams.add(t);
+      if (!excludedRow) inIncludedComp.add(t);
+    }
+  }
+  let explicitTeams = 0;
+  let onlyExcluded = 0;
+  allTeams.forEach((t) => {
+    if (excludedTeamKeys.has(t)) explicitTeams++;
+    else if (!inIncludedComp.has(t)) onlyExcluded++;
+  });
+  const excludedComps = new Set([...manual, ...practice]);
+  return {
+    excludedCompetitions: excludedComps.size,
+    manualCompetitions: manual.size,
+    practiceCompetitions: practice.size,
+    excludedTeams: explicitTeams + onlyExcluded,
+    explicitTeams,
+    teamsOnlyInExcludedCompetitions: onlyExcluded,
+  };
+}
+
 function seasonOfRow(r: SummaryRow): number | null {
   const sw = seasonWeekOfIso(r.Date);
   if (sw) return sw.season;
