@@ -665,7 +665,7 @@ export default function DisputesPage() {
                     </div>
                 ) : (
                     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                        <table className="w-full min-w-[64rem] table-fixed border-collapse text-sm">
+                        <table className="w-full min-w-[80rem] table-fixed border-collapse text-sm">
                             <thead>
                                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                                     <th className="w-10 px-3 py-2.5" />
@@ -687,21 +687,21 @@ export default function DisputesPage() {
                                         col="analyst"
                                         sort={sort}
                                         onSort={toggleSort}
-                                        className="w-40"
+                                        className="w-56"
                                     />
                                     <SortHeader
                                         label="Master by"
                                         col="masterBy"
                                         sort={sort}
                                         onSort={toggleSort}
-                                        className="w-40"
+                                        className="w-48"
                                     />
                                     <SortHeader
                                         label="Master file"
                                         col="masterFile"
                                         sort={sort}
                                         onSort={toggleSort}
-                                        className="w-44"
+                                        className="w-80"
                                     />
                                     <SortHeader
                                         label="Open"
