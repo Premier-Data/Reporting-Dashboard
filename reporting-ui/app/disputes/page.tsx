@@ -49,6 +49,9 @@ import MasterEditModal from "@/components/MasterEditModal";
 import { useAuth } from "@/components/auth/AuthContext";
 import DisputesPanel from "@/components/DisputesPanel";
 import DisputesDashboard from "@/components/DisputesDashboard";
+import DisputesByMaster from "@/components/DisputesByMaster";
+import { masterKey } from "@/lib/api/masterGroup";
+import { applyResolutionLocal, type Outcome } from "@/lib/disputes/bulkResolve";
 import SportToggle, { type SportFilter } from "@/components/SportToggle";
 import {
     findUserByAnalystName,
@@ -113,7 +116,7 @@ export default function DisputesPage() {
                 return;
             }
             if (target.id === user.id) {
-                alert("That's you — pick a different person to message.");
+                alert("That's you â€” pick a different person to message.");
                 return;
             }
             const convId = await getOrCreateDirectConversation(
@@ -134,7 +137,9 @@ export default function DisputesPage() {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<Filter>("open");
     const [expanded, setExpanded] = useState<Set<number>>(new Set());
-    const [tab, setTab] = useState<"disputes" | "dashboard">("disputes");
+    const [tab, setTab] = useState<"disputes" | "dashboard" | "bymaster">("disputes");
+    // Master (normalised key) to preselect on the By master tab.
+    const [masterSel, setMasterSel] = useState<string | null>(null);
     const [search, setSearch] = useState("");
     const [sportFilter, setSportFilter] = useState<SportFilter>("all");
     // Analyst filter for the table ("all" = every analyst).
@@ -171,14 +176,17 @@ export default function DisputesPage() {
     } | null>(null);
 
     // Open the disputed instance in a review pop-up on this page.
-    function openInReview(d: Dispute) {
+    function openInReview(d: Dispute, videoUrlOverride?: string | null) {
         const check = checks.find((c) => c.id === d.check_id);
-        setReviewing({ dispute: d, videoUrl: check?.video_url ?? null });
+        const own = check?.video_url?.trim() ? check.video_url : null;
+        setReviewing({ dispute: d, videoUrl: own ?? videoUrlOverride ?? null });
     }
 
-    async function load() {
+    // silent: refresh data without showing the full-page spinner (keeps the
+    // By master tab and its selection mounted).
+    async function load(opts?: { silent?: boolean }) {
         try {
-            setLoading(true);
+            if (!opts?.silent) setLoading(true);
             const [d, c] = await Promise.all([
                 getAllDisputes(),
                 getAccuracyChecksMeta().catch(() => [] as AccuracyCheckMeta[]),
@@ -245,7 +253,7 @@ export default function DisputesPage() {
         return (
             c.match_label ||
             `${c.analyst_name}${
-                c.file_name_analyst ? ` · ${c.file_name_analyst}` : ""
+                c.file_name_analyst ? ` Â· ${c.file_name_analyst}` : ""
             }`
         );
     }
@@ -436,7 +444,7 @@ export default function DisputesPage() {
             setReviewing((cur) =>
                 cur && cur.dispute.id === disputeId ? null : cur
             );
-            await load();
+            await load({ silent: true });
         } catch (err) {
             alert(err instanceof Error ? err.message : "Failed to resolve.");
         }
@@ -449,7 +457,7 @@ export default function DisputesPage() {
 
     // Per-category counts for the breakdown chips. Respects sport / status /
     // analyst filters (so the breakdown matches the visible table) but NOT the
-    // category filter itself — every category chip stays visible so you can
+    // category filter itself â€” every category chip stays visible so you can
     // switch between them. Clicking a chip toggles the category filter.
     const categoryBreakdown = useMemo(() => {
         const matchesFilter = (d: Dispute) =>
@@ -568,17 +576,19 @@ export default function DisputesPage() {
                         <Flag size={26} /> Disputes
                     </h1>
                     <p className="mt-2 text-sm text-slate-600">
-                        One row per fixture — click to expand its disputes.{" "}
+                        One row per fixture â€” click to expand its disputes.{" "}
                         <span className="font-semibold text-amber-600">
                             {counts.open} open
                         </span>{" "}
-                        · {counts.total} total across {groups.length} fixture
+                        Â· {counts.total} total across {groups.length} fixture
                         {groups.length === 1 ? "" : "s"}.
                     </p>
                 </div>
 
                 <div className="mb-4 flex gap-1 border-b border-slate-200" role="tablist">
-                    {(["disputes", "dashboard"] as const).map((t) => (
+                    {(["disputes", "dashboard", "bymaster"] as const)
+                        .filter((t) => t !== "bymaster" || canResolve)
+                        .map((t) => (
                         <button
                             key={t}
                             role="tab"
@@ -590,7 +600,7 @@ export default function DisputesPage() {
                                     : "border-transparent text-slate-500 hover:text-slate-700"
                             }`}
                         >
-                            {t}
+                            {t === "bymaster" ? "By master" : t}
                         </button>
                     ))}
                 </div>
@@ -613,9 +623,25 @@ export default function DisputesPage() {
                     </>
                 )}
 
-                {tab === "disputes" && (
+                {tab === "bymaster" && canResolve && (
+                    <DisputesByMaster
+                        disputes={disputes}
+                        checks={checks}
+                        username={user?.username ?? null}
+                        initialMaster={masterSel}
+                        onResolvedLocal={(ids, outcome: Outcome, by, note, at) =>
+                            setDisputes((cur) =>
+                                applyResolutionLocal(cur, ids, outcome, by, note, at)
+                            )
+                        }
+                        onReload={() => load({ silent: true })}
+                        onReview={openInReview}
+                    />
+                )}
+
+                {(tab === "disputes" || (tab === "bymaster" && !canResolve)) && (
                 <>
-                {/* Filters: sport · status · analyst · match search */}
+                {/* Filters: sport Â· status Â· analyst Â· match search */}
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                     <SportToggle value={sportFilter} onChange={setSportFilter} />
                     <div className="flex items-center gap-1.5">
@@ -696,7 +722,7 @@ export default function DisputesPage() {
                     <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search match…"
+                        placeholder="Search matchâ€¦"
                         className="ml-auto w-56 rounded-lg border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-slate-500"
                     />
                 </div>
@@ -815,7 +841,7 @@ export default function DisputesPage() {
                                                     )}
                                                 </td>
                                                 <td className="whitespace-nowrap px-3 py-2.5 align-middle text-slate-600">
-                                                    {g.date ? fmtDate(g.date) : "—"}
+                                                    {g.date ? fmtDate(g.date) : "â€”"}
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle">
                                                     <span className="block truncate font-semibold text-slate-800" title={g.label}>
@@ -824,12 +850,12 @@ export default function DisputesPage() {
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-700">
                                                     <span className="block truncate">
-                                                        {g.analyst || "—"}
+                                                        {g.analyst || "â€”"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-600">
                                                     <span className="block truncate">
-                                                        {g.masterBy || "—"}
+                                                        {g.masterBy || "â€”"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-600">
@@ -837,7 +863,7 @@ export default function DisputesPage() {
                                                         className="block truncate"
                                                         title={g.masterFile || undefined}
                                                     >
-                                                        {g.masterFile || "—"}
+                                                        {g.masterFile || "â€”"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 text-right align-middle">
@@ -886,6 +912,17 @@ export default function DisputesPage() {
                                                                 <Download size={13} />
                                                                 Export results
                                                             </button>
+                                                            {canResolve && g.masterFile && (
+                                                                <button
+                                                                    onClick={() => {
+                                                                        setMasterSel(masterKey(g.masterFile));
+                                                                        setTab("bymaster");
+                                                                    }}
+                                                                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                                                >
+                                                                    View all disputes for this master
+                                                                </button>
+                                                            )}
                                                             {canResolve && g.analyst && (
                                                                 <button
                                                                     onClick={() =>
@@ -906,7 +943,7 @@ export default function DisputesPage() {
                                                                     />
                                                                     {messaging ===
                                                                     g.checkId
-                                                                        ? "Opening…"
+                                                                        ? "Openingâ€¦"
                                                                         : `Message ${g.analyst}`}
                                                                 </button>
                                                             )}
@@ -937,7 +974,7 @@ export default function DisputesPage() {
                     videoUrl={reviewing.videoUrl}
                     canResolve={canResolve}
                     onResolve={handleResolve}
-                    onSaved={load}
+                    onSaved={() => load({ silent: true })}
                     onClose={() => setReviewing(null)}
                 />
             )}
@@ -991,7 +1028,7 @@ function SortHeader({
 // and lets an admin resolve it (Analyst correct / Master correct) inline.
 // -----------------------------------------------------------------------
 function fmtClock(t: number | null): string {
-    if (t == null) return "—";
+    if (t == null) return "â€”";
     const m = Math.floor(t / 60);
     const s = Math.floor(t % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
@@ -1298,9 +1335,9 @@ function DisputeReviewModal({
                         <Flag size={15} className="text-amber-400" /> Review
                         dispute
                         <span className="text-xs font-normal text-slate-400">
-                            {d.stat || "—"} ·{" "}
+                            {d.stat || "â€”"} Â·{" "}
                             {d.side === "master" ? "Master" : "Analyst"}
-                            {d.player ? ` · ${d.player}` : ""}
+                            {d.player ? ` Â· ${d.player}` : ""}
                             <span className="ml-1 inline-flex items-center gap-1">
                                 <Clock size={11} /> {fmtClock(d.code_time)}
                             </span>
@@ -1360,7 +1397,7 @@ function DisputeReviewModal({
                                         className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
                                     >
                                         <Save size={12} />{" "}
-                                        {saving ? "Saving…" : "Save corrected"}
+                                        {saving ? "Savingâ€¦" : "Save corrected"}
                                     </button>
                                 </div>
                                 {saveMsg && (
@@ -1382,7 +1419,7 @@ function DisputeReviewModal({
                         <div className="min-h-0 flex-1 overflow-y-auto bg-white">
                             {loadingRows ? (
                                 <p className="p-6 text-center text-sm text-slate-400">
-                                    Loading timeline…
+                                    Loading timelineâ€¦
                                 </p>
                             ) : (
                                 rows.map((row, i) => {
@@ -1492,8 +1529,8 @@ function DisputeReviewModal({
                         <p className="text-xs text-slate-400">
                             {d.raised_by ? `Raised by ${d.raised_by}` : "Raised"}
                             {d.reason
-                                ? ` — “${d.reason}”`
-                                : " — no reason given"}
+                                ? ` â€” â€œ${d.reason}â€`
+                                : " â€” no reason given"}
                         </p>
                     </div>
 
@@ -1502,9 +1539,9 @@ function DisputeReviewModal({
                             {d.status === "confirmed"
                                 ? "Analyst correct"
                                 : "Master correct"}
-                            {d.resolved_by ? ` · by ${d.resolved_by}` : ""}
+                            {d.resolved_by ? ` Â· by ${d.resolved_by}` : ""}
                             {d.resolution_note
-                                ? ` · ${d.resolution_note}`
+                                ? ` Â· ${d.resolution_note}`
                                 : ""}
                         </p>
                     )}
@@ -1591,7 +1628,7 @@ function MiniCell({
         return (
             <div className="border-l border-slate-200 px-2 py-1">
                 <span className="text-[11px] italic text-slate-300">
-                    — no entry —
+                    â€” no entry â€”
                 </span>
             </div>
         );
@@ -1606,22 +1643,22 @@ function MiniCell({
     return (
         <div
             onClick={() => onSeek(inst.start)}
-            title={`${formatTime(inst.mid)} · ${
-                inst.stat || inst.category || "—"
-            } · ${teamLabel ?? inst.team}${
+            title={`${formatTime(inst.mid)} Â· ${
+                inst.stat || inst.category || "â€”"
+            } Â· ${teamLabel ?? inst.team}${
                 inst.playerNumber != null ? ` #${inst.playerNumber}` : ""
-            } — jump to this moment`}
+            } â€” jump to this moment`}
             className={`cursor-pointer border-l border-slate-200 px-2 py-1 hover:brightness-95 ${
                 active ? "bg-sky-100 ring-2 ring-inset ring-sky-500" : bg
             }`}
         >
-            {/* Single compact line: time · stat (truncates) · team/#player */}
+            {/* Single compact line: time Â· stat (truncates) Â· team/#player */}
             <div className="flex items-center gap-x-1.5 overflow-hidden whitespace-nowrap">
                 <span className="shrink-0 font-mono text-[11px] font-semibold text-slate-500">
                     {formatTime(inst.mid)}
                 </span>
                 <span className="truncate text-xs font-semibold text-slate-900">
-                    {inst.stat || inst.category || "—"}
+                    {inst.stat || inst.category || "â€”"}
                 </span>
                 <span className="ml-auto shrink-0 text-[11px] font-medium text-slate-500">
                     {teamLabel ?? inst.team}

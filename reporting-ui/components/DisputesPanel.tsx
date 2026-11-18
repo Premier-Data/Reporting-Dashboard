@@ -25,7 +25,9 @@ function statusBadge(status: Dispute["status"]) {
 
 // Adjudication labels: "confirmed" = the analyst was right (flag upheld);
 // "denied" = the master was right (flag rejected).
-function statusLabel(status: Dispute["status"]): string {
+// Pass only "confirmed" or "denied" for outcome buttons: any other value
+// returns "Open".
+export function statusLabel(status: Dispute["status"]): string {
     switch (status) {
         case "confirmed":
             return "Analyst correct";

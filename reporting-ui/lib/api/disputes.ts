@@ -272,6 +272,20 @@ async function fetchOpenDisputeCounts(): Promise<Record<number, number>> {
     return counts;
 }
 
+/** The exact columns a resolve writes (shared by single and bulk resolve). */
+export function buildResolvePatch(
+    status: "confirmed" | "denied",
+    resolvedBy: string | null,
+    note?: string | null
+) {
+    return {
+        status,
+        resolved_by: resolvedBy,
+        resolved_at: new Date().toISOString(),
+        resolution_note: note?.trim() || null,
+    };
+}
+
 /** Confirm or deny a dispute, optionally with a resolution note. */
 export async function resolveDispute(
     id: number,
@@ -281,12 +295,7 @@ export async function resolveDispute(
 ): Promise<void> {
     const { error } = await supabase
         .from("accuracy_disputes")
-        .update({
-            status,
-            resolved_by: resolvedBy,
-            resolved_at: new Date().toISOString(),
-            resolution_note: note?.trim() || null,
-        })
+        .update(buildResolvePatch(status, resolvedBy, note))
         .eq("id", id);
 
     if (error) {
@@ -295,6 +304,36 @@ export async function resolveDispute(
     }
     invalidateAllDisputesCache();
     invalidateOpenDisputeCountsCache();
+}
+
+/**
+ * Same write as resolveDispute, but only if the dispute is still open and not
+ * deleted. Returns false when no row was updated (already resolved by someone
+ * else, or removed), so a bulk resolve never overwrites another decision.
+ * The caches are invalidated on every call that reached the database (updated
+ * or not), so a reload never shows stale open rows.
+ */
+export async function resolveDisputeIfOpen(
+    id: number,
+    status: "confirmed" | "denied",
+    resolvedBy: string | null,
+    note?: string | null
+): Promise<boolean> {
+    const { data, error } = await supabase
+        .from("accuracy_disputes")
+        .update(buildResolvePatch(status, resolvedBy, note))
+        .eq("id", id)
+        .eq("status", "open")
+        .is("deleted_at", null)
+        .select("id");
+
+    invalidateAllDisputesCache();
+    invalidateOpenDisputeCountsCache();
+    if (error) {
+        console.error("Failed resolving dispute:", error);
+        throw new Error(error.message || "Failed resolving dispute");
+    }
+    return (data?.length ?? 0) > 0;
 }
 
 /** Remove a dispute (e.g. flagged by mistake). Soft delete: marks the row so
