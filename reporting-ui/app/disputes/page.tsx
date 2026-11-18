@@ -116,7 +116,7 @@ export default function DisputesPage() {
                 return;
             }
             if (target.id === user.id) {
-                alert("That's you â€” pick a different person to message.");
+                alert("That's you — pick a different person to message.");
                 return;
             }
             const convId = await getOrCreateDirectConversation(
@@ -253,7 +253,7 @@ export default function DisputesPage() {
         return (
             c.match_label ||
             `${c.analyst_name}${
-                c.file_name_analyst ? ` Â· ${c.file_name_analyst}` : ""
+                c.file_name_analyst ? ` · ${c.file_name_analyst}` : ""
             }`
         );
     }
@@ -457,7 +457,7 @@ export default function DisputesPage() {
 
     // Per-category counts for the breakdown chips. Respects sport / status /
     // analyst filters (so the breakdown matches the visible table) but NOT the
-    // category filter itself â€” every category chip stays visible so you can
+    // category filter itself — every category chip stays visible so you can
     // switch between them. Clicking a chip toggles the category filter.
     const categoryBreakdown = useMemo(() => {
         const matchesFilter = (d: Dispute) =>
@@ -576,11 +576,11 @@ export default function DisputesPage() {
                         <Flag size={26} /> Disputes
                     </h1>
                     <p className="mt-2 text-sm text-slate-600">
-                        One row per fixture â€” click to expand its disputes.{" "}
+                        One row per fixture — click to expand its disputes.{" "}
                         <span className="font-semibold text-amber-600">
                             {counts.open} open
                         </span>{" "}
-                        Â· {counts.total} total across {groups.length} fixture
+                        · {counts.total} total across {groups.length} fixture
                         {groups.length === 1 ? "" : "s"}.
                     </p>
                 </div>
@@ -641,7 +641,7 @@ export default function DisputesPage() {
 
                 {(tab === "disputes" || (tab === "bymaster" && !canResolve)) && (
                 <>
-                {/* Filters: sport Â· status Â· analyst Â· match search */}
+                {/* Filters: sport · status · analyst · match search */}
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                     <SportToggle value={sportFilter} onChange={setSportFilter} />
                     <div className="flex items-center gap-1.5">
@@ -722,7 +722,7 @@ export default function DisputesPage() {
                     <input
                         value={search}
                         onChange={(e) => setSearch(e.target.value)}
-                        placeholder="Search matchâ€¦"
+                        placeholder="Search match…"
                         className="ml-auto w-56 rounded-lg border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-slate-500"
                     />
                 </div>
@@ -841,7 +841,7 @@ export default function DisputesPage() {
                                                     )}
                                                 </td>
                                                 <td className="whitespace-nowrap px-3 py-2.5 align-middle text-slate-600">
-                                                    {g.date ? fmtDate(g.date) : "â€”"}
+                                                    {g.date ? fmtDate(g.date) : "—"}
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle">
                                                     <span className="block truncate font-semibold text-slate-800" title={g.label}>
@@ -850,12 +850,12 @@ export default function DisputesPage() {
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-700">
                                                     <span className="block truncate">
-                                                        {g.analyst || "â€”"}
+                                                        {g.analyst || "—"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-600">
                                                     <span className="block truncate">
-                                                        {g.masterBy || "â€”"}
+                                                        {g.masterBy || "—"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-600">
@@ -863,7 +863,7 @@ export default function DisputesPage() {
                                                         className="block truncate"
                                                         title={g.masterFile || undefined}
                                                     >
-                                                        {g.masterFile || "â€”"}
+                                                        {g.masterFile || "—"}
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-2.5 text-right align-middle">
@@ -943,7 +943,7 @@ export default function DisputesPage() {
                                                                     />
                                                                     {messaging ===
                                                                     g.checkId
-                                                                        ? "Openingâ€¦"
+                                                                        ? "Opening…"
                                                                         : `Message ${g.analyst}`}
                                                                 </button>
                                                             )}
@@ -1028,7 +1028,7 @@ function SortHeader({
 // and lets an admin resolve it (Analyst correct / Master correct) inline.
 // -----------------------------------------------------------------------
 function fmtClock(t: number | null): string {
-    if (t == null) return "â€”";
+    if (t == null) return "—";
     const m = Math.floor(t / 60);
     const s = Math.floor(t % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
@@ -1335,9 +1335,9 @@ function DisputeReviewModal({
                         <Flag size={15} className="text-amber-400" /> Review
                         dispute
                         <span className="text-xs font-normal text-slate-400">
-                            {d.stat || "â€”"} Â·{" "}
+                            {d.stat || "—"} ·{" "}
                             {d.side === "master" ? "Master" : "Analyst"}
-                            {d.player ? ` Â· ${d.player}` : ""}
+                            {d.player ? ` · ${d.player}` : ""}
                             <span className="ml-1 inline-flex items-center gap-1">
                                 <Clock size={11} /> {fmtClock(d.code_time)}
                             </span>
@@ -1397,7 +1397,7 @@ function DisputeReviewModal({
                                         className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
                                     >
                                         <Save size={12} />{" "}
-                                        {saving ? "Savingâ€¦" : "Save corrected"}
+                                        {saving ? "Saving…" : "Save corrected"}
                                     </button>
                                 </div>
                                 {saveMsg && (
@@ -1419,7 +1419,7 @@ function DisputeReviewModal({
                         <div className="min-h-0 flex-1 overflow-y-auto bg-white">
                             {loadingRows ? (
                                 <p className="p-6 text-center text-sm text-slate-400">
-                                    Loading timelineâ€¦
+                                    Loading timeline…
                                 </p>
                             ) : (
                                 rows.map((row, i) => {
@@ -1529,8 +1529,8 @@ function DisputeReviewModal({
                         <p className="text-xs text-slate-400">
                             {d.raised_by ? `Raised by ${d.raised_by}` : "Raised"}
                             {d.reason
-                                ? ` â€” â€œ${d.reason}â€`
-                                : " â€” no reason given"}
+                                ? ` — “${d.reason}”`
+                                : " — no reason given"}
                         </p>
                     </div>
 
@@ -1539,9 +1539,9 @@ function DisputeReviewModal({
                             {d.status === "confirmed"
                                 ? "Analyst correct"
                                 : "Master correct"}
-                            {d.resolved_by ? ` Â· by ${d.resolved_by}` : ""}
+                            {d.resolved_by ? ` · by ${d.resolved_by}` : ""}
                             {d.resolution_note
-                                ? ` Â· ${d.resolution_note}`
+                                ? ` · ${d.resolution_note}`
                                 : ""}
                         </p>
                     )}
@@ -1628,7 +1628,7 @@ function MiniCell({
         return (
             <div className="border-l border-slate-200 px-2 py-1">
                 <span className="text-[11px] italic text-slate-300">
-                    â€” no entry â€”
+                    — no entry —
                 </span>
             </div>
         );
@@ -1643,22 +1643,22 @@ function MiniCell({
     return (
         <div
             onClick={() => onSeek(inst.start)}
-            title={`${formatTime(inst.mid)} Â· ${
-                inst.stat || inst.category || "â€”"
-            } Â· ${teamLabel ?? inst.team}${
+            title={`${formatTime(inst.mid)} · ${
+                inst.stat || inst.category || "—"
+            } · ${teamLabel ?? inst.team}${
                 inst.playerNumber != null ? ` #${inst.playerNumber}` : ""
-            } â€” jump to this moment`}
+            } — jump to this moment`}
             className={`cursor-pointer border-l border-slate-200 px-2 py-1 hover:brightness-95 ${
                 active ? "bg-sky-100 ring-2 ring-inset ring-sky-500" : bg
             }`}
         >
-            {/* Single compact line: time Â· stat (truncates) Â· team/#player */}
+            {/* Single compact line: time · stat (truncates) · team/#player */}
             <div className="flex items-center gap-x-1.5 overflow-hidden whitespace-nowrap">
                 <span className="shrink-0 font-mono text-[11px] font-semibold text-slate-500">
                     {formatTime(inst.mid)}
                 </span>
                 <span className="truncate text-xs font-semibold text-slate-900">
-                    {inst.stat || inst.category || "â€”"}
+                    {inst.stat || inst.category || "—"}
                 </span>
                 <span className="ml-auto shrink-0 text-[11px] font-medium text-slate-500">
                     {teamLabel ?? inst.team}
