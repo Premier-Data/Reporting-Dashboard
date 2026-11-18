@@ -48,6 +48,7 @@ import {
 import MasterEditModal from "@/components/MasterEditModal";
 import { useAuth } from "@/components/auth/AuthContext";
 import DisputesPanel from "@/components/DisputesPanel";
+import DisputesDashboard from "@/components/DisputesDashboard";
 import SportToggle, { type SportFilter } from "@/components/SportToggle";
 import {
     findUserByAnalystName,
@@ -133,6 +134,7 @@ export default function DisputesPage() {
     const [loading, setLoading] = useState(true);
     const [filter, setFilter] = useState<Filter>("open");
     const [expanded, setExpanded] = useState<Set<number>>(new Set());
+    const [tab, setTab] = useState<"disputes" | "dashboard">("disputes");
     const [search, setSearch] = useState("");
     const [sportFilter, setSportFilter] = useState<SportFilter>("all");
     // Analyst filter for the table ("all" = every analyst).
@@ -575,6 +577,44 @@ export default function DisputesPage() {
                     </p>
                 </div>
 
+                <div className="mb-4 flex gap-1 border-b border-slate-200" role="tablist">
+                    {(["disputes", "dashboard"] as const).map((t) => (
+                        <button
+                            key={t}
+                            role="tab"
+                            aria-selected={tab === t}
+                            onClick={() => setTab(t)}
+                            className={`-mb-px border-b-2 px-4 py-2 text-sm font-semibold capitalize transition ${
+                                tab === t
+                                    ? "border-slate-900 text-slate-900"
+                                    : "border-transparent text-slate-500 hover:text-slate-700"
+                            }`}
+                        >
+                            {t}
+                        </button>
+                    ))}
+                </div>
+
+                {tab === "dashboard" && (
+                    <>
+                        <div className="mb-4">
+                            <SportToggle value={sportFilter} onChange={setSportFilter} />
+                        </div>
+                        <DisputesDashboard
+                            disputes={disputes}
+                            checks={checks}
+                            sport={sportFilter}
+                            onSelectAnalyst={(name) => {
+                                setAnalystFilter(name);
+                                setFilter("all");
+                                setTab("disputes");
+                            }}
+                        />
+                    </>
+                )}
+
+                {tab === "disputes" && (
+                <>
                 {/* Filters: sport · status · analyst · match search */}
                 <div className="mb-4 flex flex-wrap items-center gap-2">
                     <SportToggle value={sportFilter} onChange={setSportFilter} />
@@ -886,6 +926,8 @@ export default function DisputesPage() {
                             </tbody>
                         </table>
                     </div>
+                )}
+                </>
                 )}
             </div>
 

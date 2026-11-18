@@ -5,6 +5,7 @@
 
 import { defaultMapCategory } from "@/lib/comparison/json-adapter";
 import { XLSX_MIME } from "@/lib/exports/trainingPlanExcel";
+import { percentText, resolvedFraction, tallyStatuses } from "@/lib/analytics/disputeOutcome";
 
 // Structural subset of Dispute (lib/api/disputes.ts). Not imported from there
 // because that module creates the Supabase client at import time.
@@ -139,12 +140,11 @@ export function disputeResultsModel(input: DisputeResultsInput): DisputeResultsM
     return ta === tb ? a.id - b.id : ta - tb;
   });
 
-  const total = sorted.length;
-  const resolved = sorted.filter((d) => d.status !== "open").length;
-  const correct = sorted.filter((d) => d.status === "confirmed").length;
-  const open = total - resolved;
-  const correctFraction = resolved > 0 ? Math.round((correct / resolved) * 100) / 100 : null;
-  const correctText = correctFraction == null ? "n/a" : `${Math.round(correctFraction * 100)}%`;
+  const tally = tallyStatuses(sorted.map((d) => d.status));
+  const { total, resolved, open, analystCorrect: correct } = tally;
+  const rawFraction = resolvedFraction(correct, resolved);
+  const correctFraction = rawFraction == null ? null : Math.round(rawFraction * 100) / 100;
+  const correctText = percentText(correctFraction);
 
   const rows: DisputeResultRow[] = sorted.map((d) => ({
     timestamp: formatTimestamp(d.code_time),
