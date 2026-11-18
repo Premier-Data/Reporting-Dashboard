@@ -60,15 +60,22 @@ export default function DisputesDashboard({
   disputes,
   checks,
   sport,
+  group: groupProp,
+  onGroupChange,
   onSelectAnalyst,
 }: {
+  /** Optional controlled check-type group (shared with the page filter). */
+  group?: CheckGroup;
+  onGroupChange?: (g: CheckGroup) => void;
   disputes: readonly DashboardDispute[];
   checks: readonly DashboardCheck[];
   sport: SportFilterValue;
   /** Optional: jump to the Disputes tab filtered to this analyst. */
   onSelectAnalyst?: (analyst: string) => void;
 }) {
-  const [group, setGroup] = useState<CheckGroup>("all");
+  const [localGroup, setLocalGroup] = useState<CheckGroup>("all");
+  const group = groupProp ?? localGroup;
+  const setGroup = onGroupChange ?? setLocalGroup;
   const [search, setSearch] = useState("");
 
   const data = useMemo(

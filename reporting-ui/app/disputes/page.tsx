@@ -51,6 +51,13 @@ import DisputesPanel from "@/components/DisputesPanel";
 import DisputesDashboard from "@/components/DisputesDashboard";
 import DisputesByMaster from "@/components/DisputesByMaster";
 import { masterKey } from "@/lib/api/masterGroup";
+import {
+    CHECK_TYPE_ORDER,
+    checkTypeLabel,
+    countByCheckType,
+    matchesCheckType,
+    type CheckTypeFilter,
+} from "@/lib/disputes/checkTypeFilter";
 import { applyResolutionLocal, type Outcome } from "@/lib/disputes/bulkResolve";
 import SportToggle, { type SportFilter } from "@/components/SportToggle";
 import {
@@ -151,6 +158,9 @@ export default function DisputesPage() {
     const [categoryFilter, setCategoryFilter] = useState<
         "all" | DisputeCategory | "uncategorised"
     >("all");
+    // Check-type filter (category of the CHECK: specific / full / golden /
+    // other). Shared with the Dashboard tab's segmented control.
+    const [checkType, setCheckType] = useState<CheckTypeFilter>("all");
     // Individual-stat filter ("all" = every stat). Matches d.stat
     // case-insensitively; legacy disputes with a null stat are excluded when a
     // specific stat is selected.
@@ -278,6 +288,9 @@ export default function DisputesPage() {
             return d.category === categoryFilter;
         };
 
+        const matchesType = (checkId: number) =>
+            matchesCheckType(checkById.get(checkId)?.category, checkType);
+
         const matchesStat = (d: Dispute) => {
             if (statFilter === "all") return true;
             return (
@@ -290,6 +303,7 @@ export default function DisputesPage() {
         for (const d of disputes) {
             if (!matchesFilter(d)) continue;
             if (!matchesSport(d.check_id)) continue;
+            if (!matchesType(d.check_id)) continue;
             if (!matchesCategory(d)) continue;
             if (!matchesStat(d)) continue;
             const arr = byCheck.get(d.check_id) ?? [];
@@ -372,6 +386,7 @@ export default function DisputesPage() {
         analystFilter,
         masterFileFilter,
         categoryFilter,
+        checkType,
         statFilter,
         sort,
     ]);
@@ -450,10 +465,36 @@ export default function DisputesPage() {
         }
     }
 
+    // Disputes (and their checks) restricted to the selected check type. Used
+    // for the header counts and the By master tab.
+    const typeDisputes = useMemo(
+        () =>
+            checkType === "all"
+                ? disputes
+                : disputes.filter((d) =>
+                      matchesCheckType(checkById.get(d.check_id)?.category, checkType)
+                  ),
+        [disputes, checkById, checkType]
+    );
+    const typeChecks = useMemo(
+        () =>
+            checkType === "all"
+                ? checks
+                : checks.filter((c) => matchesCheckType(c.category, checkType)),
+        [checks, checkType]
+    );
+
+    // Dispute counts per check type for the dropdown (ignores the type filter).
+    const typeCounts = useMemo(
+        () =>
+            countByCheckType(disputes, (d) => checkById.get(d.check_id)?.category),
+        [disputes, checkById]
+    );
+
     const counts = useMemo(() => {
-        const open = disputes.filter((d) => d.status === "open").length;
-        return { open, total: disputes.length };
-    }, [disputes]);
+        const open = typeDisputes.filter((d) => d.status === "open").length;
+        return { open, total: typeDisputes.length };
+    }, [typeDisputes]);
 
     // Per-category counts for the breakdown chips. Respects sport / status /
     // analyst filters (so the breakdown matches the visible table) but NOT the
@@ -482,6 +523,7 @@ export default function DisputesPage() {
             if (!matchesFilter(d)) continue;
             if (!matchesSport(d.check_id)) continue;
             if (!matchesAnalyst(d.check_id)) continue;
+            if (!matchesCheckType(checkById.get(d.check_id)?.category, checkType)) continue;
             const key = d.category ?? "uncategorised";
             counts.set(key, (counts.get(key) ?? 0) + 1);
             total += 1;
@@ -513,6 +555,7 @@ export default function DisputesPage() {
         filter,
         sportFilter,
         analystFilter,
+        checkType,
         sportByCheck,
         checkById,
     ]);
@@ -614,6 +657,8 @@ export default function DisputesPage() {
                             disputes={disputes}
                             checks={checks}
                             sport={sportFilter}
+                            group={checkType}
+                            onGroupChange={setCheckType}
                             onSelectAnalyst={(name) => {
                                 setAnalystFilter(name);
                                 setFilter("all");
@@ -625,8 +670,8 @@ export default function DisputesPage() {
 
                 {tab === "bymaster" && canResolve && (
                     <DisputesByMaster
-                        disputes={disputes}
-                        checks={checks}
+                        disputes={typeDisputes}
+                        checks={typeChecks}
                         username={user?.username ?? null}
                         initialMaster={masterSel}
                         onResolvedLocal={(ids, outcome: Outcome, by, note, at) =>
@@ -705,6 +750,21 @@ export default function DisputesPage() {
                             </option>
                         ))}
                         <option value="uncategorised">Uncategorised</option>
+                    </select>
+                    <select
+                        value={checkType}
+                        onChange={(e) => setCheckType(e.target.value as CheckTypeFilter)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-700 outline-none focus:border-slate-500"
+                        aria-label="Filter by check type"
+                    >
+                        <option value="all">All check types ({typeCounts.all})</option>
+                        {CHECK_TYPE_ORDER.filter(
+                            (g) => g !== "other" || typeCounts.other > 0 || checkType === "other"
+                        ).map((g) => (
+                            <option key={g} value={g}>
+                                {checkTypeLabel(g)} ({typeCounts[g]})
+                            </option>
+                        ))}
                     </select>
                     <select
                         value={statFilter}
