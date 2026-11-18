@@ -525,7 +525,7 @@ export default function DisputesPage() {
 
     return (
         <div className="min-h-full bg-slate-100 text-slate-900">
-            <div className="mx-auto max-w-7xl p-6 lg:p-8">
+            <div className="mx-auto max-w-[1800px] p-6 lg:p-8">
                 <div className="mb-6">
                     <h1 className="flex items-center gap-2 text-3xl font-bold tracking-tight text-slate-900">
                         <Flag size={26} /> Disputes
@@ -665,10 +665,10 @@ export default function DisputesPage() {
                     </div>
                 ) : (
                     <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-sm">
-                        <table className="w-full min-w-[56rem] border-collapse text-sm">
+                        <table className="w-full min-w-[64rem] table-fixed border-collapse text-sm">
                             <thead>
                                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                                    <th className="w-8 px-3 py-2.5" />
+                                    <th className="w-10 px-3 py-2.5" />
                                     <SortHeader
                                         label="Date"
                                         col="date"
@@ -701,7 +701,7 @@ export default function DisputesPage() {
                                         col="masterFile"
                                         sort={sort}
                                         onSort={toggleSort}
-                                        className="w-48"
+                                        className="w-44"
                                     />
                                     <SortHeader
                                         label="Open"
@@ -743,7 +743,7 @@ export default function DisputesPage() {
                                                     {g.date ? fmtDate(g.date) : "—"}
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle">
-                                                    <span className="block max-w-[22rem] truncate font-semibold text-slate-800">
+                                                    <span className="block truncate font-semibold text-slate-800" title={g.label}>
                                                         {g.label}
                                                     </span>
                                                 </td>
@@ -759,7 +759,7 @@ export default function DisputesPage() {
                                                 </td>
                                                 <td className="px-3 py-2.5 align-middle text-slate-600">
                                                     <span
-                                                        className="block max-w-[14rem] truncate"
+                                                        className="block truncate"
                                                         title={g.masterFile || undefined}
                                                     >
                                                         {g.masterFile || "—"}
