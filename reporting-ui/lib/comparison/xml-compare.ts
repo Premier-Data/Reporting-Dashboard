@@ -1319,6 +1319,17 @@ export function compareInstances(
     return t1 - t2;
   });
 
+  return buildResultFromRows(rows, tolerance);
+}
+
+/**
+ * Build the summary / per-category / per-stat / per-team breakdowns from a set
+ * of already-paired comparison rows.
+ */
+export function buildResultFromRows(
+  rows: ComparisonRow[],
+  tolerance: number
+): ComparisonResult {
   // Summary
   const count = (s: MatchStatus) => rows.filter((r) => r.status === s).length;
   const exact = count("exact");
@@ -1327,8 +1338,8 @@ export function compareInstances(
   const wrongTeam = count("wrong_team");
   const missed = count("missed");
   const extra = count("extra");
-  const masterTotal = master.length;
-  const analystTotal = analyst.length;
+  const masterTotal = rows.filter((r) => r.master != null).length;
+  const analystTotal = rows.filter((r) => r.analyst != null).length;
 
   const exactDeltas = rows
     .filter((r) => r.status === "exact" && r.timeDelta != null)
@@ -1465,6 +1476,23 @@ export function compareInstances(
   };
 }
 
+/**
+ * Restrict a result to one team. Rows are filtered (not re-compared) so the
+ * pairing and the Home/Away canonicalisation stay as computed for the full
+ * result. "all" returns the result unchanged.
+ */
+export function scopeResultToTeam(
+  result: ComparisonResult,
+  team: string
+): ComparisonResult {
+  if (team === "all") return result;
+  return buildResultFromRows(
+    result.rows.filter(
+      (r) => (r.master?.team ?? r.analyst?.team ?? "Unknown") === team
+    ),
+    result.tolerance
+  );
+}
 /** Format seconds as mm:ss. */
 export function formatTime(seconds: number): string {
   const m = Math.floor(seconds / 60);

@@ -81,6 +81,7 @@ import {
   type ComparisonRow,
   type MatchStatus,
   type StatBreakdown,
+  scopeResultToTeam,
 } from "@/lib/comparison/xml-compare";
 import {
   jsonEventsToInstances,
@@ -2207,6 +2208,20 @@ function AccuracyCompareInner() {
     );
   }, [result, teamFilter, categoryFilter]);
 
+  // Team-only scope (no category/stat/status). Feeds the video review.
+  const teamRows: ComparisonRow[] = useMemo(() => {
+    if (!result) return [];
+    return teamFilter === "all"
+      ? result.rows
+      : result.rows.filter((r) => rowTeam(r) === teamFilter);
+  }, [result, teamFilter]);
+
+  // Result summaries re-derived for the chosen team (same object for "all").
+  const teamResult = useMemo(
+    () => (result ? scopeResultToTeam(result, teamFilter) : null),
+    [result, teamFilter]
+  );
+
   // Adds the selected-stat scope on top of team + category. Used for the
   // top summary cards and (with status) the timeline.
   const statScopedRows: ComparisonRow[] = useMemo(() => {
@@ -2220,8 +2235,8 @@ function AccuracyCompareInner() {
   }, [statScopedRows, statusFilter]);
 
   // Video review has its own stat filter so it can show every instance of a
-  // selected stat without inheriting the page's team/category/stat/status
-  // filters. Keep the original comparison rows so missed and extra entries
+  // selected stat. It inherits only the team scope (teamRows), not the
+  // category/stat/status filters. Keep the original comparison rows so missed and extra entries
   // remain available in the review.
   const [videoStatFilter, setVideoStatFilter] = useState<string | "all">("all");
 
@@ -2234,16 +2249,16 @@ function AccuracyCompareInner() {
   // Reset the clip index when the review scope changes.
   useEffect(() => {
     setReviewIndex(0);
-  }, [videoStatFilter, videoStatusFilter, reviewPlayer]);
+  }, [videoStatFilter, videoStatusFilter, reviewPlayer, teamFilter]);
   const videoStatOptions = useMemo(() => {
     if (!result) return [];
     const stats = new Set<string>();
-    for (const row of result.rows) {
+    for (const row of teamRows) {
       if (row.master?.stat.trim()) stats.add(row.master.stat.trim());
       if (row.analyst?.stat.trim()) stats.add(row.analyst.stat.trim());
     }
     return Array.from(stats).sort((a, b) => a.localeCompare(b));
-  }, [result]);
+  }, [result, teamRows]);
 
   const videoRows: ComparisonRow[] = useMemo(() => {
     if (!result) return [];
@@ -2263,13 +2278,13 @@ function AccuracyCompareInner() {
           reviewPlayer.columnKey,
           i.stat.toLowerCase()
         );
-      rows = result.rows.filter(
+      rows = teamRows.filter(
         (row) => matchesPlayer(row.master) || matchesPlayer(row.analyst)
       );
     } else if (videoStatFilter === "all") {
-      rows = result.rows;
+      rows = teamRows;
     } else {
-      rows = result.rows.filter(
+      rows = teamRows.filter(
         (row) =>
           row.master?.stat.trim() === videoStatFilter ||
           row.analyst?.stat.trim() === videoStatFilter
@@ -2320,13 +2335,13 @@ function AccuracyCompareInner() {
           reviewPlayer.columnKey,
           i.stat.toLowerCase()
         );
-      base = result.rows.filter(
+      base = teamRows.filter(
         (row) => matchesPlayer(row.master) || matchesPlayer(row.analyst)
       );
     } else if (videoStatFilter === "all") {
-      base = result.rows;
+      base = teamRows;
     } else {
-      base = result.rows.filter(
+      base = teamRows.filter(
         (row) =>
           row.master?.stat.trim() === videoStatFilter ||
           row.analyst?.stat.trim() === videoStatFilter
@@ -2338,7 +2353,7 @@ function AccuracyCompareInner() {
       counts[row.status] = (counts[row.status] ?? 0) + 1;
     }
     return counts;
-  }, [result, videoStatFilter, reviewPlayer, sportConfig]);
+  }, [result, teamRows, videoStatFilter, reviewPlayer, sportConfig]);
 
   // Start/end window for each filtered review row: from whichever displayed
   // side is present (prefer master). Prev/Next seek to `start`; auto-skip
@@ -3249,8 +3264,8 @@ function AccuracyCompareInner() {
                 overall accuracy is low, so normal XML-vs-XML checks are
                 unaffected. */}
             {(master?.kind === "json" || analyst?.kind === "json") &&
-              result.summary.masterTotal > 0 &&
-              result.summary.accuracy < 0.4 && (
+              (teamResult ?? result).summary.masterTotal > 0 &&
+              (teamResult ?? result).summary.accuracy < 0.4 && (
                 <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-sky-200 bg-sky-50 p-4 text-sm text-sky-900">
                   <Info className="mt-0.5 shrink-0 text-sky-600" size={16} />
                   <div>
@@ -3368,6 +3383,21 @@ function AccuracyCompareInner() {
                 </span>
               )}
             </div>
+
+            {/* Team scope: applies to every section below */}
+            {realTeams.length >= 1 && (
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <span className="mr-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Team
+                </span>
+                <TeamToggle
+                  teams={realTeams.map((t) => t.team)}
+                  value={teamFilter}
+                  onChange={setTeamFilter}
+                  labelFor={teamDisplay}
+                />
+              </div>
+            )}
 
             {/* Active-filter chips */}
             {(statFilter !== "all" ||
@@ -4226,7 +4256,7 @@ function AccuracyCompareInner() {
             <TrainingPlanPanel
               open={trainingOpen}
               onClose={() => setTrainingOpen(false)}
-              result={result}
+              result={teamResult ?? result}
               scopeRows={statScopedRows}
               context={{
                 analystName: checkAnalystName ?? (gradedAnalyst || null),
