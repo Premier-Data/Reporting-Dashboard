@@ -35,6 +35,7 @@ import {
   Radar,
   ScanLine,
   X,
+  Activity,
 } from "lucide-react";
 
 import { useEffect, useState } from "react";
@@ -243,6 +244,11 @@ const sections = [
         title: "Permissions",
         href: "/permissions",
         icon: KeyRound,
+      },
+      {
+        title: "Activity Log",
+        href: "/activity",
+        icon: Activity,
       },
       {
         title: "Competitor Intelligence",

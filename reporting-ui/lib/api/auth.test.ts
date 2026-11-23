@@ -24,6 +24,7 @@ describe("pageKeysForPath", () => {
   });
 
   it("returns [] for unknown routes", () => {
+    expect(pageKeysForPath("/activity")).toEqual(["activity-log"]);
     expect(pageKeysForPath("/nope")).toEqual([]);
   });
 });

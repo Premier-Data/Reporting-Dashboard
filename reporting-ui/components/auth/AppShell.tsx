@@ -7,6 +7,7 @@ import { pageKeysForPath } from "@/lib/api/auth";
 import Sidebar from "@/components/layout/Sidebar";
 import TopBar from "@/components/layout/Topbar";
 import ChatWidget from "@/components/chat/ChatWidget";
+import ActivityTracker from "@/components/activity/ActivityTracker";
 import { usePullToRefresh } from "@/components/pwa/usePullToRefresh";
 import PullToRefreshIndicator from "@/components/pwa/PullToRefreshIndicator";
 
@@ -120,6 +121,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
             {/* App-wide floating chat (shows on every authenticated page,
                 including the accuracy pages). */}
             <ChatWidget />
+            {/* User activity log: only mounted for a logged-in user. */}
+            <ActivityTracker userId={user.id} username={user.username} />
         </div>
     );
 }
