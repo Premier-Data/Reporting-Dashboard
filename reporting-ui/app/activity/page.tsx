@@ -3,7 +3,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { Activity, ArrowLeft, Loader2, Lock, RefreshCw, Search } from "lucide-react";
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, Loader2, Lock, RefreshCw, Search } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthContext";
 import { listUsers, ROLE_LABELS, type UserAccount } from "@/lib/api/auth";
 import {
@@ -11,7 +11,14 @@ import {
     loadDerivedEvents,
     type ActivitySummary,
 } from "@/lib/api/activity";
-import { formatDuration, mergedLength, presenceStatus, type PresenceStatus } from "@/lib/activity/activity";
+import { formatDuration, mergedLength, presenceStatus } from "@/lib/activity/activity";
+import { nextSort, rowComparator, type SortableRow, type SortKey, type SortState } from "@/lib/activity/sort";
+import {
+    clearStoredPassword,
+    getStoredPassword,
+    isBadCredentials,
+    setStoredPassword,
+} from "@/lib/activity/storedPassword";
 import { StatusBadge } from "@/components/activity/StatusBadge";
 import { sectionLabel } from "@/components/activity/ActivityTimeline";
 import { LearnerActivityPanel } from "@/components/activity/LearnerActivityPanel";
@@ -38,14 +45,7 @@ function rangeFor(key: RangeKey, from: string, to: string) {
     return { from: f, to: t };
 }
 
-const STATUS_ORDER: Record<PresenceStatus, number> = { active: 0, idle: 1, offline: 2 };
-
-interface Row {
-    workedMs: number;
-    eventCount: number;
-    firstActive: number | null;
-    lastActive: number | null;
-    status: PresenceStatus;
+interface Row extends SortableRow {
     lastSeen: string | null;
     lastActiveAt: string | null;
     section: string | null;
@@ -65,11 +65,24 @@ function ActivityInner() {
     const userParam = Number(searchParams.get("user"));
     const detailId = Number.isInteger(userParam) && userParam > 0 ? userParam : null;
 
-    // Password is kept in memory only; the activity RPCs re-check it each call.
+    // The activity RPCs re-check the password on every call. It is remembered
+    // in sessionStorage (this tab only) so a refresh does not ask again.
     const [password, setPassword] = useState("");
+    const [restored, setRestored] = useState(false);
     const [draft, setDraft] = useState("");
     const [checking, setChecking] = useState(false);
     const [gateError, setGateError] = useState("");
+
+    useEffect(() => {
+        if (!user) return;
+        setPassword(getStoredPassword(user.username) ?? "");
+        setRestored(true);
+    }, [user]);
+
+    const lock = useCallback(() => {
+        clearStoredPassword();
+        setPassword("");
+    }, []);
 
     async function unlock() {
         if (!user || !draft) return;
@@ -78,6 +91,7 @@ function ActivityInner() {
         try {
             const now = new Date();
             await fetchActivitySummary(user.username, draft, now, now);
+            setStoredPassword(user.username, draft);
             setPassword(draft);
             setDraft("");
         } catch (err) {
@@ -87,11 +101,24 @@ function ActivityInner() {
         }
     }
 
-    if (!user) return null;
+    if (!user || !restored) return null;
 
     return (
         <div className="min-h-full bg-slate-100 text-slate-900">
             <div className="mx-auto max-w-7xl p-6 lg:p-8">
+                {password && (
+                    <div className="mb-4 flex justify-end">
+                        <button
+                            type="button"
+                            onClick={lock}
+                            className="inline-flex items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-600 hover:bg-slate-50"
+                            title="Forget the password for this tab"
+                        >
+                            <Lock size={14} />
+                            Lock
+                        </button>
+                    </div>
+                )}
                 {!password ? (
                     <>
                         <Header title="Activity Log" />
@@ -100,7 +127,7 @@ function ActivityInner() {
                                 <Lock size={16} /> Confirm your password
                             </p>
                             <p className="mt-1 text-sm text-slate-500">
-                                Activity is only released to an admin who re-enters their password. It is not stored.
+                                Activity is only released to an admin who confirms their password. It is remembered for this tab only, until you press Lock or close the tab.
                             </p>
                             <form
                                 className="mt-4 flex gap-2"
@@ -129,9 +156,9 @@ function ActivityInner() {
                         </div>
                     </>
                 ) : detailId !== null ? (
-                    <Detail userId={detailId} adminUsername={user.username} adminPassword={password} />
+                    <Detail userId={detailId} adminUsername={user.username} adminPassword={password} onAuthError={lock} />
                 ) : (
-                    <List adminUsername={user.username} adminPassword={password} />
+                    <List adminUsername={user.username} adminPassword={password} onAuthError={lock} />
                 )}
             </div>
         </div>
@@ -156,10 +183,12 @@ function Detail({
     userId,
     adminUsername,
     adminPassword,
+    onAuthError,
 }: {
     userId: number;
     adminUsername: string;
     adminPassword: string;
+    onAuthError: () => void;
 }) {
     const [target, setTarget] = useState<UserAccount | null | undefined>(undefined);
 
@@ -198,6 +227,7 @@ function Detail({
                         userName={target.username}
                         adminUsername={adminUsername}
                         adminPassword={adminPassword}
+                        onAuthError={onAuthError}
                     />
                 </>
             )}
@@ -205,7 +235,15 @@ function Detail({
     );
 }
 
-function List({ adminUsername, adminPassword }: { adminUsername: string; adminPassword: string }) {
+function List({
+    adminUsername,
+    adminPassword,
+    onAuthError,
+}: {
+    adminUsername: string;
+    adminPassword: string;
+    onAuthError: () => void;
+}) {
     const [users, setUsers] = useState<UserAccount[]>([]);
     const [summary, setSummary] = useState<ActivitySummary>({ segments: [], presence: [] });
     const [actions, setActions] = useState<Map<number, number>>(new Map());
@@ -217,6 +255,7 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
     const [search, setSearch] = useState("");
     const [showAdmins, setShowAdmins] = useState(false);
     const [statusFilter, setStatusFilter] = useState<"all" | "online">("all");
+    const [sort, setSort] = useState<SortState>(null);
 
     const r = useMemo(() => rangeFor(range, from, to), [range, from, to]);
 
@@ -237,17 +276,20 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
             setActions(counts);
             setError("");
         } catch (err) {
+            if (isBadCredentials(err)) onAuthError();
             setError(err instanceof Error ? err.message : "Couldn't load activity.");
         } finally {
             setLoading(false);
         }
-    }, [adminUsername, adminPassword, r]);
+    }, [adminUsername, adminPassword, r, onAuthError]);
 
     useEffect(() => {
         load();
         const t = setInterval(load, 30_000);
         return () => clearInterval(t);
     }, [load]);
+
+    const cmp = useMemo(() => rowComparator(sort), [sort]);
 
     const table = useMemo(() => {
         const fromMs = r.from.getTime();
@@ -273,12 +315,16 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
             .map((u) => {
                 const ps = parts.get(u.id) ?? [];
                 const p = presence.get(u.id);
+                const status = presenceStatus(p?.last_seen_at, p?.last_active_at);
                 const row: Row = {
+                    name: u.analyst_name || u.username,
+                    username: u.username,
+                    sectionText: status !== "offline" ? sectionLabel(p?.section ?? null) : null,
                     workedMs: mergedLength(ps),
                     eventCount: actions.get(u.id) ?? 0,
                     firstActive: ps.length ? Math.min(...ps.map((x) => x.start)) : null,
                     lastActive: ps.length ? Math.max(...ps.map((x) => x.end)) : null,
-                    status: presenceStatus(p?.last_seen_at, p?.last_active_at),
+                    status,
                     lastSeen: p?.last_seen_at ?? null,
                     lastActiveAt: p?.last_active_at ?? null,
                     section: p?.section ?? null,
@@ -286,14 +332,10 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
                 return { user: u, a: row };
             })
             .filter((x) => statusFilter === "all" || x.a.status !== "offline")
-            .sort(
-                (x, y) =>
-                    STATUS_ORDER[x.a.status] - STATUS_ORDER[y.a.status] ||
-                    y.a.workedMs - x.a.workedMs ||
-                    y.a.eventCount - x.a.eventCount ||
-                    x.user.username.localeCompare(y.user.username)
-            );
-    }, [users, summary, actions, search, showAdmins, statusFilter, r]);
+            .sort((x, y) => cmp(x.a, y.a));
+    }, [users, summary, actions, search, showAdmins, statusFilter, r, cmp]);
+
+    const onSort = (k: SortKey) => setSort((s) => nextSort(s, k));
 
     const online = table.filter((x) => x.a.status !== "offline").length;
     const activeNow = table.filter((x) => x.a.status === "active").length;
@@ -382,13 +424,13 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
                         <table className="w-full whitespace-nowrap text-left text-sm">
                             <thead className="sticky top-0 z-10 border-b border-slate-200 bg-slate-50 text-slate-700">
                                 <tr>
-                                    <th className="px-4 py-3 font-semibold">User</th>
-                                    <th className="px-4 py-3 font-semibold">Status</th>
-                                    <th className="px-4 py-3 font-semibold">Currently in</th>
-                                    <th className="px-4 py-3 font-semibold">First active</th>
-                                    <th className="px-4 py-3 font-semibold">Last active</th>
-                                    <th className="px-4 py-3 text-right font-semibold">Active time</th>
-                                    <th className="px-4 py-3 text-right font-semibold" title="Messages sent, conversations read, disputes raised or resolved">Actions</th>
+                                    <SortTh label="User" k="user" sort={sort} onSort={onSort} />
+                                    <SortTh label="Status" k="status" sort={sort} onSort={onSort} />
+                                    <SortTh label="Currently in" k="section" sort={sort} onSort={onSort} />
+                                    <SortTh label="First active" k="first" sort={sort} onSort={onSort} />
+                                    <SortTh label="Last active" k="last" sort={sort} onSort={onSort} />
+                                    <SortTh label="Active time" k="worked" sort={sort} onSort={onSort} right />
+                                    <SortTh label="Actions" k="actions" sort={sort} onSort={onSort} right title="Messages sent, conversations read, disputes raised or resolved" />
                                     <th className="px-4 py-3" />
                                 </tr>
                             </thead>
@@ -438,6 +480,44 @@ function List({ adminUsername, adminPassword }: { adminUsername: string; adminPa
                 )}
             </div>
         </>
+    );
+}
+
+function SortTh({
+    label,
+    k,
+    sort,
+    onSort,
+    right,
+    title,
+}: {
+    label: string;
+    k: SortKey;
+    sort: SortState;
+    onSort: (k: SortKey) => void;
+    right?: boolean;
+    title?: string;
+}) {
+    const dir = sort?.key === k ? sort.dir : null;
+    return (
+        <th
+            className={`px-4 py-3 font-semibold ${right ? "text-right" : ""}`}
+            aria-sort={dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none"}
+        >
+            <button
+                type="button"
+                onClick={() => onSort(k)}
+                title={title}
+                className={`inline-flex items-center gap-1 font-semibold hover:text-slate-900 ${right ? "flex-row-reverse" : ""}`}
+            >
+                {label}
+                {dir === "asc" ? (
+                    <ArrowUp size={13} />
+                ) : (
+                    <ArrowDown size={13} className={dir ? "" : "opacity-0"} />
+                )}
+            </button>
+        </th>
     );
 }
 

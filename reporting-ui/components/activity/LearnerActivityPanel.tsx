@@ -22,6 +22,7 @@ import {
     type ActivityUserDetail,
     type DerivedEvent,
 } from "@/lib/api/activity";
+import { isBadCredentials } from "@/lib/activity/storedPassword";
 
 const toInput = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -40,11 +41,13 @@ export function LearnerActivityPanel({
     userName,
     adminUsername,
     adminPassword,
+    onAuthError,
 }: {
     userId: number;
     userName: string;
     adminUsername: string;
     adminPassword: string;
+    onAuthError?: () => void;
 }) {
     const [from, setFrom] = useState(() => {
         const f = new Date();
@@ -74,11 +77,12 @@ export function LearnerActivityPanel({
             setError("");
             setNow(Date.now());
         } catch (err) {
+            if (isBadCredentials(err)) onAuthError?.();
             setError(err instanceof Error ? err.message : "Couldn't load activity.");
         } finally {
             setLoading(false);
         }
-    }, [adminUsername, adminPassword, userId, userName, fromDate, toDate]);
+    }, [adminUsername, adminPassword, userId, userName, fromDate, toDate, onAuthError]);
 
     useEffect(() => {
         load();

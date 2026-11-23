@@ -17,6 +17,8 @@ import {
     type Role,
 } from "@/lib/api/auth";
 
+import { clearStoredPassword } from "@/lib/activity/storedPassword";
+
 const STORAGE_KEY = "pd_auth_user";
 
 interface AuthContextValue {
@@ -101,6 +103,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const logout = useCallback(() => {
         setUser(null);
+        clearStoredPassword();
         try {
             window.localStorage.removeItem(STORAGE_KEY);
         } catch {
