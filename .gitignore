@@ -66,3 +66,12 @@ desktop.ini
 # Deploy / hosting
 # ============================================
 .vercel
+
+# ============================================
+# Local scratch / agent artifacts
+# ============================================
+.worktrees/
+.agents/
+**/.agents/tasks/*/
+reporting-ui/supabase/.temp/
+tt_games_orphans_backup_*.json
