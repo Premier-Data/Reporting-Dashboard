@@ -23,6 +23,13 @@ export type SoccerGameRow = {
   home_allocated: string | null;
   away_allocated: string | null;
   Location: string | null;
+  Competition?: string | null;
+  home_team?: string | null;
+  away_team?: string | null;
+  /** Fixture Complete Time (yyyy-mm-dd); null/absent when not completed. */
+  completed_date?: string | null;
+  completed_season?: number | string | null;
+  completed_week?: number | string | null;
 };
 
 export const MIXED_KEY = "Mixed";

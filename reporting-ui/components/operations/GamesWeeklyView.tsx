@@ -23,6 +23,8 @@ import {
   soccerSeasons,
   type SoccerGameRow,
 } from "@/lib/analytics/opsSoccer";
+import { buildPutInVsCompleted } from "@/lib/analytics/soccerCompleted";
+import SoccerFixturesTable from "./SoccerFixturesTable";
 
 type SortKey = "name" | "total" | `w${number}`;
 type Sport = "aussie" | "soccer";
@@ -165,6 +167,7 @@ function aussieModel(rows: TTGameRow[], season: number): GridModel {
 
 function soccerModel(rows: SoccerGameRow[], season: number): GridModel {
   const report = buildSoccerOpsReport(rows, season);
+  const flow = buildPutInVsCompleted(rows, season);
   const summary: SummaryRow[] = [
     {
       label: "Total games",
@@ -178,6 +181,27 @@ function soccerModel(rows: SoccerGameRow[], season: number): GridModel {
       vals: (w: number) => fmt(l.byWeek[w] ?? 0),
       total: fmt(l.total),
     })),
+    // Whole fixtures (not half-games): put in by the fixture date (SoccerData column A),
+    // completed by the Fixture Complete Time, each in its own Wed-Tue week.
+    {
+      label: "Fixtures put in",
+      title: "Fixtures whose put-in date (SoccerData column A) falls in this week",
+      vals: (w: number) => String(flow.byWeek[w]?.putIn ?? 0),
+      total: String(flow.totals.putIn),
+    },
+    {
+      label: "Fixtures completed",
+      title:
+        "Fixtures whose completed date (Fixture Complete Time) falls in this week, whichever week they were put in. Can be higher or lower than Fixtures put in.",
+      vals: (w: number) => String(flow.byWeek[w]?.completed ?? 0),
+      total: String(flow.totals.completed),
+    },
+    {
+      label: "Completed same week",
+      title: "Of the fixtures put in this week, how many were also completed in this same week",
+      vals: (w: number) => String(flow.byWeek[w]?.completedSameWeek ?? 0),
+      total: String(flow.totals.completedSameWeek),
+    },
   ];
   return { season, weeks: report.weeks, analysts: report.analysts, summary, excluded: report.excluded };
 }
@@ -235,12 +259,17 @@ function SoccerOpsGames() {
       onSeason={setSeason}
       model={model}
       emptyLabel="soccer games"
+      after={data && season !== null ? <SoccerFixturesTable key={season} rows={data} season={season} /> : null}
       footnote={
         <>
           Weeks run Wednesday to Tuesday and are derived from the game date (Week 1 starts on the
           Wednesday on or before 1 October), so they match Deputy and the Reporting Soccer Games
           card. Columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side.
           Total Games = (Home + Away) / 2. Location rows plus Mixed add up to Total games.
+          Fixtures put in, Fixtures completed and Completed same week count whole fixtures: put in
+          by the fixture date, completed by the Fixture Complete Time (each in its own Wed to Tue week).
+          Fixtures completed can differ from Fixtures put in for the same week, and the total
+          includes completions in weeks that have no column here.
         </>
       }
     />
@@ -257,6 +286,7 @@ function GamesGrid({
   model,
   emptyLabel,
   footnote,
+  after,
 }: {
   loaded: boolean;
   error: string | null;
@@ -267,6 +297,8 @@ function GamesGrid({
   model: GridModel | null;
   emptyLabel: string;
   footnote: React.ReactNode;
+  /** Optional content rendered below the footnote (e.g. the soccer fixtures list). */
+  after?: React.ReactNode;
 }) {
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({
     key: "name",
@@ -459,6 +491,7 @@ function GamesGrid({
           <p>{report.excluded.skippedRows} rows without a valid date or week were skipped.</p>
         )}
       </div>
+      {after}
     </div>
   );
 }

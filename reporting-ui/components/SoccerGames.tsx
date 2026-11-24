@@ -18,8 +18,9 @@ import {
   Legend,
   CartesianGrid,
 } from "recharts";
-import { supabase } from "@/lib/supabase";
+import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { soccerSeasonFor, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
+import { buildPutInVsCompleted } from "@/lib/analytics/soccerCompleted";
 import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
@@ -48,17 +49,14 @@ export default function SoccerGames({
     let cancelled = false;
     (async () => {
       let all: Row[] = [];
-      let from = 0;
-      while (true) {
-        const { data, error } = await supabase
-          .from("soccer_games")
-          .select("season,week,Date,Location,Competition")
-          .order("game_key", { ascending: true })
-          .range(from, from + 999);
-        if (error || !data || data.length === 0) break;
-        all = all.concat(data as Row[]);
-        if (data.length < 1000) break;
-        from += 1000;
+      try {
+        all = await fetchAllPaged<Row>("soccer_games", {
+          select:
+            "game_key,season,week,Date,Location,Competition,completed_date,completed_season,completed_week",
+          unique: "game_key",
+        });
+      } catch (e) {
+        console.error(e);
       }
       if (!cancelled) {
         setGames(all);
@@ -121,6 +119,24 @@ export default function SoccerGames({
     return t;
   }, [filtered]);
 
+  // Put in vs completed per week. Week numbers restart each season, so this is
+  // only shown for a single selected season.
+  const flow = useMemo(
+    () => (season === "all" ? null : buildPutInVsCompleted(games, Number(season))),
+    [games, season]
+  );
+  const flowTotals = useMemo(() => {
+    if (!flow) return null;
+    if (week === "all") return flow.totals;
+    const w = flow.byWeek[Number(week)];
+    return {
+      putIn: w?.putIn ?? 0,
+      completed: w?.completed ?? 0,
+      completedSameWeek: w?.completedSameWeek ?? 0,
+      notCompleted: w?.notCompleted ?? 0,
+    };
+  }, [flow, week]);
+
   const colour = (loc: string) => PALETTE[locations.indexOf(loc) % PALETTE.length];
   const weekLabel = (w: number) => `Week ${w}`;
 
@@ -173,6 +189,31 @@ export default function SoccerGames({
             <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-xl">
               Total: {filtered.length}
             </div>
+            {flowTotals && (
+              <>
+                <div
+                  title="Fixtures whose put-in date (SoccerData column A) falls in the selected weeks"
+                  style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}
+                  className="p-4 rounded-xl"
+                >
+                  Fixtures put in: {flowTotals.putIn}
+                </div>
+                <div
+                  title="Fixtures whose completed date (Fixture Complete Time) falls in the selected weeks, whichever week they were put in"
+                  style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}
+                  className="p-4 rounded-xl"
+                >
+                  Fixtures completed: {flowTotals.completed}
+                </div>
+                <div
+                  title="Of the fixtures put in during the selected weeks, how many were completed in that same week"
+                  style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}
+                  className="p-4 rounded-xl"
+                >
+                  Completed same week: {flowTotals.completedSameWeek}
+                </div>
+              </>
+            )}
             {locations.map((l) => (
               <div
                 key={l}
@@ -220,6 +261,28 @@ export default function SoccerGames({
                     <th key={l} className="py-1 pr-4 text-right">{l}</th>
                   ))}
                   <th className="py-1 text-right">Total</th>
+                  {flow && (
+                    <>
+                      <th
+                        className="py-1 pl-4 text-right"
+                        title="Fixtures whose put-in date (SoccerData column A) falls in this week"
+                      >
+                        Put in
+                      </th>
+                      <th
+                        className="py-1 pl-4 text-right"
+                        title="Fixtures whose completed date falls in this week, whichever week they were put in"
+                      >
+                        Completed
+                      </th>
+                      <th
+                        className="py-1 pl-4 text-right"
+                        title="Of this week's put-in fixtures, how many were completed in the same week"
+                      >
+                        Same week
+                      </th>
+                    </>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -232,6 +295,15 @@ export default function SoccerGames({
                     <td className="py-1 text-right font-semibold tabular-nums">
                       {locations.reduce((s, l) => s + (r[l] ?? 0), 0)}
                     </td>
+                    {flow && (
+                      <>
+                        <td className="py-1 pl-4 text-right tabular-nums">{flow.byWeek[r.week]?.putIn ?? 0}</td>
+                        <td className="py-1 pl-4 text-right tabular-nums">{flow.byWeek[r.week]?.completed ?? 0}</td>
+                        <td className="py-1 pl-4 text-right tabular-nums">
+                          {flow.byWeek[r.week]?.completedSameWeek ?? 0}
+                        </td>
+                      </>
+                    )}
                   </tr>
                 ))}
               </tbody>
