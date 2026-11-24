@@ -36,6 +36,7 @@ import {
   ScanLine,
   X,
   Activity,
+  HardDrive,
 } from "lucide-react";
 
 import { useEffect, useState } from "react";
@@ -249,6 +250,11 @@ const sections = [
         title: "Activity Log",
         href: "/activity",
         icon: Activity,
+      },
+      {
+        title: "R2 Storage",
+        href: "/r2-storage",
+        icon: HardDrive,
       },
       {
         title: "Competitor Intelligence",

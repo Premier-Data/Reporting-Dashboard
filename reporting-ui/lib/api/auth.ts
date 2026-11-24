@@ -81,6 +81,7 @@ export const PAGES: PageDef[] = [
     { key: "admin-config", label: "Admin Configuration", href: "/admin-config" },
     { key: "competitors", label: "Competitor Intelligence", href: "/competitors" },
     { key: "activity-log", label: "Activity Log", href: "/activity" },
+    { key: "r2-storage", label: "R2 Storage", href: "/r2-storage" },
 ];
 
 // Companion routes that share another page's access (no separate permission).

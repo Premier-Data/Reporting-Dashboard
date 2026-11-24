@@ -19,6 +19,9 @@ id = "fc2e9841b73f45b9a86160f2ad969b0b"
 
 # ── Config (safe to commit; no secrets here) ────────────────────────────────
 [vars]
+# List pages (1000 keys each) the cron advances an R2 report scan per tick.
+# 40 suits the Workers paid plan; use "5" on the free plan.
+R2_PAGES_PER_TICK = "40"
 # Browser origins allowed to call this worker. List your dashboard origin(s)
 # comma-separated. Use "*" for any origin (read-only score, acceptable) while
 # testing, then lock it down. Examples:
@@ -54,3 +57,8 @@ COMPETITOR_POLL_MINUTES = "30"
 # Until then, `wrangler deploy` publishes to the free
 # https://playhq-scores.<your-subdomain>.workers.dev URL, which works for
 # testing straight away.
+
+# R2 bucket scanned (list-only) for the dashboard's R2 Storage report.
+[[r2_buckets]]
+binding = "VIDEO_BUCKET"
+bucket_name = "video"

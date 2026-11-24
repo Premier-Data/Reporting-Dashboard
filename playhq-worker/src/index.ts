@@ -1,3 +1,5 @@
+import { addObjects, buildSnapshot, type FolderTotals, type RunningTotals } from "./r2Report";
+
 // PlayHQ live-scores bridge — a Cloudflare Worker that proxies the PlayHQ
 // spectator GraphQL endpoint behind your own domain, with validation, a short
 // edge cache (so 3–4 fixtures polled every ~2 min never hammer PlayHQ), CORS
@@ -43,6 +45,11 @@ export interface Env {
   // KV namespace holding the most recent TT pushes, so the production dashboard
   // can render a live push-activity feed (via /api/push-log) from any device.
   PUSH_LOG?: KVNamespace;
+  // R2 bucket "video" (read-only use: only .list() is ever called) for the
+  // /r2-storage report. Bound in wrangler.toml [[r2_buckets]].
+  VIDEO_BUCKET?: R2Bucket;
+  // List pages (1000 keys each) the cron advances an R2 scan per tick.
+  R2_PAGES_PER_TICK?: string;
   // Supabase (competitor-intelligence collector): read competitor_sources,
   // write competitor_posts.
   SUPABASE_URL?: string;
@@ -470,7 +477,7 @@ function corsHeaders(env: Env, requestOrigin: string | null): HeadersInit {
         : allowed[0] ?? "null";
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     Vary: "Origin",
   };
@@ -2799,6 +2806,200 @@ async function markSourceChecked(env: Env, id: number, status: string): Promise<
   }
 }
 
+// ── R2 storage report ───────────────────────────────────────────────────────
+// Resumable scan of the "video" bucket. State lives in KV (PUSH_LOG) and is
+// advanced by the 2-minute cron; the finished totals replace the snapshot in a
+// single put. Only VIDEO_BUCKET.list() is ever called (read-only by code).
+const R2_PAGES_PER_TICK_DEFAULT = 40;
+const R2_PAGES_HARD_CAP = 100;
+const R2_STATE_KEY = "r2report:state";
+const R2_SNAPSHOT_KEY = "r2report:snapshot";
+const R2_LASTRESCAN_KEY = "r2report:lastrescan";
+const R2_RESCAN_COOLDOWN_MS = 15 * 60 * 1000;
+const R2_DAILY_MIN_GAP_MS = 20 * 3600 * 1000;
+
+interface R2ScanState {
+  status: "idle" | "running";
+  startedAt: string | null;
+  lastStartedAt: string | null;
+  cursor: string | null;
+  objectsScanned: number;
+  totals: FolderTotals;
+  running: RunningTotals;
+}
+
+function r2IdleState(lastStartedAt: string | null): R2ScanState {
+  return {
+    status: "idle",
+    startedAt: null,
+    lastStartedAt,
+    cursor: null,
+    objectsScanned: 0,
+    totals: {},
+    running: { files: 0, bytes: 0 },
+  };
+}
+
+function r2RunningState(now: string): R2ScanState {
+  return { ...r2IdleState(now), status: "running", startedAt: now };
+}
+
+async function r2LoadState(env: Env): Promise<R2ScanState> {
+  const raw = await env.PUSH_LOG!.get(R2_STATE_KEY, "json");
+  return (raw as R2ScanState | null) ?? r2IdleState(null);
+}
+
+async function r2ScanTick(env: Env): Promise<void> {
+  if (!env.PUSH_LOG || !env.VIDEO_BUCKET) return;
+  const ts = () => new Date().toISOString();
+  try {
+    const now = new Date();
+    let state = await r2LoadState(env);
+
+    // Daily start at 17:00 UTC (3am AEST / 4am AEDT).
+    if (state.status !== "running" && now.getUTCHours() === 17 && now.getUTCMinutes() < 2) {
+      const last = state.lastStartedAt ? Date.parse(state.lastStartedAt) : 0;
+      if (!last || now.getTime() - last > R2_DAILY_MIN_GAP_MS) {
+        state = r2RunningState(now.toISOString());
+      }
+    }
+    if (state.status !== "running") return;
+
+    const configured = parseInt(env.R2_PAGES_PER_TICK ?? "", 10);
+    const pages = Math.min(
+      R2_PAGES_HARD_CAP,
+      Math.max(1, Number.isFinite(configured) ? configured : R2_PAGES_PER_TICK_DEFAULT)
+    );
+
+    let done = false;
+    for (let i = 0; i < pages; i++) {
+      const res = await env.VIDEO_BUCKET.list({
+        limit: 1000,
+        cursor: state.cursor ?? undefined,
+      });
+      addObjects(
+        state.totals,
+        res.objects.map((o) => ({ key: o.key, size: o.size })),
+        state.running
+      );
+      state.objectsScanned += res.objects.length;
+      if (res.truncated) {
+        state.cursor = res.cursor;
+      } else {
+        done = true;
+        break;
+      }
+    }
+
+    if (done) {
+      const snapshot = buildSnapshot(state.totals, state.running, ts());
+      await env.PUSH_LOG.put(R2_SNAPSHOT_KEY, JSON.stringify(snapshot));
+      await env.PUSH_LOG.put(R2_STATE_KEY, JSON.stringify(r2IdleState(state.lastStartedAt)));
+      console.log(`[${ts()}] R2 scan done: ${snapshot.totalFiles} objects, ${snapshot.folders.length} folders`);
+    } else {
+      await env.PUSH_LOG.put(R2_STATE_KEY, JSON.stringify(state));
+      console.log(`[${ts()}] R2 scan progress: ${state.objectsScanned} objects`);
+    }
+  } catch (e) {
+    console.log(`[${ts()}] R2 scan tick failed:`, e instanceof Error ? e.message : "error");
+  }
+}
+
+// Returns true (admin), false (not an admin) or null (Supabase unreachable /
+// unexpected response).
+async function r2VerifyAdmin(
+  env: Env,
+  username: string,
+  password: string
+): Promise<boolean | null> {
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) return null;
+  try {
+    const res = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/r2_report_check_admin`, {
+      method: "POST",
+      headers: {
+        apikey: env.SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${env.SUPABASE_ANON_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ p_username: username, p_password: password }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (res.ok) return (await res.json()) === true;
+    if (res.status === 401 || res.status === 403) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function handleR2Report(
+  request: Request,
+  env: Env,
+  cors: Record<string, string>
+): Promise<Response> {
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, 405, cors);
+  let body: { username?: unknown; password?: unknown; action?: unknown };
+  try {
+    body = (await request.json()) as typeof body;
+  } catch {
+    return json({ error: "bad_request" }, 400, cors);
+  }
+  if (
+    typeof body.username !== "string" ||
+    typeof body.password !== "string" ||
+    !body.username ||
+    (body.action !== "get" && body.action !== "rescan")
+  ) {
+    return json({ error: "bad_request" }, 400, cors);
+  }
+  if (!env.PUSH_LOG || !env.VIDEO_BUCKET) return json({ error: "not_configured" }, 503, cors);
+
+  const ok = await r2VerifyAdmin(env, body.username, body.password);
+  if (ok === null) return json({ error: "upstream_unavailable" }, 502, cors);
+  if (!ok) return json({ error: "forbidden" }, 403, cors);
+
+  const lastRescanRaw = await env.PUSH_LOG.get(R2_LASTRESCAN_KEY);
+  const lastRescan = lastRescanRaw ? Date.parse(lastRescanRaw) : NaN;
+  const cooldownEnd = Number.isFinite(lastRescan) ? lastRescan + R2_RESCAN_COOLDOWN_MS : 0;
+  const state = await r2LoadState(env);
+  const scanInfo = (s: R2ScanState) => ({
+    status: s.status,
+    objectsScanned: s.objectsScanned,
+    startedAt: s.startedAt,
+  });
+
+  if (body.action === "get") {
+    const snapshot = await env.PUSH_LOG.get(R2_SNAPSHOT_KEY, "json");
+    return json(
+      {
+        snapshot: snapshot ?? null,
+        scan: scanInfo(state),
+        nextRescanAt: cooldownEnd > Date.now() ? new Date(cooldownEnd).toISOString() : null,
+      },
+      200,
+      cors
+    );
+  }
+
+  // rescan
+  if (state.status === "running") {
+    return json({ error: "scan_running", scan: scanInfo(state) }, 409, cors);
+  }
+  if (cooldownEnd > Date.now()) {
+    const retryAfter = Math.ceil((cooldownEnd - Date.now()) / 1000);
+    return json(
+      { error: "cooldown", retryAfterSeconds: retryAfter },
+      429,
+      { ...cors, "Retry-After": String(retryAfter) }
+    );
+  }
+  const nowIso = new Date().toISOString();
+  const started = r2RunningState(nowIso);
+  await env.PUSH_LOG.put(R2_STATE_KEY, JSON.stringify(started));
+  await env.PUSH_LOG.put(R2_LASTRESCAN_KEY, nowIso);
+  return json({ scan: scanInfo(started) }, 202, cors);
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -2808,6 +3009,12 @@ export default {
     // CORS preflight.
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: cors });
+    }
+
+    // POST /api/r2-report — admin-only R2 storage report (get / rescan).
+    // Declared BEFORE the GET-only guard so POST reaches it.
+    if (url.pathname === "/api/r2-report") {
+      return handleR2Report(request, env, Object.fromEntries(new Headers(cors).entries()));
     }
 
     // POST/GET /api/admin/backfill-players — token-gated, BATCHED + resumable
@@ -3986,6 +4193,9 @@ export default {
       await recordPushLog(env, base, results);
     })();
     ctx.waitUntil(task);
+
+    // R2 storage report scan (list-only, resumable; no-op unless a scan is active).
+    ctx.waitUntil(r2ScanTick(env));
 
     // Final-score push: send each just-finished fixture's FINAL score exactly
     // once. A FINAL game drops out of liveFixtureIds, so without this the last
