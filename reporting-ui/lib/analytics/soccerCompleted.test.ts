@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildPutInVsCompleted, completedSeasonWeek, isoToDmy } from "./soccerCompleted";
+import { buildAddedVsCompleted, completedSeasonWeek, isoToDmy } from "./soccerCompleted";
+import { seasonWeekOfIso } from "./season";
 
 describe("isoToDmy", () => {
   it("formats dd/mm/yyyy and dashes a missing date", () => {
@@ -9,39 +10,38 @@ describe("isoToDmy", () => {
     expect(isoToDmy("")).toBe("\u2013");
   });
 });
-import { seasonWeekOfIso } from "./season";
 
 // Season 2027 Week 1 starts Wed 2026-09-30 (Wed on/before 1 Oct 2026).
 // W1 = 30 Sep..6 Oct, W2 = 7..13 Oct, W3 = 14..20 Oct.
 const g = (Date: string, completed_date: string | null = null) => ({ Date, completed_date });
 
-describe("buildPutInVsCompleted", () => {
-  it("counts put-in and completed per week independently", () => {
+describe("buildAddedVsCompleted", () => {
+  it("counts added and completed per week independently", () => {
     const rows = [
-      g("2026-10-01", "2026-10-02"), // W1 -> W1
-      g("2026-10-02", "2026-10-08"), // W1 -> W2
-      g("2026-10-03"), // W1, not completed
-      g("2026-10-08", "2026-10-09"), // W2 -> W2
+      g("2026-10-01", "2026-10-02"), // added W1, completed W1
+      g("2026-10-02", "2026-10-08"), // added W1, completed W2
+      g("2026-10-03"), // added W1, not completed
+      g("2026-10-08", "2026-10-09"), // added W2, completed W2
     ];
-    const r = buildPutInVsCompleted(rows, 2027);
-    expect(r.byWeek[1]).toMatchObject({ putIn: 3, completed: 1, completedSameWeek: 1, notCompleted: 1 });
-    expect(r.byWeek[2]).toMatchObject({ putIn: 1, completed: 2, completedSameWeek: 1, notCompleted: 0 });
-    expect(r.totals).toEqual({ putIn: 4, completed: 3, completedSameWeek: 2, notCompleted: 1 });
+    const r = buildAddedVsCompleted(rows, 2027);
+    expect(r.byWeek[1]).toEqual({ week: 1, added: 3, completed: 1 });
+    expect(r.byWeek[2]).toEqual({ week: 2, added: 1, completed: 2 });
+    expect(r.totals).toEqual({ added: 4, completed: 3 });
   });
 
   it("counts a later-week completion in the completed week only", () => {
-    const r = buildPutInVsCompleted([g("2026-10-01", "2026-10-15")], 2027);
-    expect(r.byWeek[1]).toMatchObject({ putIn: 1, completed: 0, completedSameWeek: 0 });
-    expect(r.byWeek[3]).toMatchObject({ putIn: 0, completed: 1 });
+    const r = buildAddedVsCompleted([g("2026-10-01", "2026-10-15")], 2027);
+    expect(r.byWeek[1]).toEqual({ week: 1, added: 1, completed: 0 });
+    expect(r.byWeek[3]).toEqual({ week: 3, added: 0, completed: 1 });
   });
 
   it("treats a missing completed date as not completed", () => {
-    const r = buildPutInVsCompleted([g("2026-10-01"), { Date: "2026-10-01", completed_date: "" }], 2027);
-    expect(r.totals).toEqual({ putIn: 2, completed: 0, completedSameWeek: 0, notCompleted: 2 });
+    const r = buildAddedVsCompleted([g("2026-10-01"), { Date: "2026-10-01", completed_date: "" }], 2027);
+    expect(r.totals).toEqual({ added: 2, completed: 0 });
   });
 
   it("uses Wed->Tue boundaries (Tue 6 Oct is W1, Wed 7 Oct is W2)", () => {
-    const r = buildPutInVsCompleted([g("2026-10-01", "2026-10-06"), g("2026-10-01", "2026-10-07")], 2027);
+    const r = buildAddedVsCompleted([g("2026-10-01", "2026-10-06"), g("2026-10-01", "2026-10-07")], 2027);
     expect(r.byWeek[1].completed).toBe(1);
     expect(r.byWeek[2].completed).toBe(1);
   });
@@ -51,10 +51,10 @@ describe("buildPutInVsCompleted", () => {
   });
 
   it("buckets by the completed date's own season", () => {
-    // Put in Sat 26 Sep 2026 (season 2026 last week), completed Thu 1 Oct 2026 (season 2027 W1).
+    // Added Sat 26 Sep 2026 (season 2026 last week), completed Thu 1 Oct 2026 (season 2027 W1).
     const rows = [g("2026-09-26", "2026-10-01")];
-    expect(buildPutInVsCompleted(rows, 2026).totals).toMatchObject({ putIn: 1, completed: 0, notCompleted: 0 });
-    expect(buildPutInVsCompleted(rows, 2027).byWeek[1]).toMatchObject({ putIn: 0, completed: 1 });
+    expect(buildAddedVsCompleted(rows, 2026).totals).toEqual({ added: 1, completed: 0 });
+    expect(buildAddedVsCompleted(rows, 2027).byWeek[1]).toEqual({ week: 1, added: 0, completed: 1 });
   });
 
   it("falls back to stored completed_season/week only when there is no completed date", () => {
@@ -63,5 +63,19 @@ describe("buildPutInVsCompleted", () => {
       week: 4,
     });
     expect(completedSeasonWeek({ completed_date: "garbage", completed_season: 2027, completed_week: 4 })).toBeNull();
+  });
+
+  it("matches the user's pasted example (added 17/11, completed 17-24/11)", () => {
+    // 17/11/2026 is Tue (season 2027 W7); 18-24/11 is W8.
+    const rows = [
+      g("2026-11-17", "2026-11-23"),
+      g("2026-11-17", "2026-11-20"),
+      g("2026-11-17", "2026-11-17"),
+      g("2026-11-19", "2026-11-22"),
+      g("2026-11-23", "2026-11-24"),
+    ];
+    const r = buildAddedVsCompleted(rows, 2027);
+    expect(r.byWeek[7]).toEqual({ week: 7, added: 3, completed: 1 });
+    expect(r.byWeek[8]).toEqual({ week: 8, added: 2, completed: 4 });
   });
 });

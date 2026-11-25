@@ -1,7 +1,6 @@
 "use client";
-// Per-fixture list for the Operations > Games > Soccer view: the put-in date
-// (SoccerData column A) next to the completed date (Completion Times "Fixture
-// Complete Time"). Collapsed by default so the weekly grid stays the focus and
+// Per-fixture list for the Operations > Games > Soccer view: the added date
+// (SoccerData column A) next to the completed date (SoccerData last column). Collapsed by default so the weekly grid stays the focus and
 // the rows only render when opened.
 import { useMemo, useState } from "react";
 import { THEME } from "@/lib/theme";
@@ -58,7 +57,7 @@ export default function SoccerFixturesTable({
   const [week, setWeek] = useState<string>("all");
   const [basis, setBasis] = useState<WeekBasis>("putIn");
 
-  // A fixture belongs here when it was put in OR completed in this season.
+  // A fixture belongs here when it was added OR completed in this season.
   const fixtures = useMemo(() => {
     const out: Fixture[] = [];
     for (const r of rows) {
@@ -117,7 +116,7 @@ export default function SoccerFixturesTable({
       style={{ marginTop: 16 }}
     >
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-        Fixtures: put in vs completed date ({fixtures.length})
+        Fixtures: added and completed dates ({fixtures.length})
       </summary>
       {open && (
         <div style={{ marginTop: 8 }}>
@@ -147,21 +146,21 @@ export default function SoccerFixturesTable({
                   setBasis(e.target.value as WeekBasis);
                   setWeek("all");
                 }} style={selectStyle}>
-                <option value="putIn">Put-in date</option>
+                <option value="putIn">Added date</option>
                 <option value="completed">Completed date</option>
               </select>
             </label>
             <span aria-live="polite">{sorted.length} fixtures</span>
           </div>
           <div style={{ overflow: "auto", maxHeight: "50vh", border: `1px solid ${THEME.border}`, borderRadius: 6, background: THEME.panel }}>
-            <table aria-label="Soccer fixtures with put-in and completed dates" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <table aria-label="Soccer fixtures with added and completed dates" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead style={{ position: "sticky", top: 0, background: THEME.panelSoft, color: THEME.muted }}>
                 <tr>
                   <SortableTh sort={sort} sortKey="putIn" className={thCls}>
-                    <span title="Date the fixture was put in (SoccerData column A)">Put in</span>
+                    <span title="Date the fixture was added (SoccerData column A)">Added</span>
                   </SortableTh>
                   <SortableTh sort={sort} sortKey="completed" className={thCls}>
-                    <span title="Fixture Complete Time from the Completion Times sheet. A dash means not completed (or no matching completion row).">
+                    <span title="Completion date from the last column of the SoccerData sheet (older fixtures: Completion Times sheet). A dash means not completed.">
                       Completed
                     </span>
                   </SortableTh>

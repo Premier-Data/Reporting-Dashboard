@@ -23,7 +23,7 @@ import {
   soccerSeasons,
   type SoccerGameRow,
 } from "@/lib/analytics/opsSoccer";
-import { buildPutInVsCompleted } from "@/lib/analytics/soccerCompleted";
+import { buildAddedVsCompleted } from "@/lib/analytics/soccerCompleted";
 import SoccerFixturesTable from "./SoccerFixturesTable";
 
 type SortKey = "name" | "total" | `w${number}`;
@@ -167,7 +167,7 @@ function aussieModel(rows: TTGameRow[], season: number): GridModel {
 
 function soccerModel(rows: SoccerGameRow[], season: number): GridModel {
   const report = buildSoccerOpsReport(rows, season);
-  const flow = buildPutInVsCompleted(rows, season);
+  const flow = buildAddedVsCompleted(rows, season);
   const summary: SummaryRow[] = [
     {
       label: "Total games",
@@ -181,26 +181,19 @@ function soccerModel(rows: SoccerGameRow[], season: number): GridModel {
       vals: (w: number) => fmt(l.byWeek[w] ?? 0),
       total: fmt(l.total),
     })),
-    // Whole fixtures (not half-games): put in by the fixture date (SoccerData column A),
-    // completed by the Fixture Complete Time, each in its own Wed-Tue week.
+    // Whole games (not half-games), two independent sets: added by the date in
+    // SoccerData column A, completed by the last column's date, each in its own Wed-Tue week.
     {
-      label: "Fixtures put in",
-      title: "Fixtures whose put-in date (SoccerData column A) falls in this week",
-      vals: (w: number) => String(flow.byWeek[w]?.putIn ?? 0),
-      total: String(flow.totals.putIn),
+      label: "Games added",
+      title: "Games whose added date (SoccerData column A) falls in this week",
+      vals: (w: number) => String(flow.byWeek[w]?.added ?? 0),
+      total: String(flow.totals.added),
     },
     {
-      label: "Fixtures completed",
-      title:
-        "Fixtures whose completed date (Fixture Complete Time) falls in this week, whichever week they were put in. Can be higher or lower than Fixtures put in.",
+      label: "Games completed",
+      title: "Games whose completed date (last column of the SoccerData sheet) falls in this week",
       vals: (w: number) => String(flow.byWeek[w]?.completed ?? 0),
       total: String(flow.totals.completed),
-    },
-    {
-      label: "Completed same week",
-      title: "Of the fixtures put in this week, how many were also completed in this same week",
-      vals: (w: number) => String(flow.byWeek[w]?.completedSameWeek ?? 0),
-      total: String(flow.totals.completedSameWeek),
     },
   ];
   return { season, weeks: report.weeks, analysts: report.analysts, summary, excluded: report.excluded };
@@ -266,10 +259,10 @@ function SoccerOpsGames() {
           Wednesday on or before 1 October), so they match Deputy and the Reporting Soccer Games
           card. Columns are labelled by their week-ending Saturday. A game is worth 0.5 per team side.
           Total Games = (Home + Away) / 2. Location rows plus Mixed add up to Total games.
-          Fixtures put in, Fixtures completed and Completed same week count whole fixtures: put in
-          by the fixture date, completed by the Fixture Complete Time (each in its own Wed to Tue week).
-          Fixtures completed can differ from Fixtures put in for the same week, and the total
-          includes completions in weeks that have no column here.
+          Games added and Games completed count whole games as two separate sets: added by the
+          date in column A of the soccer sheet, completed by the date in its last column (each in
+          its own Wed to Tue week). The total for Games completed includes completions in weeks
+          that have no column here.
         </>
       }
     />
