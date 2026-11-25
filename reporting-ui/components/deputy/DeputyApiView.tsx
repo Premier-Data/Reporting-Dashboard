@@ -4,9 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { CalendarClock, RefreshCw, Search, X } from "lucide-react";
 
 import { THEME } from "@/lib/theme";
+import { defaultDeputySource, type DeputySource } from "@/lib/deputy/source";
 import {
-  getDeputyRosters,
-  getDeputyTimesheets,
   type DeputyRosterRow,
   type DeputyTimesheetRow,
 } from "@/lib/api/deputy";
@@ -184,7 +183,11 @@ function SummaryCard({
 
 
 
-export default function DeputyApiView() {
+export default function DeputyApiView({
+  source = defaultDeputySource,
+  heading = "Deputy API",
+  subtitle = "Rostered schedule and approved timesheets synced from Deputy. Approved timesheets are those marked time-approved and not discarded.",
+}: { source?: DeputySource; heading?: string; subtitle?: string } = {}) {
   const [rosters, setRosters] = useState<DeputyRosterRow[]>([]);
   const [timesheets, setTimesheets] = useState<DeputyTimesheetRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -225,9 +228,9 @@ export default function DeputyApiView() {
     setError(null);
     try {
       const [rosterRows, timesheetRows] = await Promise.all([
-        getDeputyRosters(),
+        source.getRosters(),
         // Only this request asks the server to sync, so a reload syncs once.
-        getDeputyTimesheets({ sync }),
+        source.getTimesheets({ sync }),
       ]);
       setRosters(rosterRows);
       setTimesheets(timesheetRows);
@@ -398,12 +401,10 @@ export default function DeputyApiView() {
           <div>
             <h1 className="flex items-center gap-2 text-2xl font-bold text-white">
               <CalendarClock size={22} className="text-sky-400" />
-              Deputy API
+              {heading}
             </h1>
             <p className="mt-1 max-w-2xl text-sm text-slate-400">
-              Rostered schedule and approved timesheets synced from Deputy.
-              Approved timesheets are those marked time-approved and not
-              discarded.
+              {subtitle}
             </p>
           </div>
           <button

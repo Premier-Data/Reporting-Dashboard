@@ -82,6 +82,7 @@ export const PAGES: PageDef[] = [
     { key: "competitors", label: "Competitor Intelligence", href: "/competitors" },
     { key: "activity-log", label: "Activity Log", href: "/activity" },
     { key: "r2-storage", label: "R2 Storage", href: "/r2-storage" },
+    { key: "gameface-deputy", label: "GameFace Deputy", href: "/gameface-deputy" },
 ];
 
 // Companion routes that share another page's access (no separate permission).

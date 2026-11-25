@@ -257,6 +257,11 @@ const sections = [
         icon: HardDrive,
       },
       {
+        title: "GameFace Deputy",
+        href: "/gameface-deputy",
+        icon: CalendarClock,
+      },
+      {
         title: "Competitor Intelligence",
         href: "/competitors",
         icon: Radar,

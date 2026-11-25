@@ -3,6 +3,7 @@
     "target": "ES2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "strict": true,
     "noEmit": true,
@@ -37,6 +38,8 @@
   "exclude": [
     "node_modules",
     "supabase/functions/deputy-sync/index.ts",
-    "supabase/functions/deputy-read/index.ts"
+    "supabase/functions/deputy-read/index.ts",
+    "supabase/functions/gameface-deputy-sync/index.ts",
+    "supabase/functions/gameface-deputy-read/index.ts"
   ]
 }

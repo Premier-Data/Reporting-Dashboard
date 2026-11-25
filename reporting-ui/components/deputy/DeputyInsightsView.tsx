@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { BarChart3, RefreshCw, Search, X } from "lucide-react";
 
 import { THEME } from "@/lib/theme";
-import { getDeputyTimesheets, type DeputyTimesheetRow } from "@/lib/api/deputy";
+import { type DeputyTimesheetRow } from "@/lib/api/deputy";
+import { defaultDeputySource, type DeputySource } from "@/lib/deputy/source";
 import { formatAud, formatHours2 } from "@/lib/deputy/format";
 import {
   currentWeekWedToTue,
@@ -71,7 +72,9 @@ function sortKey(row: EmployeeInsightRow, field: SortField): string | number {
   }
 }
 
-export default function DeputyInsightsView() {
+export default function DeputyInsightsView({
+  source = defaultDeputySource,
+}: { source?: DeputySource } = {}) {
   const [timesheets, setTimesheets] = useState<DeputyTimesheetRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +108,7 @@ export default function DeputyInsightsView() {
     setLoading(true);
     setError(null);
     try {
-      const rows = await getDeputyTimesheets({ sync });
+      const rows = await source.getTimesheets({ sync });
       setTimesheets(rows);
     } catch (err) {
       console.error("Failed loading Deputy data:", err);
