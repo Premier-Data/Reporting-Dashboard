@@ -84,3 +84,33 @@ export function buildAddedVsCompleted(
   }
   return { weeks, byWeek, totals };
 }
+export type FlowSeriesPoint = AddedVsCompletedWeek & {
+  /** Cumulative added minus cumulative completed up to and including this week. */
+  backlog: number;
+};
+
+/**
+ * Contiguous weekly series (first to last week with any activity, empty weeks
+ * as 0/0) with a running "added not yet completed" balance. The balance is a
+ * count difference only; it does not pair individual games and can go negative
+ * when more games are completed than were added so far.
+ */
+export function buildFlowSeries(flow: AddedVsCompleted): FlowSeriesPoint[] {
+  if (flow.weeks.length === 0) return [];
+  const first = flow.weeks[0].week;
+  const last = flow.weeks[flow.weeks.length - 1].week;
+  const out: FlowSeriesPoint[] = [];
+  let backlog = 0;
+  for (let week = first; week <= last; week++) {
+    const w = flow.byWeek[week] ?? { week, added: 0, completed: 0 };
+    backlog += w.added - w.completed;
+    out.push({ week, added: w.added, completed: w.completed, backlog });
+  }
+  return out;
+}
+
+/** completed / added as a percentage rounded to 1 decimal; null when nothing was added. */
+export function completionRate(added: number, completed: number): number | null {
+  if (!(added > 0)) return null;
+  return Math.round((completed / added) * 1000) / 10;
+}

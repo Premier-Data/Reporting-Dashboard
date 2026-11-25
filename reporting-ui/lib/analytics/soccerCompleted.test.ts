@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { buildAddedVsCompleted, completedSeasonWeek, isoToDmy } from "./soccerCompleted";
+import {
+  buildAddedVsCompleted,
+  buildFlowSeries,
+  completedSeasonWeek,
+  completionRate,
+  isoToDmy,
+} from "./soccerCompleted";
 import { seasonWeekOfIso } from "./season";
 
 describe("isoToDmy", () => {
@@ -77,5 +83,44 @@ describe("buildAddedVsCompleted", () => {
     const r = buildAddedVsCompleted(rows, 2027);
     expect(r.byWeek[7]).toEqual({ week: 7, added: 3, completed: 1 });
     expect(r.byWeek[8]).toEqual({ week: 8, added: 2, completed: 4 });
+  });
+});
+describe("buildFlowSeries / completionRate", () => {
+  it("accumulates added minus completed and fills empty weeks", () => {
+    const flow = buildAddedVsCompleted(
+      [
+        g("2026-10-01", "2026-10-02"), // W1 / W1
+        g("2026-10-02"), // W1 / none
+        g("2026-10-02"), // W1 / none
+        g("2026-10-15", "2026-10-16"), // W3 / W3 (W2 empty)
+      ],
+      2027
+    );
+    expect(buildFlowSeries(flow)).toEqual([
+      { week: 1, added: 3, completed: 1, backlog: 2 },
+      { week: 2, added: 0, completed: 0, backlog: 2 },
+      { week: 3, added: 1, completed: 1, backlog: 2 },
+    ]);
+  });
+
+  it("includes weeks that only have completions and can go negative", () => {
+    const flow = buildAddedVsCompleted([g("2026-10-01", "2026-10-08"), g("2026-10-02", "2026-10-09")], 2027);
+    expect(buildFlowSeries(flow)).toEqual([
+      { week: 1, added: 2, completed: 0, backlog: 2 },
+      { week: 2, added: 0, completed: 2, backlog: 0 },
+    ]);
+    const only = buildAddedVsCompleted([{ Date: "2026-09-01", completed_date: "2026-10-08" }], 2027);
+    expect(buildFlowSeries(only).map((p) => p.backlog)).toEqual([-1]);
+  });
+
+  it("returns an empty series for no data", () => {
+    expect(buildFlowSeries(buildAddedVsCompleted([], 2027))).toEqual([]);
+  });
+
+  it("computes completion rate and handles zero added", () => {
+    expect(completionRate(20, 18)).toBe(90);
+    expect(completionRate(3, 1)).toBe(33.3);
+    expect(completionRate(0, 5)).toBeNull();
+    expect(completionRate(4, 6)).toBe(150);
   });
 });

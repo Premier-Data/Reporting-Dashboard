@@ -17,10 +17,12 @@ import {
   Tooltip,
   Legend,
   CartesianGrid,
+  ComposedChart,
+  Line,
 } from "recharts";
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { soccerSeasonFor, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
-import { buildAddedVsCompleted } from "@/lib/analytics/soccerCompleted";
+import { buildAddedVsCompleted, buildFlowSeries, completionRate } from "@/lib/analytics/soccerCompleted";
 import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
@@ -33,6 +35,10 @@ const THEME = {
   text: "#e5e7eb",
   muted: "#94a3b8",
 };
+// Series colours for the added vs completed chart.
+const ADDED_COLOUR = "#38bdf8";
+const COMPLETED_COLOUR = "#f59e0b";
+const BACKLOG_COLOUR = "#e879f9";
 const PALETTE = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#ef4444", "#14b8a6"];
 
 export default function SoccerGames({
@@ -135,6 +141,16 @@ export default function SoccerGames({
     };
   }, [flow, week]);
 
+  // Weekly series for the added vs completed chart. The cumulative balance runs
+  // over the whole season; the selected week only narrows which columns show.
+  const flowSeries = useMemo(() => {
+    if (!flow) return [];
+    const all = buildFlowSeries(flow);
+    return week === "all" ? all : all.filter((p) => p.week === Number(week));
+  }, [flow, week]);
+  const rate = flowTotals ? completionRate(flowTotals.added, flowTotals.completed) : null;
+  const flowRanges = (w: number) => weekRanges.get(String(w));
+
   // Table rows: every week with games added, plus weeks that only have completions.
   const tableRows = useMemo(() => {
     const m = new Map<number, Record<string, number>>(chartData.map((r) => [r.week, r]));
@@ -214,6 +230,13 @@ export default function SoccerGames({
                 >
                   Games completed: {flowTotals.completed}
                 </div>
+                <div
+                  title="Games completed / games added for the selected weeks. Counts only; games are not matched to each other."
+                  style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }}
+                  className="p-4 rounded-xl"
+                >
+                  Completion rate: {rate === null ? "\u2013" : `${rate}%`}
+                </div>
               </>
             )}
             {locations.map((l) => (
@@ -226,6 +249,54 @@ export default function SoccerGames({
               </div>
             ))}
           </div>
+
+          {flow && flowSeries.length > 0 && (
+            <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-2xl">
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold">Games added vs completed per week</h3>
+                <p style={{ color: THEME.muted }} className="text-xs">
+                  Columns count each set on its own date. The line is added minus completed, accumulated from the
+                  start of the season (a count difference, not a match of individual games).
+                </p>
+              </div>
+              <div className="h-[380px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={flowSeries} barCategoryGap={20}>
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.1} />
+                    <XAxis dataKey="week" tick={{ fill: THEME.muted, fontSize: 14 }} />
+                    <YAxis tick={{ fill: THEME.muted, fontSize: 14 }} />
+                    <Tooltip
+                      contentStyle={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: THEME.text }}
+                      labelFormatter={(w) => weekOptionLabel(weekLabel(Number(w)), flowRanges(Number(w)))}
+                    />
+                    <Legend />
+                    <Bar
+                      dataKey="added"
+                      name="Games added"
+                      fill={ADDED_COLOUR}
+                      radius={[4, 4, 0, 0]}
+                      label={{ position: "top", fill: THEME.muted, fontSize: 11 }}
+                    />
+                    <Bar
+                      dataKey="completed"
+                      name="Games completed"
+                      fill={COMPLETED_COLOUR}
+                      radius={[4, 4, 0, 0]}
+                      label={{ position: "top", fill: THEME.muted, fontSize: 11 }}
+                    />
+                    <Line
+                      type="monotone"
+                      dataKey="backlog"
+                      name="Added not yet completed (cumulative)"
+                      stroke={BACKLOG_COLOUR}
+                      strokeWidth={2}
+                      dot={{ r: 3 }}
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
 
           <div style={{ background: THEME.panel, border: `1px solid ${THEME.border}` }} className="p-4 rounded-2xl">
             <div className="mb-3">
