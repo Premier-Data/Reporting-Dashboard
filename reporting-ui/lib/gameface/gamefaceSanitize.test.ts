@@ -82,3 +82,47 @@ describe("summariseDryRun", () => {
     expect(summariseDryRun("Timesheet", src, mapped, []).dateMismatches).toBe(1);
   });
 });
+
+describe("extended personal-data drop", () => {
+  const empNames = ["Gender", "Sex", "Pronouns", "CustomPronouns", "Salutation", "EmploymentEndComment", "EmploymentEndReason", "EmploymentEndSentiment"];
+  const comments = ["Comment", "ConfirmComment", "WarningOverrideComment", "EmployeeComment", "SupervisorComment", "InvoiceComment"];
+  const keepOthers = ["Position", "Role", "StartDate", "TerminationDate", "EmploymentEndDate", "OperationalUnit", "Cost", "OnCost", "PaycycleId"];
+  const build = (names: string[]) => Object.fromEntries(names.map((n) => [n, "x"]));
+  it("drops the Employee personal fields and keeps the rest", () => {
+    const src = { ...build(empNames), ...build(comments), ...build(keepOthers), Id: 1 } as Json;
+    const { row, dropped } = prepareRow("Employee", {}, src);
+    const sd = row.source_data as Json;
+    for (const n of empNames) { expect(sd, n).not.toHaveProperty(n); expect(dropped).toContain(n); }
+    for (const n of [...comments, ...keepOthers]) expect(sd, n).toHaveProperty(n);
+    const s = summariseDryRun("Employee", [src], [{}], dropped);
+    for (const n of empNames) { expect(s.droppedFieldNames).toContain(n); expect(s.keptFieldNames).not.toContain(n); }
+    for (const n of comments) expect(s.keptFieldNames).toContain(n);
+  });
+  it("drops CustomFieldData for all six resources, also when nested", () => {
+    for (const r of ["Company", "OperationalUnit", "Employee", "Roster", "Timesheet", "Leave"]) {
+      const src = { Id: 1, CustomFieldData: { a: 1 }, Nested: { CustomFieldData: { b: 2 }, Keep: 1 } } as Json;
+      const { row, dropped } = prepareRow(r, {}, src);
+      const sd = row.source_data as Json;
+      expect(sd, r).not.toHaveProperty("CustomFieldData");
+      expect(sd.Nested, r).toEqual({ Keep: 1 });
+      expect(dropped).toContain("CustomFieldData");
+      const s = summariseDryRun(r, [src], [{}], dropped);
+      expect(s.droppedFieldNames).toContain("CustomFieldData");
+      expect(s.keptFieldNames).not.toContain("CustomFieldData");
+    }
+  });
+  it("drops File on Roster and Timesheet only, and keeps the comment fields", () => {
+    for (const r of ["Roster", "Timesheet"]) {
+      const src = { Id: 1, File: "f", ...build(comments) } as Json;
+      const { row, dropped } = prepareRow(r, {}, src);
+      const sd = row.source_data as Json;
+      expect(sd, r).not.toHaveProperty("File");
+      expect(dropped).toContain("File");
+      for (const n of comments) expect(sd, n).toHaveProperty(n);
+      const s = summariseDryRun(r, [src], [{}], dropped);
+      expect(s.keptFieldNames).not.toContain("File");
+      expect(s.droppedFieldNames).toContain("File");
+    }
+    expect((prepareRow("Leave", {}, { File: "f" } as Json).row.source_data as Json).File).toBe("f");
+  });
+});
