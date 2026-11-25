@@ -515,7 +515,7 @@ function parseTTData(buffer, sheetName, season, opts = {}) {
 // PARSE SOCCER (SoccerData sheet)
 // ----------------------
 // Columns: Date | Competition | Round | Home Team | Away Team | Home Allocated |
-//          Away Allocated | VideoURL | Location
+//          Away Allocated | VideoURL | Location | Finalised Time (completed)
 // No Week column, so season + week are DERIVED from the date (same Wed→Tue
 // weeks as the rest of reporting).
 // ----------------------
@@ -578,6 +578,41 @@ function completionDateFor(completion, date, home, away) {
   return completion.byHomeAway.get(`${h}|${a}`) ?? null;
 }
 
+// Parses the SoccerData "Finalised Time" cell (LAST column, J) into the
+// completion DATE (yyyy-mm-dd). That column is the raw-sheet record of when the
+// fixture was completed. Accepts an Excel serial (the sheet's normal form),
+// "dd/mm/yyyy h:mm[:ss]" / "d/m/yyyy" text (day first, Australian), ISO text and
+// JS Dates. The date is the wall-clock date as typed in the sheet (no timezone
+// shift), the same convention as every other sheet date here. Blank or
+// non-date input returns null.
+function parseCompletedDate(value) {
+  if (value == null || value === "") return null;
+  const valid = (y, m, d) => {
+    if (y < 2000 || y > 2100) return null;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) return null;
+    return dt.toISOString().slice(0, 10);
+  };
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime())
+      ? null
+      : valid(value.getFullYear(), value.getMonth() + 1, value.getDate());
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 1) return null;
+    const dt = new Date(Math.floor(value - 25569) * 86400000);
+    return valid(dt.getUTCFullYear(), dt.getUTCMonth() + 1, dt.getUTCDate());
+  }
+  const s = String(value).replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+  if (!s) return null;
+  if (/^\d+(\.\d+)?$/.test(s)) return parseCompletedDate(Number(s));
+  let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T,]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[ap]m)?)?$/i.exec(s);
+  if (m) return valid(Number(m[3]), Number(m[2]), Number(m[1]));
+  m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T].*)?$/.exec(s);
+  if (m) return valid(Number(m[1]), Number(m[2]), Number(m[3]));
+  return null;
+}
+
 // Builds a unique, deterministic game_key for a SoccerData row.
 // The key includes Competition and Round so that double round-robin
 // tournaments (same two teams meeting twice on one date in different rounds)
@@ -612,6 +647,7 @@ function parseSoccerData(buffer, completion) {
 
   let skipped = 0;
   let matched = 0;
+  let fromFinalised = 0;
   const skippedExamples = [];
   const seenKeys = new Map();
   const dataRows = rows.slice(1).filter(r => r && r.length);
@@ -635,14 +671,17 @@ function parseSoccerData(buffer, completion) {
         }
         return null;
       }
-      // Completion date (when the fixture was actually finished), from the
-      // Completion Times sheet. Null when unmatched → excluded from the
-      // "completed each week" view. season/week are DERIVED from this date,
-      // since "games completed each week" is bucketed by completion, not
-      // fixture date.
-      const completed_date = completion
-        ? completionDateFor(completion, date, home_team, away_team)
-        : null;
+      // Completion date = the LAST column of this same row ("Finalised Time",
+      // col J), so it is attached by the row's own game_key with no name join.
+      // Older fixtures that predate that column fall back to the Completion
+      // Times sheet (Date+Home+Away join). Null when neither has a date.
+      // season/week are DERIVED from this date: completed counts are bucketed by
+      // completion, not by the fixture (put-in) date.
+      const finalised = parseCompletedDate(r[9]);
+      if (finalised) fromFinalised++;
+      const completed_date =
+        finalised ??
+        (completion ? completionDateFor(completion, date, home_team, away_team) : null);
       if (completed_date) matched++;
       return {
         game_key: makeSoccerGameKey(
@@ -672,7 +711,7 @@ function parseSoccerData(buffer, completion) {
   console.log(`Soccer sheet rows read: ${dataRows.length}, parsed: ${parsed.length}`);
   console.log("Skipped malformed Soccer rows (missing Date/Home/Away):", skipped);
   skippedExamples.forEach(e => console.log("  skipped", e));
-  console.log(`Soccer games with a completion date: ${matched} / ${parsed.length}`);
+  console.log(`Soccer games with a completion date: ${matched} / ${parsed.length} (${fromFinalised} from the Finalised Time column)`);
   console.log("First Parsed Soccer Row:", parsed[0]);
   return parsed;
 }
@@ -1223,5 +1262,5 @@ async function sync() {
 if (require.main === module) {
   sync();
 } else {
-  module.exports = { deputySeasonFromDate, seasonWeekFromDate, getExcelBuffer, parseSoccerData, parseTTData, makeTTGameKey, makeSoccerGameKey, parseCompletionTimes };
+  module.exports = { deputySeasonFromDate, seasonWeekFromDate, getExcelBuffer, parseSoccerData, parseTTData, makeTTGameKey, makeSoccerGameKey, parseCompletionTimes, parseCompletedDate };
 }
