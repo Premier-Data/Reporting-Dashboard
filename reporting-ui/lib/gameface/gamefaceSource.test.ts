@@ -27,6 +27,17 @@ describe("makeGamefaceDeputySource", () => {
     const init = (fn.mock.calls[0] as unknown as [string, RequestInit])[1];
     expect(JSON.parse(init.body as string)).toMatchObject({ dataset: "timesheets", sync: true });
   });
+  it("sends the date window for rosters and keeps the body unchanged without options", async () => {
+    const fn = mockFetch(200, { rows: [], synced: true });
+    const s = makeGamefaceDeputySource("a", "b");
+    await s.getRosters({ from: "2026-03-01", to: "2026-03-07" });
+    await s.getRostersWithMeta({ sync: true });
+    const bodies = fn.mock.calls.map((c) => JSON.parse((c as unknown as [string, RequestInit])[1].body as string));
+    expect(bodies[0]).toEqual({ username: "a", password: "b", dataset: "rosters", from: "2026-03-01", to: "2026-03-07" });
+    expect(bodies[1]).toEqual({ username: "a", password: "b", dataset: "rosters", sync: true });
+    const meta = await s.getRostersWithMeta();
+    expect(meta).toEqual({ rows: [], synced: true });
+  });
   it("maps 403, 404 and 502 to readable messages", async () => {
     const s = makeGamefaceDeputySource("a", "b");
     mockFetch(403, { error: "forbidden" });

@@ -1,4 +1,5 @@
 import { getDeputyRosters, getDeputyRostersWithMeta } from "@/lib/api/deputy";
+import type { DeputySource } from "@/lib/deputy/source";
 import { mapApiRosters } from "@/lib/data/deputyApiRoster";
 import type { DeputyRoster } from "@/types/deputyRoster";
 
@@ -7,6 +8,8 @@ type LoadDeputyApiRosterOptions = {
     startDate?: string;
     /** Inclusive end date (YYYY-MM-DD). */
     endDate?: string;
+    /** Where rows come from. Omit for the own-company deputy-read function. */
+    source?: DeputySource;
 };
 
 /**
@@ -19,9 +22,11 @@ export async function loadDeputyApiRoster(
     options: LoadDeputyApiRosterOptions = {}
 ): Promise<DeputyRoster[]> {
 
-    const { startDate, endDate } = options;
+    const { startDate, endDate, source } = options;
 
-    const rows = await getDeputyRosters({
+    const read = source ? source.getRosters : getDeputyRosters;
+
+    const rows = await read({
         from: startDate,
         to: endDate,
     });
@@ -39,9 +44,11 @@ export async function loadDeputyApiRosterWithSync(
     options: LoadDeputyApiRosterOptions = {}
 ): Promise<{ roster: DeputyRoster[]; synced: boolean }> {
 
-    const { startDate, endDate } = options;
+    const { startDate, endDate, source } = options;
 
-    const { rows, synced } = await getDeputyRostersWithMeta({
+    const read = source ? source.getRostersWithMeta : getDeputyRostersWithMeta;
+
+    const { rows, synced } = await read({
         from: startDate,
         to: endDate,
         sync: true,

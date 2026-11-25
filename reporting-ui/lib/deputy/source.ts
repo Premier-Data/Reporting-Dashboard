@@ -3,17 +3,23 @@
 // own source.
 import {
   getDeputyRosters,
+  getDeputyRostersWithMeta,
   getDeputyTimesheets,
+  type DeputyReadOptions,
+  type DeputyReadResult,
   type DeputyRosterRow,
   type DeputyTimesheetRow,
 } from "@/lib/api/deputy";
 
 export interface DeputySource {
-  getRosters(): Promise<DeputyRosterRow[]>;
-  getTimesheets(opts?: { sync?: boolean }): Promise<DeputyTimesheetRow[]>;
+  getRosters(opts?: DeputyReadOptions): Promise<DeputyRosterRow[]>;
+  /** Like getRosters, but also reports whether a sync actually ran. */
+  getRostersWithMeta(opts?: DeputyReadOptions): Promise<DeputyReadResult<DeputyRosterRow>>;
+  getTimesheets(opts?: DeputyReadOptions): Promise<DeputyTimesheetRow[]>;
 }
 
 export const defaultDeputySource: DeputySource = {
-  getRosters: () => getDeputyRosters(),
+  getRosters: (opts) => getDeputyRosters(opts),
+  getRostersWithMeta: (opts) => getDeputyRostersWithMeta(opts),
   getTimesheets: (opts) => getDeputyTimesheets(opts),
 };
