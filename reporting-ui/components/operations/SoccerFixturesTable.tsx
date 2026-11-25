@@ -8,6 +8,7 @@ import SortableTh from "@/components/UI/SortableTh";
 import { useTableSort, type SortColumn } from "@/lib/tableSort";
 import type { SoccerGameRow } from "@/lib/analytics/opsSoccer";
 import { soccerSeasonFor, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
+import { seasonWeekRangeIso, weekOptionLabel } from "@/lib/analytics/weekLabels";
 import { completedSeasonWeek, isoToDmy } from "@/lib/analytics/soccerCompleted";
 
 type Fixture = {
@@ -135,7 +136,7 @@ export default function SoccerFixturesTable({
                 <option value="all">All weeks</option>
                 {weeks.map((w) => (
                   <option key={w} value={w}>
-                    Week {w}
+                    {weekOptionLabel(`Week ${w}`, seasonWeekRangeIso(season, w))}
                   </option>
                 ))}
               </select>

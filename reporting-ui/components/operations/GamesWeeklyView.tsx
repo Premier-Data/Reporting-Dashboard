@@ -24,6 +24,7 @@ import {
   type SoccerGameRow,
 } from "@/lib/analytics/opsSoccer";
 import { buildAddedVsCompleted } from "@/lib/analytics/soccerCompleted";
+import { formatWeekRangeShort, seasonWeekRangeIso, weekOptionLabel } from "@/lib/analytics/weekLabels";
 import SoccerFixturesTable from "./SoccerFixturesTable";
 
 type SortKey = "name" | "total" | `w${number}`;
@@ -417,11 +418,24 @@ function GamesGrid({
               {report.weeks.map((w) => {
                 const k: SortKey = `w${w.week}`;
                 return (
-                  <th key={w.week} scope="col" aria-sort={ariaSort(k)} style={stickyHead()}>
+                  <th
+                    key={w.week}
+                    scope="col"
+                    aria-sort={ariaSort(k)}
+                    title={weekOptionLabel(`Week ${w.week}`, seasonWeekRangeIso(report.season, w.week))}
+                    style={stickyHead()}
+                  >
                     <SortBtn k={k} sort={sort} onToggle={toggle}>
                       Week {w.week}
                       <br />
                       <span style={{ fontWeight: 400 }}>{w.label}</span>
+                      <br />
+                      <span style={{ fontWeight: 400 }}>
+                        {(() => {
+                          const r = seasonWeekRangeIso(report.season, w.week);
+                          return formatWeekRangeShort(r.start, r.end);
+                        })()}
+                      </span>
                     </SortBtn>
                   </th>
                 );

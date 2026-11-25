@@ -23,7 +23,7 @@ import {
 import { fetchAllPaged } from "@/lib/supabase/fetchAllPaged";
 import { soccerSeasonFor, soccerWeekFor } from "@/lib/analytics/soccerWeeks";
 import { buildAddedVsCompleted, buildFlowSeries, completionRate } from "@/lib/analytics/soccerCompleted";
-import { buildWeekRanges, weekOptionLabel } from "@/lib/analytics/weekLabels";
+import { buildWeekRanges, formatWeekRange, seasonWeekRangeIso, weekOptionLabel } from "@/lib/analytics/weekLabels";
 
 type Row = Record<string, unknown>;
 
@@ -149,7 +149,10 @@ export default function SoccerGames({
     return week === "all" ? all : all.filter((p) => p.week === Number(week));
   }, [flow, week]);
   const rate = flowTotals ? completionRate(flowTotals.added, flowTotals.completed) : null;
-  const flowRanges = (w: number) => weekRanges.get(String(w));
+  // Weeks that only have completions are not in weekRanges (built from added rows),
+  // so a single selected season falls back to its own Wed-Tue week definition.
+  const flowRanges = (w: number) =>
+    weekRanges.get(String(w)) ?? (season === "all" ? undefined : seasonWeekRangeIso(Number(season), w));
 
   // Table rows: every week with games added, plus weeks that only have completions.
   const tableRows = useMemo(() => {
@@ -311,7 +314,7 @@ export default function SoccerGames({
                   <YAxis tick={{ fill: THEME.muted, fontSize: 14 }} />
                   <Tooltip
                     contentStyle={{ background: THEME.panel, border: `1px solid ${THEME.border}`, color: THEME.text }}
-                    labelFormatter={(w) => weekLabel(Number(w))}
+                    labelFormatter={(w) => weekOptionLabel(weekLabel(Number(w)), flowRanges(Number(w)))}
                   />
                   <Legend />
                   {locations.map((l) => (
@@ -355,7 +358,16 @@ export default function SoccerGames({
               <tbody>
                 {tableRows.map((r) => (
                   <tr key={r.week} style={{ borderTop: `1px solid ${THEME.border}` }}>
-                    <td className="py-1 pr-4">{weekLabel(r.week)}</td>
+                    <td className="py-1 pr-4 whitespace-nowrap">
+                      {weekLabel(r.week)}
+                      {(() => {
+                        const rg = flowRanges(r.week);
+                        const txt = rg ? formatWeekRange(rg.start, rg.end) : "";
+                        return txt ? (
+                          <div style={{ color: THEME.muted }} className="text-xs">{txt}</div>
+                        ) : null;
+                      })()}
+                    </td>
                     {locations.map((l) => (
                       <td key={l} className="py-1 pr-4 text-right tabular-nums">{r[l] ?? 0}</td>
                     ))}

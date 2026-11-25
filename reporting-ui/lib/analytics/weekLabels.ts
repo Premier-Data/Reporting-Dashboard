@@ -87,3 +87,20 @@ export function buildWeekRanges(rows: Iterable<WeekRow>): Map<string, WeekRange>
   }
   return out;
 }
+
+/** Date range (YYYY-MM-DD) of a season's Week N, from the unified Wed->Tue rule. */
+export function seasonWeekRangeIso(season: number, week: number): WeekRange {
+  const r = seasonWeekRange(season, week);
+  return { start: toIso(r.start), end: toIso(r.end) };
+}
+
+/** Compact range for narrow headers, no year: "18-24 Nov" or "30 Sep-6 Oct" (en dash). */
+export function formatWeekRangeShort(start: string, end: string): string {
+  if (!ISO.test(start) || !ISO.test(end)) return "";
+  const a = part(start);
+  const b = part(end);
+  const fb = `${b.d} ${MONTHS[b.m - 1]}`;
+  if (start === end) return fb;
+  if (a.y === b.y && a.m === b.m) return `${a.d}\u2013${fb}`;
+  return `${a.d} ${MONTHS[a.m - 1]}\u2013${fb}`;
+}

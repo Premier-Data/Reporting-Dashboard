@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { buildWeekRanges, formatWeekRange, weekOptionLabel } from "./weekLabels";
+import {
+  buildWeekRanges,
+  formatWeekRange,
+  formatWeekRangeShort,
+  seasonWeekRangeIso,
+  weekOptionLabel,
+} from "./weekLabels";
 
 describe("formatWeekRange", () => {
   it("formats same-month and cross-month ranges with one trailing year", () => {
@@ -85,5 +91,20 @@ describe("buildWeekRanges", () => {
       { week: 0, season: 2026, date: "2026-03-22" },
     ]);
     expect(m.get("0")).toEqual({ start: "2026-01-22", end: "2026-03-22" });
+  });
+});
+
+describe("seasonWeekRangeIso / formatWeekRangeShort", () => {
+  it("returns the Wed-Tue range of a season week, matching buildWeekRanges", () => {
+    const r = seasonWeekRangeIso(2027, 7);
+    expect(new Date(`${r.start}T00:00:00Z`).getUTCDay()).toBe(3);
+    expect(new Date(`${r.end}T00:00:00Z`).getUTCDay()).toBe(2);
+    expect(buildWeekRanges([{ week: 7, season: 2027, date: r.start }]).get("7")).toEqual(r);
+  });
+  it("formats a compact range without the year", () => {
+    expect(formatWeekRangeShort("2026-11-18", "2026-11-24")).toBe("18\u201324 Nov");
+    expect(formatWeekRangeShort("2026-09-30", "2026-10-06")).toBe("30 Sep\u20136 Oct");
+    expect(formatWeekRangeShort("2026-10-14", "2026-10-14")).toBe("14 Oct");
+    expect(formatWeekRangeShort("", "2026-10-14")).toBe("");
   });
 });
