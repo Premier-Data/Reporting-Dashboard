@@ -70,6 +70,7 @@ import {
   type Instance,
 } from "@/lib/comparison/xml-compare";
 import { serializeInstancesToJson } from "@/lib/comparison/json-adapter";
+import { sortAnalystOptionsAZ } from "@/lib/comparison/sort-analyst-options";
 import {
   computePlayerAccuracy,
   type PlayerAccuracy,
@@ -1856,10 +1857,12 @@ export default function AccuracyChecksPage() {
             onWeekChange={setWeekFilter}
             categoryFilter={comparisonCategoryFilter}
             onCategoryChange={setComparisonCategoryFilter}
-            analystOptions={analystSummaries.map((s) => ({
-              name: s.analystName,
-              checks: s.checks,
-            }))}
+            analystOptions={sortAnalystOptionsAZ(
+              analystSummaries.map((s) => ({
+                name: s.analystName,
+                checks: s.checks,
+              })),
+            )}
             totalChecks={checks.length}
             selectedAnalyst={selectedAnalyst}
             onAnalystChange={setSelectedAnalyst}
