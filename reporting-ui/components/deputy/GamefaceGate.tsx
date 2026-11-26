@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Lock } from "lucide-react";
 import { useAuth } from "@/components/auth/AuthContext";
-import { makeGamefaceDeputySource } from "@/lib/api/gamefaceDeputy";
+import {
+    makeGamefaceAllocator,
+    makeGamefaceDeputySource,
+    type GamefaceAllocator,
+} from "@/lib/api/gamefaceDeputy";
 import type { DeputySource } from "@/lib/deputy/source";
 import {
     clearStoredPassword,
@@ -16,7 +20,11 @@ type Props = {
     title: string;
     /** Shown beside the heading on the locked card (e.g. a Deputy picker). */
     headerExtra?: ReactNode;
-    children: (ctx: { source: DeputySource; lock: () => void }) => ReactNode;
+    children: (ctx: {
+        source: DeputySource;
+        allocator: GamefaceAllocator;
+        lock: () => void;
+    }) => ReactNode;
 };
 
 /**
@@ -42,6 +50,10 @@ export default function GamefaceGate({ title, headerExtra, children }: Props) {
     const username = user?.username ?? "";
     const source = useMemo(
         () => makeGamefaceDeputySource(username, password),
+        [username, password]
+    );
+    const allocator = useMemo(
+        () => makeGamefaceAllocator(username, password),
         [username, password]
     );
 
@@ -113,5 +125,5 @@ export default function GamefaceGate({ title, headerExtra, children }: Props) {
         );
     }
 
-    return <>{children({ source, lock })}</>;
+    return <>{children({ source, allocator, lock })}</>;
 }

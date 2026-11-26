@@ -17,13 +17,13 @@ vi.mock("@/components/deputy/GamefaceGate", () => ({
         <div data-testid="view">
             gameface-gate
             {headerExtra}
-            {children({ source: "gameface", lock: () => {} })}
+            {children({ source: "gameface", allocator: { tag: "alloc" }, lock: () => {} })}
         </div>
     ),
 }));
 vi.mock("./ScheduleView", () => ({
-    default: ({ headerExtra, title }: any) => (
-        <div data-testid="view">
+    default: ({ headerExtra, title, allocator }: any) => (
+        <div data-testid="view" data-allocator={allocator === undefined ? "none" : "set"}>
             {title ?? "premier-view"}
             {headerExtra}
         </div>
@@ -61,11 +61,13 @@ describe("Schedule page deputy dropdown", () => {
         pick(container, "gameface");
         expect(container.textContent).toContain("GameFace Schedule");
         expect(window.location.search).toBe("?deputy=gameface");
+        expect(container.querySelector("[data-allocator=set]")).not.toBeNull();
         expect((container.querySelector("select") as HTMLSelectElement).value).toBe("gameface");
 
         pick(container, "premier");
         expect(container.textContent).toContain("premier-view");
         expect(container.textContent).not.toContain("GameFace Schedule");
+        expect(container.querySelector("[data-allocator]")!.getAttribute("data-allocator")).toBe("none");
         expect(window.location.search).toBe("");
         expect((container.querySelector("select") as HTMLSelectElement).value).toBe("premier");
     });

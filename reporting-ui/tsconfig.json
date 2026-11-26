@@ -40,6 +40,7 @@
     "supabase/functions/deputy-sync/index.ts",
     "supabase/functions/deputy-read/index.ts",
     "supabase/functions/gameface-deputy-sync/index.ts",
-    "supabase/functions/gameface-deputy-read/index.ts"
+    "supabase/functions/gameface-deputy-read/index.ts",
+    "supabase/functions/gameface-fixture-allocations/index.ts"
   ]
 }

@@ -49,10 +49,11 @@ function SchedulePageInner() {
     if (deputy === "gameface") {
         return (
             <GamefaceGate title="GameFace Schedule" headerExtra={picker}>
-                {({ source, lock }) => (
+                {({ source, allocator, lock }) => (
                     <ScheduleView
                         key="gameface"
                         source={source}
+                        allocator={allocator}
                         title="GameFace Schedule"
                         subtitle="GameFace Deputy roster and approved shifts (read-only)"
                         headerExtra={

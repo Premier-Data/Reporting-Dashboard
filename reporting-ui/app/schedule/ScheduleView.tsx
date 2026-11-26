@@ -67,6 +67,11 @@ import { mapFixtureWeekTT } from "@/lib/analytics/season";
 
 import AllocationModal from "./AllocationModal";
 import type { DeputySource } from "@/lib/deputy/source";
+import { queryCompFixtures, type CompFixtureRow } from "@/lib/api/compFixtures";
+import type { GamefaceAllocation, GamefaceAllocator } from "@/lib/api/gamefaceDeputy";
+import { indexAllocations, weekFixtureFilters } from "@/lib/deputy/gamefaceFixtures";
+import GamefaceFixturePanel from "./GamefaceFixturePanel";
+import GamefaceAllocateModal, { type GamefaceShift } from "./GamefaceAllocateModal";
 import { pickScheduleRows } from "@/lib/data/scheduleEmployees";
 
 type ScheduleAssignment = {
@@ -299,6 +304,11 @@ export type ScheduleViewProps = {
      * visible week, there is no allocation and nothing is written.
      */
     source?: DeputySource;
+    /**
+     * GameFace only. When set, the AFL fixtures panel and per-shift fixture
+     * allocation are shown. Omitted for Premier Data (nothing changes there).
+     */
+    allocator?: GamefaceAllocator;
     title?: string;
     subtitle?: string;
     headerExtra?: React.ReactNode;
@@ -306,6 +316,7 @@ export type ScheduleViewProps = {
 
 export default function ScheduleView({
     source,
+    allocator,
     title = "Schedule",
     subtitle = "Analyst roster and fixture allocation",
     headerExtra,
@@ -458,6 +469,89 @@ export default function ScheduleView({
             ]
         );
 
+
+    /*
+     * GAMEFACE FIXTURE ALLOCATION (only when an allocator is supplied)
+     */
+    const [gfFixtures, setGfFixtures] = useState<CompFixtureRow[]>([]);
+    const [gfAllocs, setGfAllocs] = useState<GamefaceAllocation[]>([]);
+    const [gfLoading, setGfLoading] = useState(false);
+    const [gfError, setGfError] = useState("");
+    const [gfReloadKey, setGfReloadKey] = useState(0);
+    const [gfShift, setGfShift] = useState<GamefaceShift | null>(null);
+
+    useEffect(() => {
+        if (allocator === undefined) return;
+        const first = days[0].key;
+        const last = days[days.length - 1].key;
+        let cancelled = false;
+        setGfLoading(true);
+        Promise.all([queryCompFixtures(weekFixtureFilters(first, last)), allocator.list(first, last)])
+            .then(([fx, al]) => {
+                if (cancelled) return;
+                setGfFixtures(fx);
+                setGfAllocs(al);
+                setGfError("");
+            })
+            .catch((err) => {
+                if (cancelled) return;
+                setGfError(err instanceof Error ? err.message : "Could not load fixtures");
+            })
+            .finally(() => {
+                if (!cancelled) setGfLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [allocator, days, gfReloadKey]);
+
+    const gfIndex = useMemo(() => indexAllocations(gfAllocs), [gfAllocs]);
+
+    async function gfUnallocate(a: GamefaceAllocation, label: string) {
+        if (allocator === undefined) return;
+        if (!window.confirm(`Unallocate ${label} from ${a.employee_name}?`)) return;
+        try {
+            await allocator.unallocate(a.id);
+            setGfError("");
+        } catch (err) {
+            setGfError(err instanceof Error ? err.message : "Could not unallocate the fixture");
+        }
+        setGfReloadKey((k) => k + 1);
+    }
+
+    function gamefaceShiftFixtures(shift: DeputyRoster, employeeName: string, dayKey: string) {
+        if (allocator === undefined) return null;
+        const rosterId = shift.roster_key.replace(/^deputy:/, "");
+        const allocs = gfIndex.byRosterId.get(rosterId) ?? [];
+        return (
+            <div className="mt-1 space-y-1">
+                {allocs.map((a) => {
+                    const f = gfFixtures.find((x) => x.id === a.comp_fixture_id);
+                    const label = f ? `${f.home_team} v ${f.away_team}` : "this fixture";
+                    return (
+                        <div key={a.id} className="rounded border border-blue-200 bg-blue-50 px-1.5 py-1 text-[9px] text-blue-900">
+                            <div className="font-semibold">{label}</div>
+                            {f && <div className="text-blue-700">{f.competition}</div>}
+                            <button
+                                type="button"
+                                onClick={() => gfUnallocate(a, label)}
+                                className="mt-0.5 text-[9px] font-medium text-red-600 hover:underline"
+                            >
+                                Unallocate
+                            </button>
+                        </div>
+                    );
+                })}
+                <button
+                    type="button"
+                    onClick={() => setGfShift({ rosterId, employeeName, date: dayKey })}
+                    className="rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[9px] font-medium text-slate-700 hover:bg-slate-50"
+                >
+                    Allocate fixture
+                </button>
+            </div>
+        );
+    }
 
     /*
      * ROSTER FOR VISIBLE WEEK
@@ -2528,6 +2622,26 @@ export default function ScheduleView({
             </div>
 
 
+            {allocator !== undefined && gfError && (
+                <div
+                    role="alert"
+                    className="mb-4 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+                >
+                    <span>{gfError}</span>
+                    <button
+                        type="button"
+                        onClick={() => setGfReloadKey((k) => k + 1)}
+                        className="rounded-md border border-red-300 bg-white px-3 py-1 font-medium text-red-700 hover:bg-red-100"
+                    >
+                        Retry
+                    </button>
+                </div>
+            )}
+
+            {allocator !== undefined && (
+                <GamefaceFixturePanel fixtures={gfFixtures} byFixtureId={gfIndex.byFixtureId} loading={gfLoading} />
+            )}
+
             {/* SCHEDULE */}
 
             <div className="
@@ -3131,6 +3245,8 @@ export default function ScheduleView({
 
                                                                             </div>
 
+                                                                            {gamefaceShiftFixtures(shift, analyst.name, day.key)}
+
                                                                         </div>
 
                                                                     )
@@ -3249,6 +3365,17 @@ export default function ScheduleView({
                     }
                 />
 
+            ) : null}
+
+            {allocator !== undefined && gfShift ? (
+                <GamefaceAllocateModal
+                    shift={gfShift}
+                    fixtures={gfFixtures}
+                    byFixtureId={gfIndex.byFixtureId}
+                    allocator={allocator}
+                    onClose={() => setGfShift(null)}
+                    onChanged={() => setGfReloadKey((k) => k + 1)}
+                />
             ) : null}
 
 
