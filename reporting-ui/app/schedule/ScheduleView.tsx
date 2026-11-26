@@ -72,6 +72,7 @@ import type { GamefaceAllocation, GamefaceAllocator } from "@/lib/api/gamefaceDe
 import { indexAllocations, weekFixtureFilters } from "@/lib/deputy/gamefaceFixtures";
 import GamefaceFixturePanel from "./GamefaceFixturePanel";
 import GamefaceAllocateModal, { type GamefaceShift } from "./GamefaceAllocateModal";
+import GamefaceShiftDropZone from "./GamefaceShiftDropZone";
 import { pickScheduleRows } from "@/lib/data/scheduleEmployees";
 
 type ScheduleAssignment = {
@@ -2639,7 +2640,12 @@ export default function ScheduleView({
             )}
 
             {allocator !== undefined && (
-                <GamefaceFixturePanel fixtures={gfFixtures} byFixtureId={gfIndex.byFixtureId} loading={gfLoading} />
+                <GamefaceFixturePanel
+                    fixtures={gfFixtures}
+                    byFixtureId={gfIndex.byFixtureId}
+                    loading={gfLoading}
+                    draggable
+                />
             )}
 
             {/* SCHEDULE */}
@@ -3200,10 +3206,16 @@ export default function ScheduleView({
                                                                         index
                                                                     ) => (
 
-                                                                        <div
+                                                                        <GamefaceShiftDropZone
                                                                             key={
                                                                                 `${shift.roster_key}-${index}`
                                                                             }
+                                                                            allocator={allocator}
+                                                                            rosterId={shift.roster_key.replace(/^deputy:/, "")}
+                                                                            employeeName={analyst.name}
+                                                                            byFixtureId={gfIndex.byFixtureId}
+                                                                            onChanged={() => setGfReloadKey((k) => k + 1)}
+                                                                            onMessage={setGfError}
                                                                             className="
                                                                                 text-[10px]
                                                                                 leading-tight
@@ -3247,7 +3259,7 @@ export default function ScheduleView({
 
                                                                             {gamefaceShiftFixtures(shift, analyst.name, day.key)}
 
-                                                                        </div>
+                                                                        </GamefaceShiftDropZone>
 
                                                                     )
                                                                 )}
