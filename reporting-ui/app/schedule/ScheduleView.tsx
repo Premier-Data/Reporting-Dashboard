@@ -475,6 +475,7 @@ export default function ScheduleView({
     ] =
         useState(true);
 
+    const [loadErrorDetail, setLoadErrorDetail] = useState("");
     const [
         rosterError,
         setRosterError,
@@ -580,6 +581,7 @@ export default function ScheduleView({
                     if (!cancelled) {
                         setTimesheets([]);
                         setTimesheetError(true);
+                        setLoadErrorDetail(err instanceof Error ? err.message : String(err));
                     }
 
                 }
@@ -676,6 +678,7 @@ export default function ScheduleView({
                     if (!cancelled) {
                         setRoster([]);
                         setRosterError(true);
+                        setLoadErrorDetail(err instanceof Error ? err.message : String(err));
                     }
 
                 }
@@ -2055,7 +2058,7 @@ export default function ScheduleView({
                 >
                     <span>
                         Could not load shifts from Deputy. Shifts shown as
-                        &quot;Not rostered&quot; may be wrong until this loads.
+                        &quot;Not rostered&quot; may be wrong until this loads.{readOnly && loadErrorDetail ? " (" + loadErrorDetail + ")" : null}
                     </span>
 
                     <button
@@ -2107,7 +2110,7 @@ export default function ScheduleView({
                 >
                     <span>
                         Could not load approved shifts. Rostered shifts and
-                        allocation still work.
+                        allocation still work.{readOnly && loadErrorDetail ? " (" + loadErrorDetail + ")" : null}
                     </span>
 
                     <button
@@ -2168,7 +2171,7 @@ export default function ScheduleView({
                                     e.target.value
                                 )
                             }
-                            placeholder="Search analyst..."
+                            placeholder={readOnly ? "Search employee..." : "Search analyst..."}
                             className="
                                 w-full
                                 rounded-md
@@ -2514,7 +2517,7 @@ export default function ScheduleView({
                             analysts.length
                         }
                     </strong>{" "}
-                    analysts
+                    {readOnly ? "employees" : "analysts"}
                 </span>
 
 
@@ -2579,7 +2582,7 @@ export default function ScheduleView({
                                     "
                                 >
 
-                                    Analyst
+                                    {readOnly ? "Employee" : "Analyst"}
 
                                     <span className="
                                         ml-2
@@ -3206,7 +3209,7 @@ export default function ScheduleView({
                                         text-slate-400
                                     "
                                     >
-                                        No analysts match the current filters.
+                                        No {readOnly ? "employees" : "analysts"} match the current filters.
                                     </td>
 
                                 </tr>
