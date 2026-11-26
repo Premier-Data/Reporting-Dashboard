@@ -32,6 +32,16 @@ describe("GamefaceFixturePanel", () => {
         expect(items[1].textContent).toContain("Allocated: Sam");
     });
 
+    it("renders fixture dates as dd/mm/yyyy", () => {
+        const c = mount(
+            <GamefaceFixturePanel
+                fixtures={[fixture("d", { fixture_date: "2026-11-26" })]}
+                byFixtureId={new Map()}
+            />
+        );
+        expect(c.textContent).toContain("26/11/2026");
+        expect(c.textContent).not.toContain("2026-11-26");
+    });
     it("filters by competition", () => {
         const c = mount(<GamefaceFixturePanel fixtures={fixtures} byFixtureId={new Map()} />);
         const select = c.querySelector("select") as HTMLSelectElement;

@@ -17,6 +17,12 @@ export function sortFixtures<T extends Pick<CompFixtureRow, "fixture_date" | "fi
     );
 }
 
+/** Formats a yyyy-mm-dd calendar date as dd/mm/yyyy without time zone conversion. */
+export function formatFixtureDate(date: string | null | undefined): string {
+    if (!date) return "TBC";
+    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : date;
+}
 type Props = {
     fixtures: CompFixtureRow[];
     byFixtureId: Map<string, GamefaceAllocation>;
@@ -127,7 +133,7 @@ export default function GamefaceFixturePanel({ fixtures, byFixtureId, loading, d
                                     canDrag ? "cursor-grab active:cursor-grabbing" : ""
                                 }`}
                             >
-                                <span className="w-24 shrink-0 text-slate-600">{f.fixture_date ?? "TBC"}</span>
+                                <span className="w-24 shrink-0 text-slate-600">{formatFixtureDate(f.fixture_date)}</span>
                                 <span className="w-16 shrink-0 text-slate-600">{f.fixture_time || "TBC"}</span>
                                 <span className="min-w-[140px] text-slate-500">
                                     {f.competition}
