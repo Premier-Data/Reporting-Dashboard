@@ -1,7 +1,7 @@
 "use client";
-import { Suspense } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Lock } from "lucide-react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useAuth } from "@/components/auth/AuthContext";
 import GamefaceGate from "@/components/deputy/GamefaceGate";
 import {
@@ -12,14 +12,25 @@ import {
 import ScheduleView from "./ScheduleView";
 
 function SchedulePageInner() {
-    const router = useRouter();
     const params = useSearchParams();
     const { hasAccess } = useAuth();
     const canSeeGameface = hasAccess(GAMEFACE_PAGE_KEY);
-    const deputy = resolveScheduleDeputy(params.get("deputy"), canSeeGameface);
+    // The choice lives in state so the view switches immediately. On the static
+    // export a query-only router.replace did not reliably re-render the page.
+    // The URL is kept in sync with history.pushState, and popstate (back/forward)
+    // feeds the state back.
+    const [param, setParam] = useState<string | null>(params.get("deputy"));
+    const deputy = resolveScheduleDeputy(param, canSeeGameface);
+
+    useEffect(() => {
+        const onPop = () => setParam(new URLSearchParams(window.location.search).get("deputy"));
+        window.addEventListener("popstate", onPop);
+        return () => window.removeEventListener("popstate", onPop);
+    }, []);
 
     function choose(next: ScheduleDeputy) {
-        router.replace(next === "gameface" ? "/schedule?deputy=gameface" : "/schedule");
+        setParam(next === "gameface" ? "gameface" : null);
+        window.history.pushState(null, "", next === "gameface" ? "/schedule?deputy=gameface" : "/schedule");
     }
 
     // Only users with GameFace access get a choice.
